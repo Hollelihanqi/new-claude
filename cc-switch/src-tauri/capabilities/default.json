@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "默认权限：仅启用核心功能，所有系统操作都在 Rust 命令内完成。",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

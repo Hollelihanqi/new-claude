@@ -1,0 +1,12 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# 源图标（图标已生成到 src-tauri/icons/，源图可选保留）
+# app-icon.png
+
+# 系统
+.DS_Store
+Thumbs.db
