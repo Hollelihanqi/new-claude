@@ -93,8 +93,15 @@ npm run tauri build
 
 ## 五、装好之后怎么用
 
+> **公司路由用户先做一次（重要）**：公司网关是自签名证书，必须先导入 CA 根证书，
+> 否则 `claude corp` 连不上。向管理员要 `ca-cert.pem`，然后执行一次：
+> - macOS：`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca-cert.pem`
+> - Windows（管理员 PowerShell）：`certutil -addstore Root ca-cert.pem`
+
 1. 打开 App，切到「实例配置」。
-2. 「新建」一个实例：名称填命令词（如 `corp`），类型选「自定义路由」，填公司网关地址和 token。
+2. 「新建」一个实例：名称填命令词（如 `corp`），类型选「自定义路由」，
+   网关地址按公司说明填（通常带 `/anthropic` 后缀，例如 `https://10.0.7.83:8080/anthropic`），
+   API Key 填公司发给你的 `gw-sk-...`。
 3. 点「保存并接入终端」。
 4. **重开一个终端窗口**（mac 用任意终端 / Windows 用 **PowerShell**）。
 5. 在任意项目目录：

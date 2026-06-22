@@ -223,19 +223,29 @@ export default function ConfigPanel({ onChanged }) {
               <>
                 <TextInput
                   label="ANTHROPIC_BASE_URL（公司网关地址）"
-                  placeholder="https://gateway.example.com"
+                  description="按公司网关说明填写，通常要带 /anthropic 后缀。"
+                  placeholder="https://10.0.7.83:8080/anthropic"
                   value={form.baseUrl}
                   onChange={(e) =>
                     setForm({ ...form, baseUrl: e.currentTarget.value })
                   }
                 />
                 <PasswordInput
-                  label="Token"
-                  description="留空表示不修改。会加密存储（mac 钥匙串 / Windows DPAPI）。"
-                  placeholder="••••••••"
+                  label="API Key（Token）"
+                  description="公司网关发给你的 Key（如 gw-sk-...）。留空表示不修改。会加密存储（mac 钥匙串 / Windows DPAPI）。"
+                  placeholder="gw-sk-••••••••"
                   value={token}
                   onChange={(e) => setToken(e.currentTarget.value)}
                 />
+                <Alert
+                  variant="light"
+                  color="yellow"
+                  icon={<IconInfoCircle size={16} />}
+                  title="首次使用需先导入公司 CA 证书"
+                >
+                  公司网关用自签名 HTTPS 证书，未导入根证书会连不上（报证书错误）。
+                  请按「使用指南」里的命令导入一次（每台机器仅首次）。
+                </Alert>
               </>
             )}
 

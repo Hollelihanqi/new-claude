@@ -138,10 +138,39 @@ export default function GuidePanel() {
             这个工具是配置它的，没有它就没东西可跑。
           </List.Item>
           <List.Item>
+            <b>（仅公司路由）导入一次 CA 证书</b>：公司网关是自签名证书，需按下方
+            「导入 CA 证书」做一次，否则 <Code>claude corp</Code> 连不上。
+          </List.Item>
+          <List.Item>
             <b>就这些。</b>这个桌面应用本身不需要你额外装 Python、Node 或 Rust——
             那些只有「构建这个应用」的人才需要。你作为使用者，装好应用直接用。
           </List.Item>
         </List>
+      </Card>
+
+      <Card withBorder radius="md" padding="lg">
+        <Title order={4} mb="xs">
+          公司路由：先导入 CA 证书（仅首次，必做）
+        </Title>
+        <Text size="sm" mb="sm">
+          公司网关用的是自签名 HTTPS 证书。必须先把管理员给你的{" "}
+          <Code>ca-cert.pem</Code> 导入系统信任，否则 <Code>claude corp</Code>{" "}
+          会因为"证书不被信任"而连不上。每台机器只需做一次。
+        </Text>
+        <Text size="sm" fw={500}>
+          macOS（终端，会要求输入开机密码）
+        </Text>
+        <Code block>
+          sudo security add-trusted-cert -d -r trustRoot -k
+          /Library/Keychains/System.keychain ca-cert.pem
+        </Code>
+        <Text size="sm" fw={500} mt="sm">
+          Windows（以管理员身份打开 PowerShell）
+        </Text>
+        <Code block>certutil -addstore Root ca-cert.pem</Code>
+        <Text size="xs" c="dimmed" mt="sm">
+          把命令末尾的 ca-cert.pem 换成证书文件的实际路径，或先 cd 到证书所在的文件夹再运行。
+        </Text>
       </Card>
 
       <Card withBorder radius="md" padding="lg">

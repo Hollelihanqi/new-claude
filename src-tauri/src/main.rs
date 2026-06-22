@@ -95,7 +95,7 @@ fn generate_sh(list: &[Profile]) -> String {
             let url = sh_q(&p.base_url);
             let svc = sh_q(&format!("{KEYCHAIN_PREFIX}:{n}"));
             o += &format!(
-                "      HOME=\"$_cch\" ANTHROPIC_BASE_URL={url} ANTHROPIC_AUTH_TOKEN=\"$(security find-generic-password -s {svc} -w 2>/dev/null)\" command claude \"$@\" ;;\n"
+                "      HOME=\"$_cch\" ANTHROPIC_BASE_URL={url} ANTHROPIC_API_KEY=\"$(security find-generic-password -s {svc} -w 2>/dev/null)\" command claude \"$@\" ;;\n"
             );
         } else {
             o += "      HOME=\"$_cch\" command claude \"$@\" ;;\n";
@@ -124,7 +124,7 @@ fn generate_ps1(list: &[Profile]) -> String {
         o += &format!("    {} {{\n", ps_q(n));
         o += &format!("      $h = Join-Path $env:USERPROFILE '.claude-split\\{n}'\n");
         o += "      New-Item -ItemType Directory -Force -Path (Join-Path $h '.local\\bin') | Out-Null\n";
-        o += "      $o1=$env:USERPROFILE; $o2=$env:ANTHROPIC_BASE_URL; $o3=$env:ANTHROPIC_AUTH_TOKEN\n";
+        o += "      $o1=$env:USERPROFILE; $o2=$env:ANTHROPIC_BASE_URL; $o3=$env:ANTHROPIC_API_KEY\n";
         o += "      try {\n";
         o += "        $env:USERPROFILE=$h\n";
         if p.type_ == "router" {
@@ -133,7 +133,7 @@ fn generate_ps1(list: &[Profile]) -> String {
                 if !enc.is_empty() {
                     o += &format!("        $sec=ConvertTo-SecureString {}\n", ps_q(enc));
                     o += "        $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)\n";
-                    o += "        $env:ANTHROPIC_AUTH_TOKEN=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)\n";
+                    o += "        $env:ANTHROPIC_API_KEY=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)\n";
                     o += "        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)\n";
                 }
             }
@@ -142,7 +142,7 @@ fn generate_ps1(list: &[Profile]) -> String {
         o += "      } finally {\n";
         o += "        $env:USERPROFILE=$o1\n";
         o += "        if($o2){$env:ANTHROPIC_BASE_URL=$o2}else{Remove-Item Env:\\ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue}\n";
-        o += "        if($o3){$env:ANTHROPIC_AUTH_TOKEN=$o3}else{Remove-Item Env:\\ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue}\n";
+        o += "        if($o3){$env:ANTHROPIC_API_KEY=$o3}else{Remove-Item Env:\\ANTHROPIC_API_KEY -ErrorAction SilentlyContinue}\n";
         o += "      }\n";
         o += "    }\n";
     }
