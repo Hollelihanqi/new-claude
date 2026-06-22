@@ -97,13 +97,26 @@ export default function ConfigPanel({ onChanged }) {
         sharePlugins: form.sharePlugins,
       };
       const msg = await api.saveProfile(profile, token || null);
+      let extra = "";
+      if (form.shareSkills || form.sharePlugins) {
+        try {
+          const linkMsg = await api.syncLinks(
+            profile.name,
+            form.shareSkills,
+            form.sharePlugins
+          );
+          extra = "（同步：" + linkMsg + "）";
+        } catch (e) {
+          extra = "（skills/plugins 同步失败：" + String(e) + "）";
+        }
+      }
       setToken("");
       load();
       onChanged && onChanged();
       setSel(profile.name);
       setStatus({
         type: "success",
-        msg: `已保存「${profile.name}」。${msg} 之后在项目目录运行：claude ${profile.name}`,
+        msg: `已保存「${profile.name}」。${msg}${extra} 之后在新终端里运行：claude ${profile.name}`,
       });
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
@@ -196,7 +209,12 @@ export default function ConfigPanel({ onChanged }) {
       <Grid.Col span={{ base: 12, sm: 8 }}>
         <Card withBorder padding="lg" radius="md">
           <Stack gap="sm">
-            <Title order={5}>实例设置</Title>
+            <Group justify="space-between">
+              <Title order={5}>实例设置</Title>
+              <Badge variant="light" color={sel ? "blue" : "green"}>
+                {sel ? `编辑：${sel}` : "新建实例"}
+              </Badge>
+            </Group>
 
             <TextInput
               label="实例名称 = 你要输入的命令词"
@@ -249,6 +267,12 @@ export default function ConfigPanel({ onChanged }) {
               </>
             )}
 
+            <Text size="sm" fw={500} mt={4}>
+              共享（可选）
+            </Text>
+            <Text size="xs" c="dimmed">
+              打开后，点「保存」时会自动把主账户的 skills / plugins 链接给这个实例，无需另外操作。
+            </Text>
             <Group gap="xl" mt={4}>
               <Switch
                 label="共享主账户的 skills"
@@ -284,14 +308,6 @@ export default function ConfigPanel({ onChanged }) {
                 loading={busy}
               >
                 保存并接入终端
-              </Button>
-              <Button
-                variant="default"
-                leftSection={<IconLink size={16} />}
-                onClick={onLink}
-                loading={busy}
-              >
-                同步 skills/plugins
               </Button>
               <Button
                 variant="subtle"
