@@ -17,17 +17,42 @@ import {
   Code,
   Alert,
   Box,
+  Autocomplete,
+  Divider,
 } from "@mantine/core";
 import {
   IconPlus,
   IconTrash,
   IconDeviceFloppy,
-  IconLink,
   IconWorld,
   IconUser,
   IconInfoCircle,
+  IconRefresh,
+  IconCertificate,
 } from "@tabler/icons-react";
 import { api } from "../api.js";
+
+// 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
+const PRESET_MODELS = [
+  "claude-sonnet-4-6",
+  "claude-opus-4-7",
+  "claude-haiku-4-5",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "glm-5.2",
+  "glm-5.1",
+  "glm-5",
+  "glm-5-turbo",
+  "claude-zhipu-5.2",
+  "kimi-k2.7-code",
+  "kimi-k2.6",
+  "minimax-m2.7",
+  "qwen3.7-max",
+  "qwen3.7-plus",
+  "qwen3.6-flash",
+  "claude-qw3.7-max",
+  "claude-qw3.6-plus",
+];
 
 const empty = {
   name: "",
@@ -35,15 +60,22 @@ const empty = {
   baseUrl: "",
   shareSkills: false,
   sharePlugins: false,
+  opusModel: "",
+  sonnetModel: "",
+  haikuModel: "",
 };
 
-export default function ConfigPanel({ onChanged }) {
+const isCertError = (s) => /cert|ssl|self.?signed|证书|signature/i.test(String(s));
+
+export default function ConfigPanel({ env, onChanged }) {
   const [profiles, setProfiles] = useState([]);
-  const [sel, setSel] = useState(null); // 选中的 name
+  const [sel, setSel] = useState(null);
   const [form, setForm] = useState(empty);
   const [token, setToken] = useState("");
   const [status, setStatus] = useState({ type: "info", msg: "" });
   const [busy, setBusy] = useState(false);
+  const [models, setModels] = useState([]);
+  const [certPath, setCertPath] = useState("");
 
   const load = () => {
     api
@@ -51,7 +83,6 @@ export default function ConfigPanel({ onChanged }) {
       .then((ps) => setProfiles(ps || []))
       .catch((e) => setStatus({ type: "error", msg: String(e) }));
   };
-
   useEffect(load, []);
 
   const pickProfile = (p) => {
@@ -62,6 +93,9 @@ export default function ConfigPanel({ onChanged }) {
       baseUrl: p.baseUrl || "",
       shareSkills: !!p.shareSkills,
       sharePlugins: !!p.sharePlugins,
+      opusModel: p.opusModel || "",
+      sonnetModel: p.sonnetModel || "",
+      haikuModel: p.haikuModel || "",
     });
     setToken("");
   };
@@ -70,7 +104,7 @@ export default function ConfigPanel({ onChanged }) {
     setSel(null);
     setForm(empty);
     setToken("");
-    setStatus({ type: "info", msg: "填写名称（即命令词，如 corp）后保存。" });
+    setStatus({ type: "info", msg: "填写名称（即命令词，如 bj）后保存。" });
   };
 
   const valid = () => {
@@ -95,6 +129,9 @@ export default function ConfigPanel({ onChanged }) {
         baseUrl: form.type === "router" ? form.baseUrl.trim() : "",
         shareSkills: form.shareSkills,
         sharePlugins: form.sharePlugins,
+        opusModel: form.opusModel.trim(),
+        sonnetModel: form.sonnetModel.trim(),
+        haikuModel: form.haikuModel.trim(),
       };
       const msg = await api.saveProfile(profile, token || null);
       let extra = "";
@@ -119,7 +156,13 @@ export default function ConfigPanel({ onChanged }) {
         msg: `已保存「${profile.name}」。${msg}${extra} 之后在新终端里运行：claude ${profile.name}`,
       });
     } catch (e) {
-      setStatus({ type: "error", msg: String(e) });
+      const m = String(e);
+      setStatus({
+        type: "error",
+        msg: isCertError(m)
+          ? "保存出错，疑似证书问题。可在下方导入 CA 证书后重试。原始错误：" + m
+          : m,
+      });
     } finally {
       setBusy(false);
     }
@@ -144,15 +187,45 @@ export default function ConfigPanel({ onChanged }) {
     }
   };
 
-  const onLink = async () => {
-    const n = form.name.trim();
-    if (!n) {
-      setStatus({ type: "error", msg: "请先选中或填写一个实例。" });
+  const onDetect = async () => {
+    if (!form.baseUrl.trim()) {
+      setStatus({ type: "error", msg: "请先填写网关地址。" });
+      return;
+    }
+    if (!token.trim()) {
+      setStatus({ type: "error", msg: "请先填写 API Key（检测需要鉴权）。" });
       return;
     }
     setBusy(true);
     try {
-      const msg = await api.syncLinks(n, form.shareSkills, form.sharePlugins);
+      const list = await api.detectModels(form.baseUrl.trim(), token.trim());
+      setModels(list);
+      setStatus({
+        type: "success",
+        msg: `检测到 ${list.length} 个可用模型，已加入下方模型下拉候选：${list.join("、")}`,
+      });
+    } catch (e) {
+      const m = String(e);
+      setStatus({
+        type: "error",
+        msg: isCertError(m)
+          ? "检测失败，疑似证书未导入。请在下方「导入 CA 证书」处导入后重试。原始错误：" + m
+          : "检测失败：" + m,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onImportCert = async () => {
+    if (!certPath.trim()) {
+      setStatus({ type: "error", msg: "请填写证书文件（ca-cert.pem）的完整路径。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const msg = await api.importCert(certPath.trim());
+      onChanged && onChanged();
       setStatus({ type: "success", msg });
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
@@ -162,6 +235,9 @@ export default function ConfigPanel({ onChanged }) {
   };
 
   const isRouter = form.type === "router";
+  const modelData = Array.from(new Set([...models, ...PRESET_MODELS]));
+  const certPlaceholder =
+    env?.platform === "windows" ? "C:\\ca-cert.pem" : "/Users/you/ca-cert.pem";
 
   return (
     <Grid gutter="md">
@@ -178,11 +254,11 @@ export default function ConfigPanel({ onChanged }) {
               新建
             </Button>
           </Group>
-          <ScrollArea.Autosize mah={360}>
+          <ScrollArea.Autosize mah={420}>
             <Stack gap={4}>
               {profiles.length === 0 && (
                 <Text size="sm" c="dimmed" p="xs">
-                  还没有实例。点「新建」创建第一个（比如 corp）。
+                  还没有实例。点「新建」创建第一个（比如 bj）。
                 </Text>
               )}
               {profiles.map((p) => (
@@ -218,12 +294,10 @@ export default function ConfigPanel({ onChanged }) {
 
             <TextInput
               label="实例名称 = 你要输入的命令词"
-              description="例如填 corp，之后在终端用 claude corp。建议英文/数字、无空格。"
-              placeholder="corp"
+              description="例如填 bj，之后在终端用 claude bj。建议英文/数字、无空格。改其它参数不会新建，只有改名字才算新实例。"
+              placeholder="bj"
               value={form.name}
-              onChange={(e) =>
-                setForm({ ...form, name: e.currentTarget.value })
-              }
+              onChange={(e) => setForm({ ...form, name: e.currentTarget.value })}
             />
 
             <Select
@@ -242,27 +316,88 @@ export default function ConfigPanel({ onChanged }) {
                 <TextInput
                   label="ANTHROPIC_BASE_URL（公司网关地址）"
                   description="按公司网关说明填写，通常要带 /anthropic 后缀。"
-                  placeholder="https://10.0.7.83:8080/anthropic"
+                  placeholder="https://10.0.147.128:8080/anthropic"
                   value={form.baseUrl}
                   onChange={(e) =>
                     setForm({ ...form, baseUrl: e.currentTarget.value })
                   }
                 />
                 <PasswordInput
-                  label="API Key（Token）"
+                  label="API Key"
                   description="公司网关发给你的 Key（如 gw-sk-...）。留空表示不修改。会加密存储（mac 钥匙串 / Windows DPAPI）。"
                   placeholder="gw-sk-••••••••"
                   value={token}
                   onChange={(e) => setToken(e.currentTarget.value)}
                 />
+
+                <Divider
+                  my={4}
+                  label="模型映射（把 Claude 的模型档位指到网关可用的模型）"
+                  labelPosition="left"
+                />
+                <Group justify="space-between" align="flex-end">
+                  <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+                    填好网关地址和 API Key 后，可点「检测可用模型」自动拉取，再从下拉里选。
+                  </Text>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconRefresh size={14} />}
+                    onClick={onDetect}
+                    loading={busy}
+                  >
+                    检测可用模型
+                  </Button>
+                </Group>
+                <Autocomplete
+                  label="Opus 档（复杂任务，最强）"
+                  placeholder="如 glm-5.2 / claude-opus-4-7"
+                  data={modelData}
+                  value={form.opusModel}
+                  onChange={(v) => setForm({ ...form, opusModel: v })}
+                />
+                <Autocomplete
+                  label="Sonnet 档（日常默认）"
+                  placeholder="如 glm-5.1 / claude-sonnet-4-6"
+                  data={modelData}
+                  value={form.sonnetModel}
+                  onChange={(v) => setForm({ ...form, sonnetModel: v })}
+                />
+                <Autocomplete
+                  label="Haiku 档（轻量、快速、后台子任务）"
+                  placeholder="如 glm-5-turbo / claude-haiku-4-5"
+                  data={modelData}
+                  value={form.haikuModel}
+                  onChange={(v) => setForm({ ...form, haikuModel: v })}
+                />
+
+                <Divider my={4} label="CA 证书（整机一次，所有实例共享）" labelPosition="left" />
                 <Alert
                   variant="light"
-                  color="yellow"
-                  icon={<IconInfoCircle size={16} />}
-                  title="首次使用需先导入公司 CA 证书"
+                  color={env?.cert_imported ? "teal" : "yellow"}
+                  icon={<IconCertificate size={16} />}
+                  title={
+                    env?.cert_imported
+                      ? "已导入 CA 证书"
+                      : "公司网关需先导入 CA 证书（否则连不上）"
+                  }
                 >
-                  公司网关用自签名 HTTPS 证书，未导入根证书会连不上（报证书错误）。
-                  请按「使用指南」里的命令导入一次（每台机器仅首次）。
+                  <Text size="sm" mb={6}>
+                    公司网关用自签名证书。把管理员给的 <Code>ca-cert.pem</Code>{" "}
+                    填上完整路径后点「导入」，整机生效一次、所有实例共用，无需每个实例都弄。
+                  </Text>
+                  <Group align="flex-end" gap="xs">
+                    <TextInput
+                      style={{ flex: 1 }}
+                      size="xs"
+                      placeholder={certPlaceholder}
+                      value={certPath}
+                      onChange={(e) => setCertPath(e.currentTarget.value)}
+                    />
+                    <Button size="xs" onClick={onImportCert} loading={busy}>
+                      导入
+                    </Button>
+                  </Group>
                 </Alert>
               </>
             )}
@@ -271,7 +406,7 @@ export default function ConfigPanel({ onChanged }) {
               共享（可选）
             </Text>
             <Text size="xs" c="dimmed">
-              打开后，点「保存」时会自动把主账户的 skills / plugins 链接给这个实例，无需另外操作。
+              打开后，点「保存」时会自动把主账户的 skills / plugins 链接给这个实例。
             </Text>
             <Group gap="xl" mt={4}>
               <Switch
@@ -340,7 +475,6 @@ export default function ConfigPanel({ onChanged }) {
             <Text size="xs" c="dimmed">
               提示：保存后<b>重开一个终端窗口</b>（或 mac 跑{" "}
               <Code>source ~/.zshrc</Code>、Windows 跑 <Code>. $PROFILE</Code>）即可生效。
-              改了配置才需要重开一次，之后正常用。
             </Text>
           </Stack>
         </Card>

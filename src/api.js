@@ -9,4 +9,7 @@ export const api = {
   syncLinks: (name, skills, plugins) =>
     invoke("sync_links", { name, skills, plugins }),
   environment: () => invoke("environment"),
+  importCert: (path) => invoke("import_cert", { path }),
+  detectModels: (baseUrl, token) =>
+    invoke("detect_models", { baseUrl, token }),
 };
