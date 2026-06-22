@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Code 配置工具",
+  "productName": "Claude Route Manager",
   "version": "1.0.0",
-  "identifier": "com.ccswitch.app",
+  "identifier": "com.ccswitch.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
