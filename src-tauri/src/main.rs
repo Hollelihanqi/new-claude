@@ -214,13 +214,10 @@ fn store_token(name: &str, token: &str) -> Result<Option<String>, String> {
         }
         Ok(None)
     } else if cfg!(target_os = "windows") {
+        let escaped = token.replace('\'', "''");
+        let script = format!("ConvertTo-SecureString -String '{escaped}' -AsPlainText -Force | ConvertFrom-SecureString");
         let out = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "ConvertTo-SecureString -String $args[0] -AsPlainText -Force | ConvertFrom-SecureString",
-                token,
-            ])
+            .args(["-NoProfile", "-Command", &script])
             .output()
             .map_err(|e| e.to_string())?;
         let enc = String::from_utf8_lossy(&out.stdout).trim().to_string();
