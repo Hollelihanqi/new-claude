@@ -73,7 +73,7 @@ export default function ConfigPanel({ env, onChanged }) {
   const [form, setForm] = useState(empty);
   const [token, setToken] = useState("");
   const [status, setStatus] = useState({ type: "info", msg: "" });
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState("");
   const [models, setModels] = useState([]);
   const [certPath, setCertPath] = useState("");
 
@@ -121,7 +121,7 @@ export default function ConfigPanel({ env, onChanged }) {
       setStatus({ type: "error", msg: v });
       return;
     }
-    setBusy(true);
+    setBusyAction("save");
     try {
       const profile = {
         name: form.name.trim(),
@@ -164,7 +164,7 @@ export default function ConfigPanel({ env, onChanged }) {
           : m,
       });
     } finally {
-      setBusy(false);
+      setBusyAction("");
     }
   };
 
@@ -173,7 +173,7 @@ export default function ConfigPanel({ env, onChanged }) {
       setStatus({ type: "error", msg: "请先在左侧选中一个实例。" });
       return;
     }
-    setBusy(true);
+    setBusyAction("delete");
     try {
       await api.deleteProfile(sel);
       onNew();
@@ -183,7 +183,7 @@ export default function ConfigPanel({ env, onChanged }) {
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
     } finally {
-      setBusy(false);
+      setBusyAction("");
     }
   };
 
@@ -196,7 +196,7 @@ export default function ConfigPanel({ env, onChanged }) {
       setStatus({ type: "error", msg: "请先填写 API Key（检测需要鉴权）。" });
       return;
     }
-    setBusy(true);
+    setBusyAction("detect");
     try {
       const list = await api.detectModels(form.baseUrl.trim(), token.trim());
       setModels(list);
@@ -213,7 +213,7 @@ export default function ConfigPanel({ env, onChanged }) {
           : "检测失败：" + m,
       });
     } finally {
-      setBusy(false);
+      setBusyAction("");
     }
   };
 
@@ -222,7 +222,7 @@ export default function ConfigPanel({ env, onChanged }) {
       setStatus({ type: "error", msg: "请填写证书文件（ca-cert.pem）的完整路径。" });
       return;
     }
-    setBusy(true);
+    setBusyAction("import");
     try {
       const msg = await api.importCert(certPath.trim());
       onChanged && onChanged();
@@ -230,10 +230,11 @@ export default function ConfigPanel({ env, onChanged }) {
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
     } finally {
-      setBusy(false);
+      setBusyAction("");
     }
   };
 
+  const selProfile = profiles.find((p) => p.name === sel);
   const isRouter = form.type === "router";
   const modelData = Array.from(new Set([...models, ...PRESET_MODELS]));
   const certPlaceholder =
@@ -294,10 +295,16 @@ export default function ConfigPanel({ env, onChanged }) {
 
             <TextInput
               label="实例名称 = 你要输入的命令词"
-              description="例如填 bj，之后在终端用 claude bj。建议英文/数字、无空格。改其它参数不会新建，只有改名字才算新实例。"
+              description={
+                sel
+                  ? "名称创建后不可修改（它是固定的命令词）。如需改名，请删除后重新新建。"
+                  : "例如填 bj，之后在终端用 claude bj。建议英文/数字、无空格。创建后名称不可修改。"
+              }
               placeholder="bj"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.currentTarget.value })}
+              readOnly={!!sel}
+              disabled={!!sel}
             />
 
             <Select
@@ -324,7 +331,11 @@ export default function ConfigPanel({ env, onChanged }) {
                 />
                 <PasswordInput
                   label="API Key"
-                  description="公司网关发给你的 Key（如 gw-sk-...）。留空表示不修改。会加密存储（mac 钥匙串 / Windows DPAPI）。"
+                  description={
+                    selProfile?.hasToken
+                      ? "已保存 Key（留空＝继续用原来的，要换才重新填）。"
+                      : "公司网关发给你的 Key（如 gw-sk-...）。会加密存储（mac 钥匙串 / Windows DPAPI）。"
+                  }
                   placeholder="gw-sk-••••••••"
                   value={token}
                   onChange={(e) => setToken(e.currentTarget.value)}
@@ -344,7 +355,7 @@ export default function ConfigPanel({ env, onChanged }) {
                     variant="light"
                     leftSection={<IconRefresh size={14} />}
                     onClick={onDetect}
-                    loading={busy}
+                    loading={busyAction === "detect"}
                   >
                     检测可用模型
                   </Button>
@@ -394,7 +405,7 @@ export default function ConfigPanel({ env, onChanged }) {
                       value={certPath}
                       onChange={(e) => setCertPath(e.currentTarget.value)}
                     />
-                    <Button size="xs" onClick={onImportCert} loading={busy}>
+                    <Button size="xs" onClick={onImportCert} loading={busyAction === "import"}>
                       导入
                     </Button>
                   </Group>
@@ -440,7 +451,7 @@ export default function ConfigPanel({ env, onChanged }) {
               <Button
                 leftSection={<IconDeviceFloppy size={16} />}
                 onClick={onSave}
-                loading={busy}
+                loading={busyAction === "save"}
               >
                 保存并接入终端
               </Button>
@@ -449,6 +460,7 @@ export default function ConfigPanel({ env, onChanged }) {
                 color="red"
                 leftSection={<IconTrash size={16} />}
                 onClick={onDelete}
+                loading={busyAction === "delete"}
                 disabled={!sel}
               >
                 删除

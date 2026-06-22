@@ -211,7 +211,7 @@ fn install_integration(list: &[Profile]) -> Result<String, String> {
     fs::create_dir_all(cfg_dir()).map_err(|e| e.to_string())?;
     if cfg!(target_os = "windows") {
         fs::write(ps_path(), generate_ps1(list)).map_err(|e| e.to_string())?;
-        let out = std::process::Command::new("powershell")
+        let out = ps_command()
             .args(["-NoProfile", "-Command", "$PROFILE"])
             .output()
             .map_err(|e| e.to_string())?;
@@ -236,6 +236,18 @@ fn install_integration(list: &[Profile]) -> Result<String, String> {
 }
 
 // ---------------- token（平台原生） ----------------
+// 在 Windows 上创建 PowerShell 命令时隐藏控制台窗口（CREATE_NO_WINDOW）
+fn ps_command() -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new("powershell");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000);
+    }
+    c
+}
+
 fn store_token(name: &str, token: &str) -> Result<Option<String>, String> {
     if cfg!(target_os = "macos") {
         let svc = format!("{KEYCHAIN_PREFIX}:{name}");
@@ -259,7 +271,7 @@ fn store_token(name: &str, token: &str) -> Result<Option<String>, String> {
         let script = format!(
             "ConvertTo-SecureString -String '{escaped}' -AsPlainText -Force | ConvertFrom-SecureString"
         );
-        let out = std::process::Command::new("powershell")
+        let out = ps_command()
             .args(["-NoProfile", "-Command", &script])
             .output()
             .map_err(|e| e.to_string())?;
@@ -390,7 +402,7 @@ fn sync_links(name: String, skills: bool, plugins: bool) -> Result<String, Strin
             "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',{}",
             ps_q(&inner)
         );
-        std::process::Command::new("powershell")
+        ps_command()
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &elevate])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -480,6 +492,11 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
         "curl"
     };
     let mut cmd = std::process::Command::new(curl);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
     cmd.arg("-s");
     let cert = cert_path();
     if cert.exists() {
