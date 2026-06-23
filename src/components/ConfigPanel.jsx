@@ -360,6 +360,36 @@ export default function ConfigPanel({ env, onChanged }) {
                     检测可用模型
                   </Button>
                 </Group>
+
+                {models.length > 0 && (
+                  <Box>
+                    <Text size="xs" fw={500} mb={4}>
+                      检测到 {models.length} 个可用模型（点标签复制名称，再粘到下方档位）
+                    </Text>
+                    <Group gap={6}>
+                      {models.map((m) => (
+                        <Badge
+                          key={m}
+                          variant="outline"
+                          color="indigo"
+                          style={{ cursor: "pointer", textTransform: "none" }}
+                          onClick={() => {
+                            try {
+                              navigator.clipboard?.writeText(m);
+                              setStatus({
+                                type: "success",
+                                msg: `已复制模型名：${m}`,
+                              });
+                            } catch (_) {}
+                          }}
+                        >
+                          {m}
+                        </Badge>
+                      ))}
+                    </Group>
+                  </Box>
+                )}
+
                 <Autocomplete
                   label="Opus 档（复杂任务，最强）"
                   placeholder="如 glm-5.2 / claude-opus-4-7"

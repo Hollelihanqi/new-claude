@@ -1,29 +1,117 @@
 import { useEffect, useState } from "react";
-import {
-  AppShell,
-  Group,
-  Title,
-  Tabs,
-  Badge,
-  Text,
-  Container,
-  Alert,
-} from "@mantine/core";
+import { Box, Group, Text, Badge, Alert, Container } from "@mantine/core";
 import {
   IconSettings,
+  IconChartLine,
   IconBook2,
+  IconRoute,
   IconBrandApple,
   IconBrandWindows,
-  IconAlertTriangle,
   IconCircleCheck,
+  IconAlertTriangle,
+  IconCertificate,
 } from "@tabler/icons-react";
 import { api } from "./api.js";
 import ConfigPanel from "./components/ConfigPanel.jsx";
+import UsagePanel from "./components/UsagePanel.jsx";
 import GuidePanel from "./components/GuidePanel.jsx";
+
+const NAV = [
+  { id: "config", label: "实例配置", icon: IconSettings },
+  { id: "usage", label: "用量统计", icon: IconChartLine },
+  { id: "guide", label: "使用指南", icon: IconBook2 },
+];
+
+function NavPill({ value, onChange }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        gap: 4,
+        padding: 5,
+        background: "rgba(99,102,241,0.07)",
+        borderRadius: 999,
+      }}
+    >
+      {NAV.map((it) => {
+        const Icon = it.icon;
+        const active = value === it.id;
+        return (
+          <button
+            key={it.id}
+            onClick={() => onChange(it.id)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "9px 18px",
+              border: "none",
+              cursor: "pointer",
+              borderRadius: 999,
+              fontSize: 14,
+              fontWeight: 600,
+              fontFamily: "inherit",
+              transition: "all .22s cubic-bezier(.4,0,.2,1)",
+              background: active
+                ? "linear-gradient(135deg,#6366f1,#818cf8)"
+                : "transparent",
+              color: active ? "#fff" : "#5b6178",
+              boxShadow: active ? "0 6px 16px rgba(99,102,241,0.35)" : "none",
+            }}
+          >
+            <Icon size={16} />
+            {it.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function StatusPills({ env }) {
+  if (!env) return null;
+  const PlatformIcon =
+    env.platform === "macos" ? IconBrandApple : IconBrandWindows;
+  const platformLabel =
+    env.platform === "macos" ? "macOS" : env.platform === "windows" ? "Windows" : "未知";
+  const pill = {
+    radius: 999,
+    variant: "light",
+    size: "lg",
+  };
+  return (
+    <Group gap={8}>
+      <Badge {...pill} color="gray" leftSection={<PlatformIcon size={13} />}>
+        {platformLabel}
+      </Badge>
+      <Badge
+        {...pill}
+        color={env.claude_found ? "teal" : "orange"}
+        leftSection={
+          env.claude_found ? (
+            <IconCircleCheck size={13} />
+          ) : (
+            <IconAlertTriangle size={13} />
+          )
+        }
+      >
+        {env.claude_found ? "claude 就绪" : "未装 claude"}
+      </Badge>
+      <Badge
+        {...pill}
+        color={env.cert_imported ? "teal" : "gray"}
+        leftSection={<IconCertificate size={13} />}
+      >
+        {env.cert_imported ? "证书已导入" : "未导入证书"}
+      </Badge>
+    </Group>
+  );
+}
 
 export default function App() {
   const [env, setEnv] = useState(null);
   const [err, setErr] = useState("");
+  const [view, setView] = useState("config");
 
   const refreshEnv = () => {
     api
@@ -31,109 +119,91 @@ export default function App() {
       .then(setEnv)
       .catch((e) => setErr(String(e)));
   };
-
   useEffect(refreshEnv, []);
 
-  const platformLabel =
-    env?.platform === "macos"
-      ? "macOS"
-      : env?.platform === "windows"
-      ? "Windows"
-      : env?.platform || "未知";
-
-  const PlatformIcon =
-    env?.platform === "macos" ? IconBrandApple : IconBrandWindows;
-
   return (
-    <AppShell header={{ height: 64 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <Title order={3}>Claude Code 配置工具</Title>
-            <Text c="dimmed" size="sm">
-              账户 / 公司路由，一处管好
-            </Text>
-          </Group>
-          <Group gap="xs">
-            {env && (
-              <Badge
-                variant="light"
-                leftSection={<PlatformIcon size={14} />}
-                color="gray"
+    <Box className="glass-bg" style={{ minHeight: "100vh" }}>
+      {/* 顶部栏 */}
+      <Box
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 10,
+          background: "rgba(255,255,255,0.55)",
+          backdropFilter: "blur(18px) saturate(140%)",
+          borderBottom: "1px solid rgba(99,102,241,0.10)",
+        }}
+      >
+        <Container size="lg" py="sm">
+          <Group justify="space-between" wrap="nowrap">
+            <Group gap="sm" wrap="nowrap">
+              <Box
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 13,
+                  background: "linear-gradient(135deg,#6366f1,#818cf8)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  boxShadow: "0 6px 16px rgba(99,102,241,0.35)",
+                  flexShrink: 0,
+                }}
               >
-                {platformLabel}
-              </Badge>
-            )}
-            {env &&
-              (env.claude_found ? (
-                <Badge
-                  variant="light"
-                  color="teal"
-                  leftSection={<IconCircleCheck size={14} />}
-                >
-                  已检测到 claude
-                </Badge>
-              ) : (
-                <Badge
-                  variant="light"
-                  color="orange"
-                  leftSection={<IconAlertTriangle size={14} />}
-                >
-                  未检测到 claude
-                </Badge>
-              ))}
+                <IconRoute size={22} color="#fff" />
+              </Box>
+              <div>
+                <Text fw={700} size="md" lh={1.1}>
+                  Claude 路由管理
+                </Text>
+                <Text size="xs" c="dimmed">
+                  多账户 / 公司网关，一处配好
+                </Text>
+              </div>
+            </Group>
+            <StatusPills env={env} />
           </Group>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
-        <Container size="lg" px={0}>
-          {err && (
-            <Alert
-              color="red"
-              icon={<IconAlertTriangle size={16} />}
-              mb="md"
-              title="后端通信失败"
-            >
-              {err}
-              <Text size="xs" mt={4} c="dimmed">
-                如果你在浏览器里直接打开（而非桌面应用），这是正常的——
-                系统操作只在打包后的桌面应用里可用。
-              </Text>
-            </Alert>
-          )}
-
-          {env && !env.claude_found && (
-            <Alert
-              color="orange"
-              icon={<IconAlertTriangle size={16} />}
-              mb="md"
-              title="还没装 Claude Code"
-            >
-              这个工具是用来配置 Claude Code 的。请先安装它、确认终端里能运行{" "}
-              <code>claude</code>，再来这里配置。
-            </Alert>
-          )}
-
-          <Tabs defaultValue="config" variant="outline">
-            <Tabs.List>
-              <Tabs.Tab value="config" leftSection={<IconSettings size={16} />}>
-                实例配置
-              </Tabs.Tab>
-              <Tabs.Tab value="guide" leftSection={<IconBook2 size={16} />}>
-                使用指南
-              </Tabs.Tab>
-            </Tabs.List>
-
-            <Tabs.Panel value="config" pt="md">
-              <ConfigPanel env={env} onChanged={refreshEnv} />
-            </Tabs.Panel>
-            <Tabs.Panel value="guide" pt="md">
-              <GuidePanel env={env} />
-            </Tabs.Panel>
-          </Tabs>
         </Container>
-      </AppShell.Main>
-    </AppShell>
+      </Box>
+
+      {/* 导航胶囊 */}
+      <Container size="lg" pt="lg" pb="xs" className="glass-content">
+        <NavPill value={view} onChange={setView} />
+      </Container>
+
+      {/* 内容 */}
+      <Container size="lg" pb="xl" className="glass-content">
+        {err && (
+          <Alert
+            color="red"
+            icon={<IconAlertTriangle size={16} />}
+            mb="md"
+            radius="lg"
+            title="后端通信失败"
+          >
+            {err}
+            <Text size="xs" mt={4} c="dimmed">
+              若在浏览器里直接打开（非桌面应用），属正常——系统操作仅在打包后的应用里可用。
+            </Text>
+          </Alert>
+        )}
+
+        {env && !env.claude_found && view === "config" && (
+          <Alert
+            color="orange"
+            icon={<IconAlertTriangle size={16} />}
+            mb="md"
+            radius="lg"
+            title="还没装 Claude Code"
+          >
+            这个工具用来配置 Claude Code。请先安装它、确认终端能运行 <code>claude</code>，再来配置。
+          </Alert>
+        )}
+
+        {view === "config" && <ConfigPanel env={env} onChanged={refreshEnv} />}
+        {view === "usage" && <UsagePanel />}
+        {view === "guide" && <GuidePanel env={env} />}
+      </Container>
+    </Box>
   );
 }

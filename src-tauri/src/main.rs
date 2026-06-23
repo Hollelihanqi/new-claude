@@ -532,6 +532,135 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
     Ok(ids)
 }
 
+// ---------------- 用量统计 ----------------
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageRow {
+    date: String,
+    model: String,
+    profile: String,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_create: u64,
+    requests: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageStats {
+    daily: Vec<UsageRow>,
+    total_input: u64,
+    total_output: u64,
+    total_requests: u64,
+}
+
+fn collect_jsonl(dir: &PathBuf, out: &mut Vec<PathBuf>) {
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect_jsonl(&p, out);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                out.push(p);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn usage_stats() -> UsageStats {
+    use std::collections::HashMap;
+    let split = home().join(".claude-split");
+    let mut map: HashMap<(String, String, String), UsageRow> = HashMap::new();
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_requests = 0u64;
+
+    if let Ok(insts) = fs::read_dir(&split) {
+        for inst in insts.flatten() {
+            if !inst.path().is_dir() {
+                continue;
+            }
+            let profile = inst.file_name().to_string_lossy().to_string();
+            let projects = inst.path().join(".claude").join("projects");
+            let mut files = vec![];
+            collect_jsonl(&projects, &mut files);
+            for f in files {
+                let content = match fs::read_to_string(&f) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                for line in content.lines() {
+                    if !line.contains("\"usage\"") {
+                        continue;
+                    }
+                    let v: serde_json::Value = match serde_json::from_str(line) {
+                        Ok(x) => x,
+                        Err(_) => continue,
+                    };
+                    if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+                        continue;
+                    }
+                    let msg = match v.get("message") {
+                        Some(m) => m,
+                        None => continue,
+                    };
+                    let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                    if model.is_empty() || model == "<synthetic>" {
+                        continue;
+                    }
+                    let usage = match msg.get("usage") {
+                        Some(u) => u,
+                        None => continue,
+                    };
+                    let gi = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                    let input = gi("input_tokens");
+                    let output = gi("output_tokens");
+                    let cache_read = gi("cache_read_input_tokens");
+                    let cache_create = gi("cache_creation_input_tokens");
+                    if input + output + cache_read + cache_create == 0 {
+                        continue;
+                    }
+                    let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    if ts.len() < 10 {
+                        continue;
+                    }
+                    let date = ts[..10].to_string();
+                    let key = (date.clone(), model.to_string(), profile.clone());
+                    let row = map.entry(key).or_insert(UsageRow {
+                        date,
+                        model: model.to_string(),
+                        profile: profile.clone(),
+                        input: 0,
+                        output: 0,
+                        cache_read: 0,
+                        cache_create: 0,
+                        requests: 0,
+                    });
+                    row.input += input;
+                    row.output += output;
+                    row.cache_read += cache_read;
+                    row.cache_create += cache_create;
+                    row.requests += 1;
+                    total_input += input;
+                    total_output += output;
+                    total_requests += 1;
+                }
+            }
+        }
+    }
+
+    let mut daily: Vec<UsageRow> = map.into_values().collect();
+    daily.sort_by(|a, b| a.date.cmp(&b.date));
+    UsageStats {
+        daily,
+        total_input,
+        total_output,
+        total_requests,
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -541,7 +670,8 @@ fn main() {
             sync_links,
             environment,
             import_cert,
-            detect_models
+            detect_models,
+            usage_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
