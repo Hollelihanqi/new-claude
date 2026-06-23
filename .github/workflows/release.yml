@@ -37,10 +37,19 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
+      - name: 用 tag 同步版本号
+        shell: bash
+        run: |
+          node -e "const f='src-tauri/tauri.conf.json';const c=require('./'+f);c.version=process.env.TAG.replace(/^v/,'');require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
+        env:
+          TAG: ${{ github.ref_name }}
+
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Claude Code 配置工具 ${{ github.ref_name }}"
