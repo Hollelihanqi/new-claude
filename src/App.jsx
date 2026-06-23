@@ -29,7 +29,7 @@ function NavPill({ value, onChange }) {
         display: "inline-flex",
         gap: 4,
         padding: 5,
-        background: "rgba(99,102,241,0.07)",
+        background: "rgba(255,102,0,0.07)",
         borderRadius: 999,
       }}
     >
@@ -53,10 +53,10 @@ function NavPill({ value, onChange }) {
               fontFamily: "inherit",
               transition: "all .22s cubic-bezier(.4,0,.2,1)",
               background: active
-                ? "linear-gradient(135deg,#6366f1,#818cf8)"
+                ? "linear-gradient(135deg,#ff6600,#ff8a3d)"
                 : "transparent",
-              color: active ? "#fff" : "#5b6178",
-              boxShadow: active ? "0 6px 16px rgba(99,102,241,0.35)" : "none",
+              color: active ? "#fff" : "#8a7d72",
+              boxShadow: active ? "0 6px 16px rgba(255,102,0,0.32)" : "none",
             }}
           >
             <Icon size={16} />
@@ -131,10 +131,10 @@ export default function App() {
           zIndex: 10,
           background: "rgba(255,255,255,0.55)",
           backdropFilter: "blur(18px) saturate(140%)",
-          borderBottom: "1px solid rgba(99,102,241,0.10)",
+          borderBottom: "1px solid rgba(255,102,0,0.12)",
         }}
       >
-        <Container size="lg" py="sm">
+        <Container fluid px="xl" py="sm">
           <Group justify="space-between" wrap="nowrap">
             <Group gap="sm" wrap="nowrap">
               <Box
@@ -142,11 +142,11 @@ export default function App() {
                   width: 40,
                   height: 40,
                   borderRadius: 13,
-                  background: "linear-gradient(135deg,#6366f1,#818cf8)",
+                  background: "linear-gradient(135deg,#ff6600,#ff8a3d)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "0 6px 16px rgba(99,102,241,0.35)",
+                  boxShadow: "0 6px 16px rgba(255,102,0,0.32)",
                   flexShrink: 0,
                 }}
               >
@@ -167,12 +167,12 @@ export default function App() {
       </Box>
 
       {/* 导航胶囊 */}
-      <Container size="lg" pt="lg" pb="xs" className="glass-content">
+      <Container fluid px="xl" pt="lg" pb="xs" className="glass-content">
         <NavPill value={view} onChange={setView} />
       </Container>
 
       {/* 内容 */}
-      <Container size="lg" pb="xl" className="glass-content">
+      <Container fluid px="xl" pb="xl" className="glass-content">
         {err && (
           <Alert
             color="red"

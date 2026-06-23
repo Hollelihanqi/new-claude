@@ -133,8 +133,11 @@ fn generate_ps1(list: &[Profile]) -> String {
     o += "if (Test-Path \"$env:USERPROFILE\\.cc-manager\\ca-cert.pem\") { $env:NODE_EXTRA_CA_CERTS = \"$env:USERPROFILE\\.cc-manager\\ca-cert.pem\" }\n";
     o += "function claude {\n";
     o += "  param([Parameter(ValueFromRemainingArguments=$true)][string[]]$A)\n";
-    o += "  $exe = (Get-Command claude.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source\n";
-    o += "  if (-not $exe) { $exe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }\n";
+    o += "  $exe = $null\n";
+    o += "  foreach ($cand in @('claude.cmd','claude.exe','claude.bat')) {\n";
+    o += "    $c = Get-Command $cand -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1\n";
+    o += "    if ($c) { $exe = $c.Source; break }\n";
+    o += "  }\n";
     o += "  if (-not $exe) { Write-Host 'claude not found in PATH'; return }\n";
     o += "  $sub = if ($A.Count -ge 1) { $A[0] } else { '' }\n";
     o += "  $rest = if ($A.Count -gt 1) { $A[1..($A.Count-1)] } else { @() }\n";
@@ -392,21 +395,21 @@ fn sync_links(name: String, skills: bool, plugins: bool) -> Result<String, Strin
             "New-Item -ItemType Directory -Force -Path '{dest}' | Out-Null"
         )];
         for sub in &subs {
+            // 目录联结 Junction：普通权限即可，无需管理员、不弹 UAC
             lines.push(format!(
-                "if (Test-Path '{src}\\{sub}') {{ New-Item -ItemType SymbolicLink -Force -Path '{dest}\\{sub}' -Target '{src}\\{sub}' | Out-Null }}"
+                "if (Test-Path '{src}\\{sub}') {{ if (Test-Path '{dest}\\{sub}') {{ cmd /c rmdir '{dest}\\{sub}' 2>$null }}; New-Item -ItemType Junction -Path '{dest}\\{sub}' -Target '{src}\\{sub}' | Out-Null }}"
             ));
         }
-        lines.push("Write-Host '链接已创建。' -ForegroundColor Green; Start-Sleep 2".to_string());
         let inner = lines.join("; ");
-        let elevate = format!(
-            "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',{}",
-            ps_q(&inner)
-        );
-        ps_command()
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &elevate])
-            .spawn()
+        let out = ps_command()
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &inner])
+            .output()
             .map_err(|e| e.to_string())?;
-        Ok("已请求管理员权限创建符号链接（请在 UAC 中确认）。".into())
+        if out.status.success() {
+            Ok("已共享 skills/plugins（目录联结，无需管理员）。".into())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
     } else {
         fs::create_dir_all(&dest_claude).map_err(|e| e.to_string())?;
         let mut out: Vec<String> = vec![];
