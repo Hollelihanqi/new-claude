@@ -74,7 +74,6 @@ export default function ConfigPanel({ env, onChanged }) {
   const [token, setToken] = useState("");
   const [status, setStatus] = useState({ type: "info", msg: "" });
   const [busyAction, setBusyAction] = useState("");
-  const [models, setModels] = useState([]);
   const [certPath, setCertPath] = useState("");
 
   const load = () => {
@@ -187,36 +186,6 @@ export default function ConfigPanel({ env, onChanged }) {
     }
   };
 
-  const onDetect = async () => {
-    if (!form.baseUrl.trim()) {
-      setStatus({ type: "error", msg: "请先填写网关地址。" });
-      return;
-    }
-    if (!token.trim()) {
-      setStatus({ type: "error", msg: "请先填写 API Key（检测需要鉴权）。" });
-      return;
-    }
-    setBusyAction("detect");
-    try {
-      const list = await api.detectModels(form.baseUrl.trim(), token.trim());
-      setModels(list);
-      setStatus({
-        type: "success",
-        msg: `检测到 ${list.length} 个可用模型，已加入下方模型下拉候选：${list.join("、")}`,
-      });
-    } catch (e) {
-      const m = String(e);
-      setStatus({
-        type: "error",
-        msg: isCertError(m)
-          ? "检测失败，疑似证书未导入。请在下方「导入 CA 证书」处导入后重试。原始错误：" + m
-          : "检测失败：" + m,
-      });
-    } finally {
-      setBusyAction("");
-    }
-  };
-
   const onImportCert = async () => {
     if (!certPath.trim()) {
       setStatus({ type: "error", msg: "请填写证书文件（ca-cert.pem）的完整路径。" });
@@ -236,7 +205,6 @@ export default function ConfigPanel({ env, onChanged }) {
 
   const selProfile = profiles.find((p) => p.name === sel);
   const isRouter = form.type === "router";
-  const modelData = Array.from(new Set([...models, ...PRESET_MODELS]));
   const certPlaceholder =
     env?.platform === "windows" ? "C:\\ca-cert.pem" : "/Users/you/ca-cert.pem";
 
@@ -346,68 +314,28 @@ export default function ConfigPanel({ env, onChanged }) {
                   label="模型映射（把 Claude 的模型档位指到网关可用的模型）"
                   labelPosition="left"
                 />
-                <Group justify="space-between" align="flex-end">
-                  <Text size="xs" c="dimmed" style={{ flex: 1 }}>
-                    填好网关地址和 API Key 后，可点「检测可用模型」自动拉取，再从下拉里选。
-                  </Text>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    leftSection={<IconRefresh size={14} />}
-                    onClick={onDetect}
-                    loading={busyAction === "detect"}
-                  >
-                    检测可用模型
-                  </Button>
-                </Group>
-
-                {models.length > 0 && (
-                  <Box>
-                    <Text size="xs" fw={500} mb={4}>
-                      检测到 {models.length} 个可用模型（点标签复制名称，再粘到下方档位）
-                    </Text>
-                    <Group gap={6}>
-                      {models.map((m) => (
-                        <Badge
-                          key={m}
-                          variant="outline"
-                          color="indigo"
-                          style={{ cursor: "pointer", textTransform: "none" }}
-                          onClick={() => {
-                            try {
-                              navigator.clipboard?.writeText(m);
-                              setStatus({
-                                type: "success",
-                                msg: `已复制模型名：${m}`,
-                              });
-                            } catch (_) {}
-                          }}
-                        >
-                          {m}
-                        </Badge>
-                      ))}
-                    </Group>
-                  </Box>
-                )}
+                <Text size="xs" c="dimmed">
+                  从下拉里选网关支持的模型；可用模型可在右上角「模型检测」查看。
+                </Text>
 
                 <Autocomplete
                   label="Opus 档（复杂任务，最强）"
                   placeholder="如 glm-5.2 / claude-opus-4-7"
-                  data={modelData}
+                  data={PRESET_MODELS}
                   value={form.opusModel}
                   onChange={(v) => setForm({ ...form, opusModel: v })}
                 />
                 <Autocomplete
                   label="Sonnet 档（日常默认）"
                   placeholder="如 glm-5.1 / claude-sonnet-4-6"
-                  data={modelData}
+                  data={PRESET_MODELS}
                   value={form.sonnetModel}
                   onChange={(v) => setForm({ ...form, sonnetModel: v })}
                 />
                 <Autocomplete
                   label="Haiku 档（轻量、快速、后台子任务）"
                   placeholder="如 glm-5-turbo / claude-haiku-4-5"
-                  data={modelData}
+                  data={PRESET_MODELS}
                   value={form.haikuModel}
                   onChange={(v) => setForm({ ...form, haikuModel: v })}
                 />

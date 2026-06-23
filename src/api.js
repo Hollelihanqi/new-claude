@@ -12,5 +12,6 @@ export const api = {
   importCert: (path) => invoke("import_cert", { path }),
   detectModels: (baseUrl, token) =>
     invoke("detect_models", { baseUrl, token }),
+  detectModelsFor: (name) => invoke("detect_models_for", { name }),
   usageStats: () => invoke("usage_stats"),
 };

@@ -535,11 +535,63 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
     Ok(ids)
 }
 
+// ---------------- 解密已存 key / 按实例检测模型 ----------------
+fn decrypt_token(p: &Profile) -> Result<String, String> {
+    if cfg!(target_os = "macos") {
+        let svc = format!("{KEYCHAIN_PREFIX}:{}", p.name);
+        let out = std::process::Command::new("security")
+            .args(["find-generic-password", "-s", &svc, "-w"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err("未在钥匙串找到该实例的 Key".into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else if cfg!(target_os = "windows") {
+        let enc = match &p.token_enc {
+            Some(e) if !e.is_empty() => e.clone(),
+            _ => return Err("该实例没有保存 Key".into()),
+        };
+        let escaped = enc.replace('\'', "''");
+        let script = format!(
+            "$sec=ConvertTo-SecureString '{escaped}'; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec); [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)"
+        );
+        let out = ps_command()
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if tok.is_empty() {
+            return Err("解密 Key 失败".into());
+        }
+        Ok(tok)
+    } else {
+        Err("当前平台不支持".into())
+    }
+}
+
+#[tauri::command]
+fn detect_models_for(name: String) -> Result<Vec<String>, String> {
+    let list = load();
+    let p = list
+        .iter()
+        .find(|x| x.name == name)
+        .ok_or_else(|| "未找到该实例".to_string())?;
+    if p.type_ != "router" {
+        return Err("该实例不是自定义路由，没有可检测的网关".into());
+    }
+    if p.base_url.is_empty() {
+        return Err("该实例未配置网关地址".into());
+    }
+    let token = decrypt_token(p)?;
+    detect_models(p.base_url.clone(), token)
+}
+
 // ---------------- 用量统计 ----------------
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UsageRow {
-    date: String,
+    datetime: String,
     model: String,
     profile: String,
     input: u64,
@@ -626,13 +678,13 @@ fn usage_stats() -> UsageStats {
                         continue;
                     }
                     let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
-                    if ts.len() < 10 {
+                    if ts.len() < 13 {
                         continue;
                     }
-                    let date = ts[..10].to_string();
-                    let key = (date.clone(), model.to_string(), profile.clone());
+                    let datetime = ts[..13].to_string(); // 例如 2026-06-22T04
+                    let key = (datetime.clone(), model.to_string(), profile.clone());
                     let row = map.entry(key).or_insert(UsageRow {
-                        date,
+                        datetime,
                         model: model.to_string(),
                         profile: profile.clone(),
                         input: 0,
@@ -655,7 +707,7 @@ fn usage_stats() -> UsageStats {
     }
 
     let mut daily: Vec<UsageRow> = map.into_values().collect();
-    daily.sort_by(|a, b| a.date.cmp(&b.date));
+    daily.sort_by(|a, b| a.datetime.cmp(&b.datetime));
     UsageStats {
         daily,
         total_input,
@@ -674,6 +726,7 @@ fn main() {
             environment,
             import_cert,
             detect_models,
+            detect_models_for,
             usage_stats
         ])
         .run(tauri::generate_context!())
