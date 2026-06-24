@@ -120,6 +120,30 @@ function StatCard({ label, value, bg, fg, desc }) {
   );
 }
 
+function StatCardDual({ bg, fg, aLabel, aValue, bLabel, bValue, desc }) {
+  return (
+    <Card withBorder padding="md" radius="lg" style={{ background: bg }}>
+      <Text size="xs" style={{ color: fg, opacity: 0.85 }}>
+        {aLabel}
+      </Text>
+      <Text fw={800} size="lg" style={{ color: fg, lineHeight: 1.15 }}>
+        {aValue}
+      </Text>
+      <Text size="xs" mt={6} style={{ color: fg, opacity: 0.85 }}>
+        {bLabel}
+      </Text>
+      <Text fw={800} size="lg" style={{ color: fg, lineHeight: 1.15 }}>
+        {bValue}
+      </Text>
+      {desc && (
+        <Text mt={6} c="dimmed" lh={1.3} style={{ fontSize: 11 }}>
+          {desc}
+        </Text>
+      )}
+    </Card>
+  );
+}
+
 export default function UsagePanel() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
@@ -183,6 +207,20 @@ export default function UsagePanel() {
     }
     return { input, output, requests, cacheRead };
   }, [rows]);
+
+  // 对话次数：用户真实提问数（按时间范围 + 实例筛选；提问不区分模型，故不随模型筛选变化）
+  const convCount = useMemo(() => {
+    const list = data?.conversations || [];
+    let n = 0;
+    for (const c of list) {
+      if (profile !== "__all__" && c.profile !== profile) continue;
+      const { date } = toLocal(c.datetime);
+      if (bounds.start && date < bounds.start) continue;
+      if (bounds.end && date > bounds.end) continue;
+      n++;
+    }
+    return n;
+  }, [data, profile, bounds]);
 
   const series = useMemo(() => {
     const bucket = new Map();
@@ -327,9 +365,22 @@ export default function UsagePanel() {
       {hasData && (
         <>
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
-            {CARDS.map((c) => (
-              <StatCard key={c.key} label={c.label} value={fmt(totals[c.key])} bg={c.bg} fg={c.fg} desc={c.desc} />
-            ))}
+            {CARDS.map((c) =>
+              c.key === "requests" ? (
+                <StatCardDual
+                  key={c.key}
+                  bg={c.bg}
+                  fg={c.fg}
+                  aLabel="API 调用次数"
+                  aValue={fmt(totals.requests)}
+                  bLabel="对话次数"
+                  bValue={fmt(convCount)}
+                  desc="API 调用＝模型被实际调用次数（含工具往返，故偏大）；对话＝你真实发起的提问次数"
+                />
+              ) : (
+                <StatCard key={c.key} label={c.label} value={fmt(totals[c.key])} bg={c.bg} fg={c.fg} desc={c.desc} />
+              )
+            )}
           </SimpleGrid>
           <Text size="xs" c="dimmed">
             说明：以上为当前筛选（时间范围 / 模型 / 实例）下的合计；数值取自本机各实例会话记录中模型返回的 usage 用量，已排除失败或未连通的请求（这类请求 token 为 0，不计入）。

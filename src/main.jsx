@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import "@mantine/core/styles.css";
+import "@mantine/notifications/styles.css";
+import { Notifications } from "@mantine/notifications";
 import "./glass.css";
 import App from "./App.jsx";
 
@@ -37,6 +39,7 @@ function Root() {
 
   return (
     <MantineProvider theme={theme} defaultColorScheme="light">
+      <Notifications position="top-right" />
       <App scheme={scheme} setScheme={setScheme} />
     </MantineProvider>
   );

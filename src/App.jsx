@@ -29,6 +29,8 @@ import {
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { notifications } from "@mantine/notifications";
+import { Progress } from "@mantine/core";
 import { api } from "./api.js";
 import ConfigPanel from "./components/ConfigPanel.jsx";
 import UsagePanel from "./components/UsagePanel.jsx";
@@ -216,50 +218,70 @@ export default function App({ scheme, setScheme }) {
 
   const checkUpdate = async (manual) => {
     try {
-      setUpd({ state: "checking" });
+      if (manual) {
+        notifications.show({ id: "upd-check", loading: true, title: "检查更新", message: "正在检查…", autoClose: false, withCloseButton: false });
+      }
       const update = await check();
       if (update) {
-        setUpd({ state: "available", version: update.version, obj: update });
+        if (manual) notifications.hide("upd-check");
+        notifications.show({
+          id: "upd-available",
+          color: "blue",
+          title: `发现新版本 v${update.version}`,
+          message: "点击开始后台下载并自动重启更新。",
+          autoClose: false,
+          onClick: () => installUpdate(update),
+        });
+        setUpd({ obj: update });
       } else if (manual) {
-        setUpd({ state: "notice", level: "info", msg: "你当前已经是最新版本。" });
-      } else {
-        setUpd({ state: "idle" });
+        notifications.update({ id: "upd-check", loading: false, color: "teal", title: "已是最新", message: "你当前已经是最新版本。", autoClose: 2500, withCloseButton: true });
       }
     } catch (e) {
-      if (!manual) {
-        setUpd({ state: "idle" });
-        return;
-      }
+      if (!manual) return;
       const raw = String(e);
-      // 拿不到清单/网络问题/正在发版等，对使用者统一显示"已是最新"
       const soft = /fetch|json|platform|fallback|network|request|timeout|connect|releases|404/i.test(raw);
-      setUpd({
-        state: "notice",
-        level: soft ? "info" : "error",
-        msg: soft ? "你当前已经是最新版本。" : "检查更新时出错：" + raw,
+      notifications.update({
+        id: "upd-check",
+        loading: false,
+        color: soft ? "teal" : "red",
+        title: soft ? "已是最新" : "检查更新出错",
+        message: soft ? "你当前已经是最新版本。" : raw,
+        autoClose: soft ? 2500 : 6000,
+        withCloseButton: true,
       });
     }
   };
 
-  const installUpdate = async () => {
+  const renderProg = (pct) => (
+    <div>
+      <div style={{ marginBottom: 6 }}>正在下载更新 {pct}%</div>
+      <Progress value={pct} color="brand" size="lg" radius="xl" striped animated />
+    </div>
+  );
+
+  const installUpdate = async (update) => {
+    const obj = update || upd.obj;
+    if (!obj) return;
+    notifications.hide("upd-available");
+    const id = "upd-progress";
+    let total = 0;
+    let downloaded = 0;
+    notifications.show({ id, loading: true, title: "正在更新", message: renderProg(0), autoClose: false, withCloseButton: false });
     try {
-      setUpd((u) => ({ ...u, state: "installing", progress: 0 }));
-      let total = 0;
-      let downloaded = 0;
-      await upd.obj.downloadAndInstall((event) => {
+      await obj.downloadAndInstall((event) => {
         if (event.event === "Started") {
           total = event.data.contentLength || 0;
         } else if (event.event === "Progress") {
           downloaded += event.data.chunkLength || 0;
           const pct = total ? Math.round((downloaded / total) * 100) : 0;
-          setUpd((u) => ({ ...u, state: "installing", progress: pct }));
+          notifications.update({ id, loading: true, title: "正在更新", message: renderProg(pct), autoClose: false, withCloseButton: false });
         } else if (event.event === "Finished") {
-          setUpd((u) => ({ ...u, state: "installing", progress: 100 }));
+          notifications.update({ id, loading: true, title: "正在更新", message: renderProg(100), autoClose: false, withCloseButton: false });
         }
       });
       await relaunch();
     } catch (e) {
-      setUpd({ state: "notice", level: "error", msg: "下载或安装更新失败：" + String(e) + "。可稍后重试，或手动下载安装包。" });
+      notifications.update({ id, loading: false, color: "red", title: "更新失败", message: "下载或安装失败：" + String(e), autoClose: 6000, withCloseButton: true });
     }
   };
 
@@ -280,9 +302,6 @@ export default function App({ scheme, setScheme }) {
       {/* 顶栏 */}
       <Box
         style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 10,
           background: "var(--mantine-primary-color-filled)",
         }}
       >
@@ -319,9 +338,8 @@ export default function App({ scheme, setScheme }) {
                 variant="white"
                 leftSection={<IconDownload size={14} />}
                 onClick={() => checkUpdate(true)}
-                loading={upd.state === "checking"}
               >
-                {upd.state === "checking" ? "检查中…" : "检查更新"}
+                检查更新
               </Button>
               <ModelDetect profiles={profiles} />
               <Group gap={8}>
@@ -357,24 +375,16 @@ export default function App({ scheme, setScheme }) {
             </Group>
           </Group>
         </Container>
-        {upd.state === "installing" && (
-          <div style={{ height: 3, background: "rgba(0,0,0,0.06)" }}>
-            <div
-              style={{
-                height: "100%",
-                width: `${upd.progress || 0}%`,
-                background: "var(--mantine-primary-color-filled)",
-                transition: "width .2s ease",
-              }}
-            />
-          </div>
-        )}
       </Box>
 
-      {/* 导航 */}
-      <Container fluid px={48} pt="xl" pb="md" className="glass-content">
-        <NavPill value={view} onChange={setView} />
-      </Container>
+      {/* 导航（吸顶 + 居中） */}
+      <Box style={{ position: "sticky", top: 0, zIndex: 9, background: accentBg }}>
+        <Container fluid px={48} pt="md" pb="md" className="glass-content">
+          <Group justify="center">
+            <NavPill value={view} onChange={setView} />
+          </Group>
+        </Container>
+      </Box>
 
       {/* 内容 */}
       <Container fluid px={48} pt="lg" pb={56} className="glass-content">
@@ -383,31 +393,6 @@ export default function App({ scheme, setScheme }) {
             {err}
           </Alert>
         )}
-        {upd.state === "available" && (
-          <Alert color="brand" icon={<IconDownload size={16} />} mb="md" title={`发现新版本 ${upd.version}`}>
-            <Group justify="space-between" align="center">
-              <Text size="sm">有可用更新，点击右侧按钮即可后台下载并自动重启。</Text>
-              <Button size="xs" onClick={installUpdate}>立即更新</Button>
-            </Group>
-          </Alert>
-        )}
-        {upd.state === "installing" && (
-          <Alert color="brand" mb="md" title="正在更新">
-            正在下载并安装更新（{upd.progress || 0}%），完成后会自动重启，请稍候…
-          </Alert>
-        )}
-        {upd.state === "notice" && (
-          <Alert
-            color={upd.level === "error" ? "red" : "blue"}
-            mb="md"
-            title={upd.level === "error" ? "更新出错" : "更新提示"}
-            withCloseButton
-            onClose={() => setUpd({ state: "idle" })}
-          >
-            {upd.msg}
-          </Alert>
-        )}
-
         {env && !env.claude_found && view === "config" && (
           <Alert color="orange" icon={<IconAlertTriangle size={16} />} mb="md" title="还没装 Claude Code">
             请先安装 Claude Code、确认终端能运行 <code>claude</code>，再来配置。

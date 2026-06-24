@@ -599,11 +599,20 @@ struct UsageRow {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ConvRow {
+    datetime: String,
+    profile: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UsageStats {
     daily: Vec<UsageRow>,
+    conversations: Vec<ConvRow>,
     total_input: u64,
     total_output: u64,
     total_requests: u64,
+    total_conversations: u64,
 }
 
 fn collect_jsonl(dir: &PathBuf, out: &mut Vec<PathBuf>) {
@@ -624,9 +633,11 @@ fn usage_stats() -> UsageStats {
     use std::collections::HashMap;
     let split = home().join(".claude-split");
     let mut map: HashMap<(String, String, String), UsageRow> = HashMap::new();
+    let mut conv: Vec<ConvRow> = Vec::new();
     let mut total_input = 0u64;
     let mut total_output = 0u64;
     let mut total_requests = 0u64;
+    let mut total_conversations = 0u64;
 
     if let Ok(insts) = fs::read_dir(&split) {
         for inst in insts.flatten() {
@@ -643,14 +654,42 @@ fn usage_stats() -> UsageStats {
                     Err(_) => continue,
                 };
                 for line in content.lines() {
-                    if !line.contains("\"usage\"") {
+                    let has_usage = line.contains("\"usage\"");
+                    // 用户真实提问：type=user 且不是工具返回（tool_result）
+                    let maybe_user = line.contains("\"user\"") && !line.contains("tool_result");
+                    if !has_usage && !maybe_user {
                         continue;
                     }
                     let v: serde_json::Value = match serde_json::from_str(line) {
                         Ok(x) => x,
                         Err(_) => continue,
                     };
-                    if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+                    let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                    // —— 对话次数：统计用户真实提问 ——
+                    if typ == "user" {
+                        let is_tool = v
+                            .get("message")
+                            .and_then(|m| m.get("content"))
+                            .map(|c| c.to_string().contains("tool_result"))
+                            .unwrap_or(false);
+                        if is_tool {
+                            continue;
+                        }
+                        let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                        if ts.len() < 13 {
+                            continue;
+                        }
+                        conv.push(ConvRow {
+                            datetime: ts[..13].to_string(),
+                            profile: profile.clone(),
+                        });
+                        total_conversations += 1;
+                        continue;
+                    }
+
+                    // —— API 调用次数 + token：统计 assistant 消息 ——
+                    if typ != "assistant" {
                         continue;
                     }
                     let msg = match v.get("message") {
@@ -706,9 +745,11 @@ fn usage_stats() -> UsageStats {
     daily.sort_by(|a, b| a.datetime.cmp(&b.datetime));
     UsageStats {
         daily,
+        conversations: conv,
         total_input,
         total_output,
         total_requests,
+        total_conversations,
     }
 }
 
