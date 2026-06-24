@@ -1,15 +1,18 @@
-/* 干净实色 + 双主题（A 橘橙/深灰绿，B 孔雀蓝/浅驼） */
+/* 干净实色 + 双主题 */
 body {
   margin: 0;
   color: #3a3632;
-  transition: background 0.3s ease;
 }
-/* 内容区背景用各主题的「辅助色」浅调，与主色 header 搭配 */
-body.theme-a {
-  background: #e9f1ee; /* 深灰绿 #185a56 的浅调 */
+
+/* 隐藏滚动条，但保留滚动能力 */
+* {
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* IE/Edge */
 }
-body.theme-b {
-  background: #f5ede3; /* 浅驼 #d7b9a1 的浅调 */
+*::-webkit-scrollbar {          /* Chromium / WebView2 / WKWebView */
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .glass-card {

@@ -257,12 +257,10 @@ export default function App({ scheme, setScheme }) {
     checkUpdate(false);
   }, []);
 
-  useEffect(() => {
-    document.body.className = "theme-" + scheme;
-  }, [scheme]);
+  const accentBg = scheme === "a" ? "#d7e7e3" : "#ecdfd0";
 
   return (
-    <Box style={{ minHeight: "100vh" }}>
+    <Box style={{ minHeight: "100vh", background: accentBg }}>
       {/* 顶栏 */}
       <Box
         style={{
@@ -272,7 +270,7 @@ export default function App({ scheme, setScheme }) {
           background: "var(--mantine-primary-color-filled)",
         }}
       >
-        <Container fluid px={36} py="lg">
+        <Container fluid px={48} py="lg">
           <Group justify="space-between" wrap="nowrap">
             <Group gap="sm" wrap="nowrap">
               <Box
@@ -357,12 +355,12 @@ export default function App({ scheme, setScheme }) {
       </Box>
 
       {/* 导航 */}
-      <Container fluid px={36} pt="xl" pb="xs" className="glass-content">
+      <Container fluid px={48} pt="xl" pb="md" className="glass-content">
         <NavPill value={view} onChange={setView} />
       </Container>
 
       {/* 内容 */}
-      <Container fluid px={36} pt="md" pb={48} className="glass-content">
+      <Container fluid px={48} pt="lg" pb={56} className="glass-content">
         {err && (
           <Alert color="red" icon={<IconAlertTriangle size={16} />} mb="md" title="后端通信失败">
             {err}

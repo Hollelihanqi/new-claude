@@ -62,12 +62,36 @@ const SERIES = [
   { key: "cacheRead", name: "缓存命中", color: "#06b6d4" },
 ];
 
-// 卡片配色（各不相同）
+// 卡片配色（各不相同）+ 计算口径说明
 const CARDS = [
-  { key: "input", label: "总输入 token", bg: "#eef4ff", fg: "#2563eb" },
-  { key: "output", label: "总输出 token", bg: "#eafaf2", fg: "#059669" },
-  { key: "requests", label: "请求次数", bg: "#fff4e8", fg: "#d97706" },
-  { key: "cacheRead", label: "缓存命中", bg: "#e9f8fb", fg: "#0891b2" },
+  {
+    key: "input",
+    label: "总输入 token",
+    bg: "#eef4ff",
+    fg: "#2563eb",
+    desc: "你发给模型的内容（含每轮带上的历史上下文）消耗的 token 累加",
+  },
+  {
+    key: "output",
+    label: "总输出 token",
+    bg: "#eafaf2",
+    fg: "#059669",
+    desc: "模型生成回复所消耗的 token 累加",
+  },
+  {
+    key: "requests",
+    label: "请求次数",
+    bg: "#fff4e8",
+    fg: "#d97706",
+    desc: "模型成功响应的次数（每次有效回复计 1 次）",
+  },
+  {
+    key: "cacheRead",
+    label: "缓存命中",
+    bg: "#e9f8fb",
+    fg: "#0891b2",
+    desc: "命中提示缓存、被复用的 token 累加（通常比重新输入更省）",
+  },
 ];
 
 const QUICK = [
@@ -78,7 +102,7 @@ const QUICK = [
   { value: "all", label: "全部" },
 ];
 
-function StatCard({ label, value, bg, fg }) {
+function StatCard({ label, value, bg, fg, desc }) {
   return (
     <Card withBorder padding="md" radius="lg" style={{ background: bg }}>
       <Text size="xs" style={{ color: fg, opacity: 0.85 }}>
@@ -87,6 +111,11 @@ function StatCard({ label, value, bg, fg }) {
       <Text fw={800} size="xl" style={{ color: fg }}>
         {value}
       </Text>
+      {desc && (
+        <Text mt={6} c="dimmed" lh={1.35} style={{ fontSize: 11 }}>
+          {desc}
+        </Text>
+      )}
     </Card>
   );
 }
@@ -240,9 +269,9 @@ export default function UsagePanel() {
       </Group>
 
       <Card withBorder padding="md" radius="lg">
-        <Group gap="sm" align="flex-end" wrap="wrap">
-          <div>
-            <Text size="sm" fw={500} mb={4}>时间范围</Text>
+        <Group gap="xl" align="center" wrap="wrap">
+          <Group gap="xs" align="center">
+            <Text size="sm" fw={500}>时间范围</Text>
             <Popover opened={pop} onChange={setPop} position="bottom-start" shadow="md" withinPortal>
               <Popover.Target>
                 <Button variant="default" leftSection={<IconCalendar size={16} />} onClick={() => setPop((o) => !o)}>
@@ -278,9 +307,9 @@ export default function UsagePanel() {
                 </Stack>
               </Popover.Dropdown>
             </Popover>
-          </div>
-          <Select label="模型" data={modelOpts} value={model} onChange={(v) => setModel(v || "__all__")} w={180} />
-          <Select label="实例" data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={160} />
+          </Group>
+          <Group gap="xs" align="center"><Text size="sm" fw={500}>模型</Text><Select data={modelOpts} value={model} onChange={(v) => setModel(v || "__all__")} w={170} /></Group>
+          <Group gap="xs" align="center"><Text size="sm" fw={500}>实例</Text><Select data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={150} /></Group>
         </Group>
       </Card>
 
@@ -299,9 +328,12 @@ export default function UsagePanel() {
         <>
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
             {CARDS.map((c) => (
-              <StatCard key={c.key} label={c.label} value={fmt(totals[c.key])} bg={c.bg} fg={c.fg} />
+              <StatCard key={c.key} label={c.label} value={fmt(totals[c.key])} bg={c.bg} fg={c.fg} desc={c.desc} />
             ))}
           </SimpleGrid>
+          <Text size="xs" c="dimmed">
+            说明：以上为当前筛选（时间范围 / 模型 / 实例）下的合计；数值取自本机各实例会话记录中模型返回的 usage 用量，已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
+          </Text>
 
           <Card withBorder padding="md" radius="lg">
             <Text fw={600} mb="xs">使用趋势 · {rangeLabel}{byHour ? "（按小时）" : ""}</Text>
