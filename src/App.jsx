@@ -113,7 +113,7 @@ function ModelDetect({ profiles }) {
       <Popover.Target>
         <Button
           size="xs"
-          variant="light"
+          variant="white"
           leftSection={<IconListSearch size={14} />}
           onClick={() => setOpened((o) => !o)}
         >
@@ -181,7 +181,7 @@ function StatusPills({ env }) {
     env.platform === "macos" ? IconBrandApple : IconBrandWindows;
   const platformLabel =
     env.platform === "macos" ? "macOS" : env.platform === "windows" ? "Windows" : "未知";
-  const pill = { radius: 999, variant: "light", size: "lg" };
+  const pill = { radius: 999, variant: "white", size: "lg" };
   return (
     <Group gap={8}>
       <Badge {...pill} color="gray" leftSection={<PlatformIcon size={13} />}>
@@ -269,32 +269,31 @@ export default function App({ scheme, setScheme }) {
           position: "sticky",
           top: 0,
           zIndex: 10,
-          background: "#ffffff",
-          borderBottom: "1px solid rgba(0,0,0,0.07)",
+          background: "var(--mantine-primary-color-filled)",
         }}
       >
-        <Container fluid px="xl" py="sm">
+        <Container fluid px={36} py="lg">
           <Group justify="space-between" wrap="nowrap">
             <Group gap="sm" wrap="nowrap">
               <Box
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 13,
-                  background: "var(--mantine-primary-color-filled)",
+                  width: 46,
+                  height: 46,
+                  borderRadius: 15,
+                  background: "rgba(255,255,255,0.18)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   flexShrink: 0,
                 }}
               >
-                <IconRoute size={22} color="#fff" />
+                <IconRoute size={26} color="#fff" />
               </Box>
               <div>
-                <Text fw={700} size="md" lh={1.1}>
+                <Text fw={700} size="md" lh={1.1} c="white">
                   Claude 路由管理
                 </Text>
-                <Text size="xs" c="dimmed">
+                <Text size="xs" style={{ color: "rgba(255,255,255,0.82)" }}>
                   多账户 / 公司网关，一处配好
                 </Text>
               </div>
@@ -302,7 +301,7 @@ export default function App({ scheme, setScheme }) {
             <Group gap="sm" wrap="nowrap">
               <Button
                 size="xs"
-                variant="light"
+                variant="white"
                 leftSection={<IconDownload size={14} />}
                 onClick={() => checkUpdate(true)}
                 loading={upd.state === "checking"}
@@ -310,15 +309,35 @@ export default function App({ scheme, setScheme }) {
                 {upd.state === "latest" ? "已是最新" : "检查更新"}
               </Button>
               <ModelDetect profiles={profiles} />
-              <SegmentedControl
-                size="xs"
-                value={scheme}
-                onChange={setScheme}
-                data={[
-                  { label: "A 橘橙", value: "a" },
-                  { label: "B 孔雀蓝", value: "b" },
-                ]}
-              />
+              <Group gap={8}>
+                {[
+                  { k: "a", c: "#fd752c", t: "橘橙主题" },
+                  { k: "b", c: "#0c7e9e", t: "孔雀蓝主题" },
+                ].map((it) => (
+                  <button
+                    key={it.k}
+                    onClick={() => setScheme(it.k)}
+                    title={it.t}
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      cursor: "pointer",
+                      padding: 0,
+                      background: it.c,
+                      border:
+                        scheme === it.k
+                          ? "3px solid #fff"
+                          : "2px solid rgba(255,255,255,0.5)",
+                      boxShadow:
+                        scheme === it.k
+                          ? "0 0 0 2px rgba(255,255,255,0.9), 0 2px 6px rgba(0,0,0,0.25)"
+                          : "none",
+                      transition: "all .2s",
+                    }}
+                  />
+                ))}
+              </Group>
               <StatusPills env={env} />
             </Group>
           </Group>
@@ -338,12 +357,12 @@ export default function App({ scheme, setScheme }) {
       </Box>
 
       {/* 导航 */}
-      <Container fluid px="xl" pt="lg" pb="xs" className="glass-content">
+      <Container fluid px={36} pt="xl" pb="xs" className="glass-content">
         <NavPill value={view} onChange={setView} />
       </Container>
 
       {/* 内容 */}
-      <Container fluid px="xl" pb="xl" className="glass-content">
+      <Container fluid px={36} pt="md" pb={48} className="glass-content">
         {err && (
           <Alert color="red" icon={<IconAlertTriangle size={16} />} mb="md" title="后端通信失败">
             {err}

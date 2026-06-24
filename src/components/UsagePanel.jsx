@@ -10,8 +10,11 @@ import {
   Alert,
   Badge,
   Select,
+  Popover,
 } from "@mantine/core";
-import { IconRefresh, IconChartLine, IconInfoCircle } from "@tabler/icons-react";
+import { DatePicker } from "@mantine/dates";
+import "@mantine/dates/styles.css";
+import { IconRefresh, IconChartLine, IconInfoCircle, IconCalendar } from "@tabler/icons-react";
 import * as echarts from "echarts";
 import { api } from "../api.js";
 
@@ -41,53 +44,67 @@ const fmt = (n) => {
   return String(Math.round(n));
 };
 
-const RANGE_OPTS = [
-  { value: "today", label: "当天（按小时）" },
+const pad = (n) => String(n).padStart(2, "0");
+const dstr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// UTC 的 "2026-06-22T04" → 本地 { date, hour }
+const toLocal = (dt) => {
+  const d = new Date(dt + ":00:00Z");
+  return { date: dstr(d), hour: d.getHours() };
+};
+const todayLocal = () => dstr(new Date());
+const daysAgoLocal = (n) => dstr(new Date(Date.now() - (n - 1) * 86400000));
+
+// 折线配色（不随主题，固定好看的渐变）
+const SERIES = [
+  { key: "input", name: "输入", color: "#3b82f6" },
+  { key: "output", name: "输出", color: "#10b981" },
+  { key: "cacheCreate", name: "缓存创建", color: "#f59e0b" },
+  { key: "cacheRead", name: "缓存命中", color: "#06b6d4" },
+];
+
+// 卡片配色（各不相同）
+const CARDS = [
+  { key: "input", label: "总输入 token", bg: "#eef4ff", fg: "#2563eb" },
+  { key: "output", label: "总输出 token", bg: "#eafaf2", fg: "#059669" },
+  { key: "requests", label: "请求次数", bg: "#fff4e8", fg: "#d97706" },
+  { key: "cacheRead", label: "缓存命中", bg: "#e9f8fb", fg: "#0891b2" },
+];
+
+const QUICK = [
+  { value: "today", label: "当天" },
   { value: "7", label: "近 7 天" },
   { value: "14", label: "近 14 天" },
   { value: "30", label: "近 30 天" },
   { value: "all", label: "全部" },
 ];
 
-// 主题线条配色
-const lineColors = (scheme) =>
-  scheme === "a"
-    ? { input: "#fd752c", output: "#185a56", cacheCreate: "#e8950c", cacheRead: "#9aa0a6" }
-    : { input: "#0c7e9e", output: "#b89878", cacheCreate: "#e8950c", cacheRead: "#9aa0a6" };
-
-function StatCard({ label, value, color }) {
+function StatCard({ label, value, bg, fg }) {
   return (
-    <Card withBorder padding="md" radius="lg">
-      <Text size="xs" c="dimmed">
+    <Card withBorder padding="md" radius="lg" style={{ background: bg }}>
+      <Text size="xs" style={{ color: fg, opacity: 0.85 }}>
         {label}
       </Text>
-      <Text fw={700} size="xl" c={color}>
+      <Text fw={800} size="xl" style={{ color: fg }}>
         {value}
       </Text>
     </Card>
   );
 }
 
-const todayUTC = () => new Date().toISOString().slice(0, 10);
-const daysAgoUTC = (n) =>
-  new Date(Date.now() - (n - 1) * 86400000).toISOString().slice(0, 10);
-
-export default function UsagePanel({ scheme }) {
+export default function UsagePanel() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [range, setRange] = useState("today");
+  const [range, setRange] = useState({ kind: "today" });
+  const [custom, setCustom] = useState([null, null]);
+  const [pop, setPop] = useState(false);
   const [model, setModel] = useState("__all__");
   const [profile, setProfile] = useState("__all__");
 
   const load = () => {
     setBusy(true);
     setErr("");
-    api
-      .usageStats()
-      .then(setData)
-      .catch((e) => setErr(String(e)))
-      .finally(() => setBusy(false));
+    api.usageStats().then(setData).catch((e) => setErr(String(e))).finally(() => setBusy(false));
   };
   useEffect(load, []);
 
@@ -102,51 +119,58 @@ export default function UsagePanel({ scheme }) {
     return [{ value: "__all__", label: "全部实例" }, ...set.map((p) => ({ value: p, label: p }))];
   }, [allRows]);
 
-  // 筛选（模型 / 实例 / 时间范围）
+  // 计算有效起止（本地日期）
+  const bounds = useMemo(() => {
+    if (range.kind === "today") return { start: todayLocal(), end: todayLocal() };
+    if (range.kind === "all") return { start: null, end: null };
+    if (range.kind === "custom") {
+      const s = custom[0] ? dstr(custom[0]) : null;
+      const e = custom[1] ? dstr(custom[1]) : s;
+      return { start: s, end: e };
+    }
+    return { start: daysAgoLocal(parseInt(range.kind, 10)), end: todayLocal() };
+  }, [range, custom]);
+
+  // 是否按小时（当天，或自定义单日）
+  const byHour = bounds.start && bounds.start === bounds.end;
+
+  // 预计算每行的本地 date/hour，并筛选
   const rows = useMemo(() => {
-    let startDate = null;
-    if (range === "today") startDate = todayUTC();
-    else if (range !== "all") startDate = daysAgoUTC(parseInt(range, 10));
-    return allRows.filter((r) => {
-      const d = r.datetime.slice(0, 10);
-      if (model !== "__all__" && r.model !== model) return false;
-      if (profile !== "__all__" && r.profile !== profile) return false;
-      if (startDate && d < startDate) return false;
-      return true;
-    });
-  }, [allRows, model, profile, range]);
+    return allRows
+      .map((r) => ({ ...r, ...toLocal(r.datetime) }))
+      .filter((r) => {
+        if (model !== "__all__" && r.model !== model) return false;
+        if (profile !== "__all__" && r.profile !== profile) return false;
+        if (bounds.start && r.date < bounds.start) return false;
+        if (bounds.end && r.date > bounds.end) return false;
+        return true;
+      });
+  }, [allRows, model, profile, bounds]);
 
   const totals = useMemo(() => {
-    let i = 0, o = 0, req = 0, cr = 0;
+    let input = 0, output = 0, requests = 0, cacheRead = 0;
     for (const r of rows) {
-      i += r.input; o += r.output; req += r.requests; cr += r.cacheRead;
+      input += r.input; output += r.output; requests += r.requests; cacheRead += r.cacheRead;
     }
-    return { input: i, output: o, requests: req, cacheRead: cr };
+    return { input, output, requests, cacheRead };
   }, [rows]);
 
-  // 聚合：当天按小时，其它按天
   const series = useMemo(() => {
-    const byHour = range === "today";
     const bucket = new Map();
     for (const r of rows) {
-      const key = byHour ? r.datetime.slice(11, 13) : r.datetime.slice(0, 10);
+      const key = byHour ? pad(r.hour) : r.date;
       const cur = bucket.get(key) || { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 };
-      cur.input += r.input;
-      cur.output += r.output;
-      cur.cacheCreate += r.cacheCreate;
-      cur.cacheRead += r.cacheRead;
+      cur.input += r.input; cur.output += r.output;
+      cur.cacheCreate += r.cacheCreate; cur.cacheRead += r.cacheRead;
       bucket.set(key, cur);
     }
     let labels;
-    if (byHour) {
-      labels = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"));
-    } else {
-      labels = Array.from(bucket.keys()).sort();
-    }
+    if (byHour) labels = Array.from({ length: 24 }, (_, h) => pad(h));
+    else labels = Array.from(bucket.keys()).sort();
     const pick = (k) => labels.map((l) => (bucket.get(l) ? bucket.get(l)[k] : 0));
     const disp = byHour ? labels.map((h) => h + ":00") : labels;
     return { labels: disp, input: pick("input"), output: pick("output"), cacheCreate: pick("cacheCreate"), cacheRead: pick("cacheRead") };
-  }, [rows, range]);
+  }, [rows, byHour]);
 
   const byModel = useMemo(() => {
     const m = new Map();
@@ -154,44 +178,52 @@ export default function UsagePanel({ scheme }) {
     return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [rows]);
 
-  const C = lineColors(scheme);
-  const mkLine = (name, key) => ({
-    name,
-    type: "line",
-    smooth: true,
-    showSymbol: false,
-    data: series[key],
-    areaStyle: { opacity: 0.1 },
-    lineStyle: { width: 2 },
-    itemStyle: { color: C[key] },
-  });
-
-  const lineOption = useMemo(
-    () => ({
+  const lineOption = useMemo(() => {
+    const mkArea = (color) => ({
+      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: color + "55" },
+        { offset: 1, color: color + "05" },
+      ]),
+    });
+    return {
       tooltip: { trigger: "axis" },
-      legend: { data: ["输入", "输出", "缓存创建", "缓存命中"], top: 0 },
-      grid: { left: 52, right: 20, top: 40, bottom: 48 },
-      xAxis: { type: "category", boundaryGap: false, data: series.labels, axisLabel: { rotate: range === "today" ? 0 : 30 } },
+      legend: { data: SERIES.map((s) => s.name), top: 0 },
+      grid: { left: 56, right: 22, top: 40, bottom: 48 },
+      xAxis: { type: "category", boundaryGap: false, data: series.labels, axisLabel: { rotate: byHour ? 0 : 30 } },
       yAxis: { type: "value", axisLabel: { formatter: (v) => fmt(v) } },
-      series: [
-        mkLine("输入", "input"),
-        mkLine("输出", "output"),
-        mkLine("缓存创建", "cacheCreate"),
-        mkLine("缓存命中", "cacheRead"),
-      ],
-    }),
-    [series, scheme, range]
-  );
+      series: SERIES.map((s) => ({
+        name: s.name,
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        data: series[s.key],
+        lineStyle: { width: 2.5, color: s.color },
+        itemStyle: { color: s.color },
+        areaStyle: mkArea(s.color),
+      })),
+    };
+  }, [series, byHour]);
 
-  // 饼图：echarts 默认配色
-  const pieOption = useMemo(
-    () => ({
-      tooltip: { trigger: "item", formatter: (p) => `${p.name}<br/>${fmt(p.value)} (${p.percent}%)` },
-      legend: { type: "scroll", bottom: 0 },
-      series: [{ type: "pie", radius: ["42%", "70%"], data: byModel, label: { formatter: "{b}" } }],
-    }),
-    [byModel]
-  );
+  const pieOption = useMemo(() => ({
+    tooltip: { trigger: "item", formatter: (p) => `${p.name}<br/>${fmt(p.value)} (${p.percent}%)` },
+    legend: { type: "scroll", bottom: 0 },
+    series: [{ type: "pie", radius: ["42%", "70%"], data: byModel, label: { formatter: "{b}" } }],
+  }), [byModel]);
+
+  const rangeLabel = useMemo(() => {
+    if (range.kind === "custom" && custom[0]) {
+      const s = dstr(custom[0]).slice(5);
+      const e = custom[1] ? dstr(custom[1]).slice(5) : s;
+      return `${s} ~ ${e}`;
+    }
+    return QUICK.find((q) => q.value === range.kind)?.label || "当天";
+  }, [range, custom]);
+
+  const pickQuick = (v) => {
+    setRange({ kind: v });
+    setCustom([null, null]);
+    setPop(false);
+  };
 
   const hasData = rows.length > 0;
 
@@ -200,7 +232,7 @@ export default function UsagePanel({ scheme }) {
       <Group justify="space-between">
         <Group gap="xs">
           <Title order={5}>用量统计</Title>
-          <Badge variant="light" color="gray">本地会话记录</Badge>
+          <Badge variant="light" color="gray">本地会话记录（已按本地时间）</Badge>
         </Group>
         <Button size="xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={load} loading={busy}>
           刷新
@@ -209,15 +241,50 @@ export default function UsagePanel({ scheme }) {
 
       <Card withBorder padding="md" radius="lg">
         <Group gap="sm" align="flex-end" wrap="wrap">
-          <Select label="时间范围" data={RANGE_OPTS} value={range} onChange={(v) => setRange(v || "today")} w={170} allowDeselect={false} />
+          <div>
+            <Text size="sm" fw={500} mb={4}>时间范围</Text>
+            <Popover opened={pop} onChange={setPop} position="bottom-start" shadow="md" withinPortal>
+              <Popover.Target>
+                <Button variant="default" leftSection={<IconCalendar size={16} />} onClick={() => setPop((o) => !o)}>
+                  {rangeLabel}
+                </Button>
+              </Popover.Target>
+              <Popover.Dropdown>
+                <Stack gap="sm">
+                  <Group gap={6}>
+                    {QUICK.map((q) => (
+                      <Button
+                        key={q.value}
+                        size="xs"
+                        variant={range.kind === q.value ? "filled" : "light"}
+                        onClick={() => pickQuick(q.value)}
+                      >
+                        {q.label}
+                      </Button>
+                    ))}
+                  </Group>
+                  <Text size="xs" c="dimmed">或在日历选自定义范围：</Text>
+                  <DatePicker
+                    type="range"
+                    value={custom}
+                    onChange={(v) => {
+                      setCustom(v);
+                      if (v[0] && v[1]) {
+                        setRange({ kind: "custom" });
+                        setPop(false);
+                      }
+                    }}
+                  />
+                </Stack>
+              </Popover.Dropdown>
+            </Popover>
+          </div>
           <Select label="模型" data={modelOpts} value={model} onChange={(v) => setModel(v || "__all__")} w={180} />
           <Select label="实例" data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={160} />
         </Group>
       </Card>
 
-      {err && (
-        <Alert color="red" icon={<IconInfoCircle size={16} />} radius="lg">{err}</Alert>
-      )}
+      {err && <Alert color="red" icon={<IconInfoCircle size={16} />} radius="lg">{err}</Alert>}
 
       {!hasData && !busy && (
         <Card withBorder padding="xl" radius="lg">
@@ -231,16 +298,13 @@ export default function UsagePanel({ scheme }) {
       {hasData && (
         <>
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
-            <StatCard label="总输入 token" value={fmt(totals.input)} color="brand.7" />
-            <StatCard label="总输出 token" value={fmt(totals.output)} />
-            <StatCard label="请求次数" value={fmt(totals.requests)} />
-            <StatCard label="缓存命中" value={fmt(totals.cacheRead)} />
+            {CARDS.map((c) => (
+              <StatCard key={c.key} label={c.label} value={fmt(totals[c.key])} bg={c.bg} fg={c.fg} />
+            ))}
           </SimpleGrid>
 
           <Card withBorder padding="md" radius="lg">
-            <Text fw={600} mb="xs">
-              使用趋势 · {range === "today" ? "当天（按小时）" : RANGE_OPTS.find((r) => r.value === range)?.label}
-            </Text>
+            <Text fw={600} mb="xs">使用趋势 · {rangeLabel}{byHour ? "（按小时）" : ""}</Text>
             <EChart option={lineOption} height={360} />
           </Card>
 

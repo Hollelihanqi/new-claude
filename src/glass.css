@@ -1,17 +1,17 @@
-/* 干净实色风格 + 双主题（A 橘橙 / B 孔雀蓝） */
+/* 干净实色 + 双主题（A 橘橙/深灰绿，B 孔雀蓝/浅驼） */
 body {
   margin: 0;
   color: #3a3632;
   transition: background 0.3s ease;
 }
+/* 内容区背景用各主题的「辅助色」浅调，与主色 header 搭配 */
 body.theme-a {
-  background: #fdf6f1; /* 暖浅橙白 */
+  background: #e9f1ee; /* 深灰绿 #185a56 的浅调 */
 }
 body.theme-b {
-  background: #eef5f7; /* 浅青白 */
+  background: #f5ede3; /* 浅驼 #d7b9a1 的浅调 */
 }
 
-/* 卡片：实色白 + 细描边 + 柔和阴影（无磨砂） */
 .glass-card {
   background: #ffffff !important;
   border: 1px solid rgba(0, 0, 0, 0.06) !important;

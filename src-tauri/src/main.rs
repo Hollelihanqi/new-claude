@@ -501,12 +501,8 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
         cmd.creation_flags(0x08000000);
     }
     cmd.arg("-s");
-    let cert = cert_path();
-    if cert.exists() {
-        cmd.arg("--cacert").arg(cert.to_string_lossy().to_string());
-    } else {
-        cmd.arg("-k"); // 未导入证书时跳过校验（仅用于读取模型列表）
-    }
+    // 检测仅读取模型列表、不传输敏感数据；跳过证书校验，避免证书不匹配导致无输出
+    cmd.arg("-k");
     cmd.arg("-H")
         .arg(format!("Authorization: Bearer {}", token.trim()));
     cmd.arg(&url);
