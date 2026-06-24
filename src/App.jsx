@@ -26,6 +26,7 @@ import {
   IconListSearch,
   IconDownload,
 } from "@tabler/icons-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "./api.js";
@@ -211,6 +212,7 @@ export default function App({ scheme, setScheme }) {
   const [view, setView] = useState("config");
   const [profiles, setProfiles] = useState([]);
   const [upd, setUpd] = useState({ state: "idle" });
+  const [appVersion, setAppVersion] = useState("");
 
   const checkUpdate = async (manual) => {
     try {
@@ -218,11 +220,24 @@ export default function App({ scheme, setScheme }) {
       const update = await check();
       if (update) {
         setUpd({ state: "available", version: update.version, obj: update });
+      } else if (manual) {
+        setUpd({ state: "notice", level: "info", msg: "你当前已经是最新版本。" });
       } else {
-        setUpd({ state: manual ? "latest" : "idle" });
+        setUpd({ state: "idle" });
       }
     } catch (e) {
-      setUpd({ state: manual ? "error" : "idle", msg: String(e) });
+      if (!manual) {
+        setUpd({ state: "idle" });
+        return;
+      }
+      const raw = String(e);
+      // 拿不到清单/网络问题/正在发版等，对使用者统一显示"已是最新"
+      const soft = /fetch|json|platform|fallback|network|request|timeout|connect|releases|404/i.test(raw);
+      setUpd({
+        state: "notice",
+        level: soft ? "info" : "error",
+        msg: soft ? "你当前已经是最新版本。" : "检查更新时出错：" + raw,
+      });
     }
   };
 
@@ -244,7 +259,7 @@ export default function App({ scheme, setScheme }) {
       });
       await relaunch();
     } catch (e) {
-      setUpd({ state: "error", msg: String(e) });
+      setUpd({ state: "notice", level: "error", msg: "下载或安装更新失败：" + String(e) + "。可稍后重试，或手动下载安装包。" });
     }
   };
 
@@ -255,6 +270,7 @@ export default function App({ scheme, setScheme }) {
   useEffect(refreshEnv, []);
   useEffect(() => {
     checkUpdate(false);
+    getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
   const accentBg = scheme === "a" ? "#d7e7e3" : "#ecdfd0";
@@ -293,6 +309,7 @@ export default function App({ scheme, setScheme }) {
                 </Text>
                 <Text size="xs" style={{ color: "rgba(255,255,255,0.82)" }}>
                   多账户 / 公司网关，一处配好
+                  {appVersion ? ` · v${appVersion}` : ""}
                 </Text>
               </div>
             </Group>
@@ -304,7 +321,7 @@ export default function App({ scheme, setScheme }) {
                 onClick={() => checkUpdate(true)}
                 loading={upd.state === "checking"}
               >
-                {upd.state === "latest" ? "已是最新" : "检查更新"}
+                {upd.state === "checking" ? "检查中…" : "检查更新"}
               </Button>
               <ModelDetect profiles={profiles} />
               <Group gap={8}>
@@ -379,8 +396,14 @@ export default function App({ scheme, setScheme }) {
             正在下载并安装更新（{upd.progress || 0}%），完成后会自动重启，请稍候…
           </Alert>
         )}
-        {upd.state === "error" && (
-          <Alert color="red" mb="md" title="更新失败" withCloseButton onClose={() => setUpd({ state: "idle" })}>
+        {upd.state === "notice" && (
+          <Alert
+            color={upd.level === "error" ? "red" : "blue"}
+            mb="md"
+            title={upd.level === "error" ? "更新出错" : "更新提示"}
+            withCloseButton
+            onClose={() => setUpd({ state: "idle" })}
+          >
             {upd.msg}
           </Alert>
         )}
