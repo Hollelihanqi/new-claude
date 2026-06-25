@@ -215,6 +215,9 @@ export default function App({ scheme, setScheme }) {
   const [profiles, setProfiles] = useState([]);
   const [upd, setUpd] = useState({ state: "idle" });
   const [appVersion, setAppVersion] = useState("");
+  const [usageData, setUsageData] = useState(null);
+  const [usageErr, setUsageErr] = useState("");
+  const [usageBusy, setUsageBusy] = useState(false);
 
   const checkUpdate = async (manual) => {
     try {
@@ -290,6 +293,13 @@ export default function App({ scheme, setScheme }) {
     api.listProfiles().then(setProfiles).catch(() => {});
   };
   useEffect(refreshEnv, []);
+
+  const loadUsage = () => {
+    setUsageBusy(true);
+    setUsageErr("");
+    api.usageStats().then(setUsageData).catch((e) => setUsageErr(String(e))).finally(() => setUsageBusy(false));
+  };
+  useEffect(loadUsage, []);
   useEffect(() => {
     checkUpdate(false);
     getVersion().then(setAppVersion).catch(() => {});
@@ -299,6 +309,8 @@ export default function App({ scheme, setScheme }) {
 
   return (
     <Box style={{ minHeight: "100vh", background: accentBg }}>
+      {/* 吸顶区：顶栏 + 导航一起固定，不随内容滚动 */}
+      <Box style={{ position: "sticky", top: 0, zIndex: 10 }}>
       {/* 顶栏 */}
       <Box
         style={{
@@ -377,14 +389,16 @@ export default function App({ scheme, setScheme }) {
         </Container>
       </Box>
 
-      {/* 导航（吸顶 + 居中） */}
-      <Box style={{ position: "sticky", top: 0, zIndex: 9, background: accentBg }}>
+      {/* 导航（居中） */}
+      <Box style={{ background: accentBg }}>
         <Container fluid px={48} pt="md" pb="md" className="glass-content">
           <Group justify="center">
             <NavPill value={view} onChange={setView} />
           </Group>
         </Container>
       </Box>
+      </Box>
+      {/* 吸顶区结束 */}
 
       {/* 内容 */}
       <Container fluid px={48} pt="lg" pb={56} className="glass-content">
@@ -400,7 +414,9 @@ export default function App({ scheme, setScheme }) {
         )}
 
         {view === "config" && <ConfigPanel env={env} onChanged={refreshEnv} />}
-        {view === "usage" && <UsagePanel scheme={scheme} />}
+        {view === "usage" && (
+          <UsagePanel data={usageData} err={usageErr} busy={usageBusy} onRefresh={loadUsage} />
+        )}
         {view === "guide" && <GuidePanel env={env} />}
       </Container>
     </Box>

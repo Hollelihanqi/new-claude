@@ -80,10 +80,17 @@ const CARDS = [
   },
   {
     key: "requests",
-    label: "请求次数",
+    label: "API 调用次数",
     bg: "#fff4e8",
     fg: "#d97706",
-    desc: "模型成功响应的次数（每次有效回复计 1 次）",
+    desc: "模型被实际调用的次数（含工具往返，故偏大）",
+  },
+  {
+    key: "conversations",
+    label: "对话次数",
+    bg: "#f3eefe",
+    fg: "#7c3aed",
+    desc: "你真实发起的提问次数（不区分模型）",
   },
   {
     key: "cacheRead",
@@ -120,46 +127,18 @@ function StatCard({ label, value, bg, fg, desc }) {
   );
 }
 
-function StatCardDual({ bg, fg, aLabel, aValue, bLabel, bValue, desc }) {
-  return (
-    <Card withBorder padding="md" radius="lg" style={{ background: bg }}>
-      <Text size="xs" style={{ color: fg, opacity: 0.85 }}>
-        {aLabel}
-      </Text>
-      <Text fw={800} size="lg" style={{ color: fg, lineHeight: 1.15 }}>
-        {aValue}
-      </Text>
-      <Text size="xs" mt={6} style={{ color: fg, opacity: 0.85 }}>
-        {bLabel}
-      </Text>
-      <Text fw={800} size="lg" style={{ color: fg, lineHeight: 1.15 }}>
-        {bValue}
-      </Text>
-      {desc && (
-        <Text mt={6} c="dimmed" lh={1.3} style={{ fontSize: 11 }}>
-          {desc}
-        </Text>
-      )}
-    </Card>
-  );
+function StatCardDual() {
+  return null;
 }
 
-export default function UsagePanel() {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
+export default function UsagePanel({ data, err, busy, onRefresh }) {
   const [range, setRange] = useState({ kind: "today" });
   const [custom, setCustom] = useState([null, null]);
   const [pop, setPop] = useState(false);
   const [model, setModel] = useState("__all__");
   const [profile, setProfile] = useState("__all__");
 
-  const load = () => {
-    setBusy(true);
-    setErr("");
-    api.usageStats().then(setData).catch((e) => setErr(String(e))).finally(() => setBusy(false));
-  };
-  useEffect(load, []);
+  const load = onRefresh;
 
   const allRows = data?.daily || [];
 
@@ -364,23 +343,17 @@ export default function UsagePanel() {
 
       {hasData && (
         <>
-          <SimpleGrid cols={{ base: 2, sm: 4 }}>
-            {CARDS.map((c) =>
-              c.key === "requests" ? (
-                <StatCardDual
-                  key={c.key}
-                  bg={c.bg}
-                  fg={c.fg}
-                  aLabel="API 调用次数"
-                  aValue={fmt(totals.requests)}
-                  bLabel="对话次数"
-                  bValue={fmt(convCount)}
-                  desc="API 调用＝模型被实际调用次数（含工具往返，故偏大）；对话＝你真实发起的提问次数"
-                />
-              ) : (
-                <StatCard key={c.key} label={c.label} value={fmt(totals[c.key])} bg={c.bg} fg={c.fg} desc={c.desc} />
-              )
-            )}
+          <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }}>
+            {CARDS.map((c) => (
+              <StatCard
+                key={c.key}
+                label={c.label}
+                value={fmt(c.key === "conversations" ? convCount : totals[c.key])}
+                bg={c.bg}
+                fg={c.fg}
+                desc={c.desc}
+              />
+            ))}
           </SimpleGrid>
           <Text size="xs" c="dimmed">
             说明：以上为当前筛选（时间范围 / 模型 / 实例）下的合计；数值取自本机各实例会话记录中模型返回的 usage 用量，已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
