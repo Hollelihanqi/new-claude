@@ -10,3 +10,6 @@ src-tauri/gen/
 # 系统
 .DS_Store
 Thumbs.db
+
+# Claude Code 本地会话配置（仅本机有效，不入仓库）
+.claude/
