@@ -205,6 +205,10 @@ export default function App({
     api.environment().then(setEnv).catch((e) => setErr(String(e)));
   };
   useEffect(refreshEnv, []);
+  // 启动即建齐共享链接并跑一轮 MCP/插件启用状态合并(静默,失败不打扰)
+  useEffect(() => {
+    api.syncAll().catch(() => {});
+  }, []);
 
   const loadUsage = () => {
     setUsageBusy(true);

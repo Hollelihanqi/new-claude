@@ -9,8 +9,6 @@ export interface Profile {
   baseUrl: string;
   tokenEnc?: string;
   hasToken: boolean;
-  shareSkills: boolean;
-  sharePlugins: boolean;
   opusModel: string;
   sonnetModel: string;
   haikuModel: string;
@@ -60,8 +58,8 @@ export const api = {
     invoke("save_profile", { profile, token: token || null }),
   deleteProfile: (name: string): Promise<string> =>
     invoke("delete_profile", { name }),
-  syncLinks: (name: string, skills: boolean, plugins: boolean): Promise<string> =>
-    invoke("sync_links", { name, skills, plugins }),
+  // 刷新集成脚本 + 建齐共享链接 + 合并同步 MCP/插件启用状态
+  syncAll: (): Promise<string> => invoke("sync_all"),
   environment: (): Promise<EnvInfo> => invoke("environment"),
   importCert: (path: string): Promise<string> => invoke("import_cert", { path }),
   clearCerts: (): Promise<string> => invoke("clear_certs"),

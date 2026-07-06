@@ -58,8 +58,6 @@ const empty: FormState = {
   name: "",
   type: "router",
   baseUrl: "",
-  shareSkills: false,
-  sharePlugins: false,
   opusModel: "",
   sonnetModel: "",
   haikuModel: "",
@@ -74,8 +72,6 @@ interface FormState {
   name: string;
   type: Profile["type"];
   baseUrl: string;
-  shareSkills: boolean;
-  sharePlugins: boolean;
   opusModel: string;
   sonnetModel: string;
   haikuModel: string;
@@ -132,8 +128,6 @@ export default function ConfigPanel({
       name: p.name,
       type: p.type,
       baseUrl: p.baseUrl || "",
-      shareSkills: !!p.shareSkills,
-      sharePlugins: !!p.sharePlugins,
       opusModel: p.opusModel || "",
       sonnetModel: p.sonnetModel || "",
       haikuModel: p.haikuModel || "",
@@ -207,33 +201,18 @@ export default function ConfigPanel({
         name: form.name.trim(),
         type: form.type,
         baseUrl: form.type === "router" ? form.baseUrl.trim() : "",
-        shareSkills: form.shareSkills,
-        sharePlugins: form.sharePlugins,
         opusModel: form.opusModel.trim(),
         sonnetModel: form.sonnetModel.trim(),
         haikuModel: form.haikuModel.trim(),
       };
       const msg = await api.saveProfile(profile, token || null);
-      let extra = "";
-      if (form.shareSkills || form.sharePlugins) {
-        try {
-          const linkMsg = await api.syncLinks(
-            profile.name,
-            form.shareSkills,
-            form.sharePlugins
-          );
-          extra = "（同步：" + linkMsg + "）";
-        } catch (e) {
-          extra = "（skills/plugins 同步失败：" + String(e) + "）";
-        }
-      }
       setToken("");
       load();
       onChanged && onChanged();
       setSel(profile.name);
       setStatus({
         type: "success",
-        msg: `已保存「${profile.name}」。${msg}${extra} 之后在新终端里运行：claude ${profile.name}`,
+        msg: `已保存「${profile.name}」。${msg} 之后在新终端里运行：claude ${profile.name}`,
       });
     } catch (e) {
       const m = String(e);
@@ -533,27 +512,14 @@ export default function ConfigPanel({
             )}
 
             <Text size="sm" fw={500} mt={4}>
-              共享（可选）
+              共享与同步（自动）
             </Text>
             <Text size="xs" c="dimmed">
-              打开后，点「保存」时会自动把主账户的 skills / plugins 链接给这个实例。
+              所有实例自动与主账户共享 skills / plugins / agents / commands；
+              MCP 服务器与插件启用状态在每次启动 claude 时自动双向同步，
+              任一实例安装或删除，其他实例下次启动即生效。
+              跨实例共享的 MCP 请用 <Code>claude mcp add -s user</Code> 安装。
             </Text>
-            <Group gap="xl" mt={4}>
-              <Switch
-                label="共享主账户的 skills"
-                checked={form.shareSkills}
-                onChange={(e) =>
-                  setForm({ ...form, shareSkills: e.currentTarget.checked })
-                }
-              />
-              <Switch
-                label="共享主账户的 plugins"
-                checked={form.sharePlugins}
-                onChange={(e) =>
-                  setForm({ ...form, sharePlugins: e.currentTarget.checked })
-                }
-              />
-            </Group>
 
             <Box>
               <Text size="sm" fw={500}>

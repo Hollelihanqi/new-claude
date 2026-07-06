@@ -127,8 +127,8 @@ export default function GuidePanel() {
           />
           <Tech
             icon={<IconLink size={20} />}
-            name="符号链接"
-            desc="可选地把主账户的 skills / plugins 链接给某个实例共享，避免重复下载。"
+            name="共享与同步"
+            desc="所有实例自动与主账户共享 skills / plugins / agents / commands（目录联结）；MCP 与插件启用状态在每次启动 claude 时自动合并同步。跨实例共享的 MCP 请用 claude mcp add -s user 安装（默认作用域是项目级，不参与同步）。"
           />
         </SimpleGrid>
       </Card>
