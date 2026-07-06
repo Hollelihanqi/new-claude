@@ -307,12 +307,35 @@ fn claude_found() -> bool {
     } else {
         &["claude"]
     };
+    // 1. 进程继承到的 PATH（GUI 从资源管理器启动时可能拿到登录前的旧 PATH，
+    //    即使用户后来才装 claude 并写入了 PATH，这里也查不到）。
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
             for n in names {
                 if dir.join(n).is_file() {
                     return true;
                 }
+            }
+        }
+    }
+    // 2. 兜底：直接查默认安装位置，避免被陈旧的继承 PATH 误导。
+    let h = home();
+    let candidates: Vec<PathBuf> = if cfg!(target_os = "windows") {
+        let mut v = vec![h.join(".local").join("bin")]; // native 安装器默认位置
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            v.push(PathBuf::from(appdata).join("npm")); // npm -g 全局安装
+        }
+        v
+    } else {
+        vec![
+            h.join(".local").join("bin"), // native 安装器默认位置
+            h.join(".npm-global").join("bin"), // npm -g 全局安装
+        ]
+    };
+    for dir in candidates {
+        for n in names {
+            if dir.join(n).is_file() {
+                return true;
             }
         }
     }
