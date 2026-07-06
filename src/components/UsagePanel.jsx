@@ -4,11 +4,9 @@ import {
   Group,
   Card,
   Text,
-  Title,
   SimpleGrid,
   Button,
   Alert,
-  Badge,
   Select,
   Popover,
 } from "@mantine/core";
@@ -278,16 +276,6 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
 
   return (
     <Stack gap="md">
-      <Group justify="space-between">
-        <Group gap="xs">
-          <Title order={5}>用量统计</Title>
-          <Badge variant="light" color="gray">本地会话记录（已按本地时间）</Badge>
-        </Group>
-        <Button size="xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={load} loading={busy}>
-          刷新
-        </Button>
-      </Group>
-
       <Card withBorder padding="md" radius="lg">
         <Group gap="xl" align="center" wrap="wrap">
           <Group gap="xs" align="center">
@@ -330,6 +318,9 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
           </Group>
           <Group gap="xs" align="center"><Text size="sm" fw={500}>模型</Text><Select data={modelOpts} value={model} onChange={(v) => setModel(v || "__all__")} w={170} /></Group>
           <Group gap="xs" align="center"><Text size="sm" fw={500}>实例</Text><Select data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={150} /></Group>
+          <Button size="xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={load} loading={busy} ml="auto">
+            刷新
+          </Button>
         </Group>
       </Card>
 
