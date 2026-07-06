@@ -152,6 +152,8 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
   }, [allRows]);
 
   // 计算有效起止（本地日期）
+  // 依赖 data：刷新拿到新数据时，重新取一次"今天"——否则软件跨天开着、
+  // 点击刷新后 bounds 仍停留在前一天，导致当天的数据被过滤掉、图表不更新。
   const bounds = useMemo(() => {
     if (range.kind === "today") return { start: todayLocal(), end: todayLocal() };
     if (range.kind === "all") return { start: null, end: null };
@@ -161,7 +163,8 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
       return { start: s, end: e };
     }
     return { start: daysAgoLocal(parseInt(range.kind, 10)), end: todayLocal() };
-  }, [range, custom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, custom, data]);
 
   // 是否按小时（当天，或自定义单日）
   const byHour = bounds.start && bounds.start === bounds.end;
