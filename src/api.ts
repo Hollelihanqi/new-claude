@@ -48,6 +48,39 @@ export interface UsageStats {
   totalConversations: number;
 }
 
+/** MarketplaceEntry（serde rename_all = camelCase） */
+export interface MarketplaceEntry {
+  name: string;
+  source: string;
+  repo?: string;
+  url?: string;
+  installLocation?: string;
+}
+
+/** InstalledPlugin（serde rename_all = camelCase） */
+export interface InstalledPlugin {
+  id: string;
+  version: string;
+  scope: string;
+  enabled: boolean;
+  installPath: string;
+}
+
+/** AvailablePlugin（serde rename_all = camelCase） */
+export interface AvailablePlugin {
+  pluginId: string;
+  name: string;
+  description: string;
+  marketplaceName: string;
+  installCount?: number;
+  version?: string;
+}
+
+export interface PluginListResult {
+  installed: InstalledPlugin[];
+  available: AvailablePlugin[];
+}
+
 // 与 src-tauri 里的 #[tauri::command] 一一对应
 export const api = {
   listProfiles: (): Promise<Profile[]> => invoke("list_profiles"),
@@ -68,4 +101,18 @@ export const api = {
   detectModelsFor: (name: string): Promise<string[]> =>
     invoke("detect_models_for", { name }),
   usageStats: (): Promise<UsageStats> => invoke("usage_stats"),
+  // skill/plugin 市场：检索、安装均落到主账户 ~/.claude，装完自动广播给各实例
+  pluginMarketplaceList: (): Promise<MarketplaceEntry[]> =>
+    invoke("plugin_marketplace_list"),
+  pluginMarketplaceAdd: (source: string): Promise<string> =>
+    invoke("plugin_marketplace_add", { source }),
+  pluginMarketplaceRemove: (name: string): Promise<string> =>
+    invoke("plugin_marketplace_remove", { name }),
+  pluginList: (): Promise<PluginListResult> => invoke("plugin_list"),
+  pluginInstall: (pluginId: string): Promise<string> =>
+    invoke("plugin_install", { pluginId }),
+  pluginUninstall: (pluginId: string): Promise<string> =>
+    invoke("plugin_uninstall", { pluginId }),
+  pluginSetEnabled: (pluginId: string, enabled: boolean): Promise<string> =>
+    invoke("plugin_set_enabled", { pluginId, enabled }),
 };

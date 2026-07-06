@@ -18,6 +18,7 @@ import {
   IconCircleCheck,
   IconAlertTriangle,
   IconDownload,
+  IconPuzzle,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -31,12 +32,15 @@ import type { UsageStats } from "./api";
 import ConfigPanel from "./components/ConfigPanel";
 import UsagePanel from "./components/UsagePanel";
 import GuidePanel from "./components/GuidePanel";
+import MarketplacePanel from "./components/MarketplacePanel";
+import CaCertButton from "./components/CaCertButton";
 
-type ViewId = "config" | "usage" | "guide";
+type ViewId = "config" | "usage" | "guide" | "marketplace";
 type Scheme = "a" | "b";
 
 const NAV: { id: ViewId; label: string; icon: typeof IconSettings }[] = [
   { id: "config", label: "实例配置", icon: IconSettings },
+  { id: "marketplace", label: "市场", icon: IconPuzzle },
   { id: "usage", label: "用量统计", icon: IconChartLine },
   { id: "guide", label: "使用指南", icon: IconBook2 },
 ];
@@ -273,6 +277,7 @@ export default function App({
                 >
                   检查更新
                 </Button>
+                <CaCertButton env={env} onChanged={refreshEnv} />
                 <Group gap={8}>
                   {([
                     { k: "a", c: "#fd752c", t: "橘橙主题" },
@@ -340,7 +345,7 @@ export default function App({
               {err}
             </Alert>
           )}
-          {env && !env.claude_found && view === "config" && (
+          {env && !env.claude_found && (view === "config" || view === "marketplace") && (
             <Alert
               color="orange"
               icon={<IconAlertTriangle size={16} />}
@@ -354,7 +359,8 @@ export default function App({
 
           {/* 各视图填满剩余高度；超出则各自滚动 */}
           <Box style={{ flex: "1 1 auto", minHeight: 0 }}>
-            {view === "config" && <ConfigPanel env={env} onChanged={refreshEnv} />}
+            {view === "config" && <ConfigPanel onChanged={refreshEnv} />}
+            {view === "marketplace" && <MarketplacePanel />}
             {view === "usage" && (
               <div style={{ height: "100%", overflowY: "auto" }}>
                 <UsagePanel

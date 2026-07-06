@@ -7,7 +7,6 @@ import {
   TextInput,
   PasswordInput,
   Select,
-  Switch,
   Text,
   Title,
   NavLink,
@@ -17,7 +16,6 @@ import {
   Box,
   Autocomplete,
   Divider,
-  Collapse,
 } from "@mantine/core";
 import {
   IconPlus,
@@ -26,11 +24,10 @@ import {
   IconWorld,
   IconUser,
   IconInfoCircle,
-  IconCertificate,
   IconListSearch,
 } from "@tabler/icons-react";
 import { api } from "../api";
-import type { Profile, EnvInfo } from "../api";
+import type { Profile } from "../api";
 
 // 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
 const PRESET_MODELS = [
@@ -78,10 +75,8 @@ interface FormState {
 }
 
 export default function ConfigPanel({
-  env,
   onChanged,
 }: {
-  env: EnvInfo | null;
   onChanged?: () => void;
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -93,26 +88,10 @@ export default function ConfigPanel({
     msg: "",
   });
   const [busyAction, setBusyAction] = useState("");
-  const [certPath, setCertPath] = useState("");
 
   // 检测到的当前实例模型（合并进下方下拉）
   const [detected, setDetected] = useState<string[]>([]);
   const [detectBusy, setDetectBusy] = useState(false);
-
-  // CA 证书区（全局）：开关 + 反馈
-  // 用 lazy initializer 从 env 直接算初值，避免"先收起再展开"的闪动
-  // （每次切回配置页 ConfigPanel 会重新挂载，若初值 false 再靠 effect 改 true 就会闪）。
-  const [caOpen, setCaOpen] = useState(() => !!env && (env.cert_count ?? 0) > 0);
-  const [caMsg, setCaMsg] = useState<{ type: StatusType; msg: string }>({
-    type: "info",
-    msg: "",
-  });
-  const certCount = env?.cert_count ?? 0;
-
-  // 仅在 env 挂载后才到达（首次启动 env 异步加载）时，按证书张数自动展开一次
-  useEffect(() => {
-    if (env && env.cert_count > 0) setCaOpen(true);
-  }, [env]);
 
   const load = () => {
     api
@@ -219,7 +198,7 @@ export default function ConfigPanel({
       setStatus({
         type: "error",
         msg: isCertError(m)
-          ? "保存出错，疑似证书问题。可在左侧「CA 证书」导入证书后重试。原始错误：" + m
+          ? "保存出错，疑似证书问题。可在右上角「CA 证书」导入证书后重试。原始错误：" + m
           : m,
       });
     } finally {
@@ -246,40 +225,8 @@ export default function ConfigPanel({
     }
   };
 
-  const onImportCert = async () => {
-    if (!certPath.trim()) {
-      setCaMsg({ type: "error", msg: "请填写证书文件（ca-cert.pem）的完整路径。" });
-      return;
-    }
-    setBusyAction("import");
-    try {
-      const msg = await api.importCert(certPath.trim());
-      onChanged && onChanged();
-      setCaMsg({ type: "success", msg });
-    } catch (e) {
-      setCaMsg({ type: "error", msg: String(e) });
-    } finally {
-      setBusyAction("");
-    }
-  };
-
-  const onClearCerts = async () => {
-    setBusyAction("clear");
-    try {
-      const msg = await api.clearCerts();
-      onChanged && onChanged();
-      setCaMsg({ type: "success", msg });
-    } catch (e) {
-      setCaMsg({ type: "error", msg: String(e) });
-    } finally {
-      setBusyAction("");
-    }
-  };
-
   const selProfile = profiles.find((p) => p.name === sel);
   const isRouter = form.type === "router";
-  const certPlaceholder =
-    env?.platform === "windows" ? "C:\\ca-cert.pem" : "/Users/you/ca-cert.pem";
 
   return (
     <div
@@ -290,7 +237,7 @@ export default function ConfigPanel({
         height: "100%",
       }}
     >
-      {/* 左栏：实例列表 + 全局 CA 证书，独立滚动 */}
+      {/* 左栏：实例列表，独立滚动 */}
       <div
         style={{
           flex: "0 0 33.3333%",
@@ -298,108 +245,42 @@ export default function ConfigPanel({
           overflowY: "auto",
         }}
       >
-        <Stack gap="md">
-          <Card withBorder padding="sm" radius="md">
-            <Group justify="space-between" mb="xs">
-              <Title order={5}>实例</Title>
-              <Button
-                size="xs"
-                variant="light"
-                leftSection={<IconPlus size={14} />}
-                onClick={onNew}
-              >
-                新建
-              </Button>
-            </Group>
-            <Stack gap={4}>
-              {profiles.length === 0 && (
-                <Text size="sm" c="dimmed" p="xs">
-                  还没有实例。点「新建」创建第一个（比如 bj）。
-                </Text>
-              )}
-              {profiles.map((p) => (
-                <NavLink
-                  key={p.name}
-                  active={sel === p.name}
-                  label={p.name}
-                  description={p.type === "router" ? "公司路由" : "另一个账户"}
-                  leftSection={
-                    p.type === "router" ? (
-                      <IconWorld size={16} />
-                    ) : (
-                      <IconUser size={16} />
-                    )
-                  }
-                  onClick={() => pickProfile(p)}
-                />
-              ))}
-            </Stack>
-          </Card>
-
-          {/* 全局 CA 证书：整机共享，所有实例通用 */}
-          <Card withBorder padding="sm" radius="md">
-            <Group justify="space-between" mb={4}>
-              <Group gap={6}>
-                <IconCertificate size={16} />
-                <Title order={6}>CA 证书</Title>
-              </Group>
-              <Badge size="sm" variant="light" color={certCount ? "teal" : "gray"}>
-                {certCount ? `${certCount} 张` : "未导入"}
-              </Badge>
-            </Group>
-            <Text size="xs" c="dimmed" mb="xs">
-              整机共享：多张证书会自动合并到一个信任库，所有实例通用。
-            </Text>
-            <Switch
-              label="使用自定义 CA 证书"
-              checked={caOpen}
-              onChange={(e) => setCaOpen(e.currentTarget.checked)}
-            />
-            <Collapse in={caOpen}>
-              <Stack gap="xs" mt="sm">
-                {caMsg.msg && (
-                  <Text
-                    size="xs"
-                    c={
-                      caMsg.type === "error"
-                        ? "red"
-                        : caMsg.type === "success"
-                        ? "teal"
-                        : "dimmed"
-                    }
-                  >
-                    {caMsg.msg}
-                  </Text>
-                )}
-                <TextInput
-                  size="xs"
-                  placeholder={certPlaceholder}
-                  value={certPath}
-                  onChange={(e) => setCertPath(e.currentTarget.value)}
-                />
-                <Group gap="xs">
-                  <Button
-                    size="xs"
-                    onClick={onImportCert}
-                    loading={busyAction === "import"}
-                  >
-                    导入（追加）
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="red"
-                    onClick={onClearCerts}
-                    loading={busyAction === "clear"}
-                    disabled={!certCount}
-                  >
-                    清空
-                  </Button>
-                </Group>
-              </Stack>
-            </Collapse>
-          </Card>
-        </Stack>
+        <Card withBorder padding="sm" radius="md">
+          <Group justify="space-between" mb="xs">
+            <Title order={5}>实例</Title>
+            <Button
+              size="xs"
+              variant="light"
+              leftSection={<IconPlus size={14} />}
+              onClick={onNew}
+            >
+              新建
+            </Button>
+          </Group>
+          <Stack gap={4}>
+            {profiles.length === 0 && (
+              <Text size="sm" c="dimmed" p="xs">
+                还没有实例。点「新建」创建第一个（比如 bj）。
+              </Text>
+            )}
+            {profiles.map((p) => (
+              <NavLink
+                key={p.name}
+                active={sel === p.name}
+                label={p.name}
+                description={p.type === "router" ? "公司路由" : "另一个账户"}
+                leftSection={
+                  p.type === "router" ? (
+                    <IconWorld size={16} />
+                  ) : (
+                    <IconUser size={16} />
+                  )
+                }
+                onClick={() => pickProfile(p)}
+              />
+            ))}
+          </Stack>
+        </Card>
       </div>
 
       {/* 右栏：实例设置表单（独立滚动） */}

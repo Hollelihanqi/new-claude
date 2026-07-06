@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+mod marketplace;
 mod sync;
 
 const MARK: &str = "# cc-manager-integration";
@@ -359,44 +360,7 @@ fn clear_token(name: &str) {
 
 // ---------------- claude 探测 ----------------
 fn claude_found() -> bool {
-    let names: &[&str] = if cfg!(target_os = "windows") {
-        &["claude.exe", "claude.cmd", "claude.bat", "claude"]
-    } else {
-        &["claude"]
-    };
-    // 1. 进程继承到的 PATH（GUI 从资源管理器启动时可能拿到登录前的旧 PATH，
-    //    即使用户后来才装 claude 并写入了 PATH，这里也查不到）。
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for n in names {
-                if dir.join(n).is_file() {
-                    return true;
-                }
-            }
-        }
-    }
-    // 2. 兜底：直接查默认安装位置，避免被陈旧的继承 PATH 误导。
-    let h = home();
-    let candidates: Vec<PathBuf> = if cfg!(target_os = "windows") {
-        let mut v = vec![h.join(".local").join("bin")]; // native 安装器默认位置
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            v.push(PathBuf::from(appdata).join("npm")); // npm -g 全局安装
-        }
-        v
-    } else {
-        vec![
-            h.join(".local").join("bin"), // native 安装器默认位置
-            h.join(".npm-global").join("bin"), // npm -g 全局安装
-        ]
-    };
-    for dir in candidates {
-        for n in names {
-            if dir.join(n).is_file() {
-                return true;
-            }
-        }
-    }
-    false
+    marketplace::resolve_claude_exe().is_some()
 }
 
 // ---------------- 命令 ----------------
@@ -848,7 +812,14 @@ fn main() {
             clear_certs,
             detect_models,
             detect_models_for,
-            usage_stats
+            usage_stats,
+            marketplace::plugin_marketplace_list,
+            marketplace::plugin_marketplace_add,
+            marketplace::plugin_marketplace_remove,
+            marketplace::plugin_list,
+            marketplace::plugin_install,
+            marketplace::plugin_uninstall,
+            marketplace::plugin_set_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
