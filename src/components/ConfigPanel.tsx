@@ -104,14 +104,16 @@ export default function ConfigPanel({
   const [detectBusy, setDetectBusy] = useState(false);
 
   // CA 证书区（全局）：开关 + 反馈
-  const [caOpen, setCaOpen] = useState(false);
+  // 用 lazy initializer 从 env 直接算初值，避免"先收起再展开"的闪动
+  // （每次切回配置页 ConfigPanel 会重新挂载，若初值 false 再靠 effect 改 true 就会闪）。
+  const [caOpen, setCaOpen] = useState(() => !!env && (env.cert_count ?? 0) > 0);
   const [caMsg, setCaMsg] = useState<{ type: StatusType; msg: string }>({
     type: "info",
     msg: "",
   });
   const certCount = env?.cert_count ?? 0;
 
-  // 已导入证书时，默认展开 CA 区
+  // 仅在 env 挂载后才到达（首次启动 env 异步加载）时，按证书张数自动展开一次
   useEffect(() => {
     if (env && env.cert_count > 0) setCaOpen(true);
   }, [env]);

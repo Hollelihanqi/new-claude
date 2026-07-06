@@ -102,13 +102,13 @@ fn generate_sh(list: &[Profile]) -> String {
         }
         o += &format!("    {n})\n");
         o += &format!(
-            "      shift; _cch=\"$HOME/.claude-split/{n}\"; mkdir -p \"$_cch/.local/bin\"\n"
+            "      shift; _cch=\"$HOME/.claude-split/{n}/.claude\"; mkdir -p \"$_cch\"\n"
         );
         if p.type_ == "router" {
             let url = sh_q(&p.base_url);
             let svc = sh_q(&format!("{KEYCHAIN_PREFIX}:{n}"));
             let mut envs = format!(
-                "HOME=\"$_cch\" ANTHROPIC_BASE_URL={url} ANTHROPIC_AUTH_TOKEN=\"$(security find-generic-password -s {svc} -w 2>/dev/null)\" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+                "CLAUDE_CONFIG_DIR=\"$_cch\" ANTHROPIC_BASE_URL={url} ANTHROPIC_AUTH_TOKEN=\"$(security find-generic-password -s {svc} -w 2>/dev/null)\" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
             );
             if !p.opus_model.is_empty() {
                 envs += &format!(" ANTHROPIC_DEFAULT_OPUS_MODEL={}", sh_q(&p.opus_model));
@@ -121,7 +121,7 @@ fn generate_sh(list: &[Profile]) -> String {
             }
             o += &format!("      {envs} command claude \"$@\" ;;\n");
         } else {
-            o += "      HOME=\"$_cch\" command claude \"$@\" ;;\n";
+            o += "      CLAUDE_CONFIG_DIR=\"$_cch\" command claude \"$@\" ;;\n";
         }
     }
     o += "    *) command claude \"$@\" ;;\n  esac\n}\n";
@@ -149,11 +149,11 @@ fn generate_ps1(list: &[Profile]) -> String {
             continue;
         }
         o += &format!("    {} {{\n", ps_q(n));
-        o += &format!("      $h = Join-Path $env:USERPROFILE '.claude-split\\{n}'\n");
-        o += "      New-Item -ItemType Directory -Force -Path (Join-Path $h '.local\\bin') | Out-Null\n";
-        o += "      $bk=@{USERPROFILE=$env:USERPROFILE;ANTHROPIC_BASE_URL=$env:ANTHROPIC_BASE_URL;ANTHROPIC_AUTH_TOKEN=$env:ANTHROPIC_AUTH_TOKEN;ANTHROPIC_DEFAULT_OPUS_MODEL=$env:ANTHROPIC_DEFAULT_OPUS_MODEL;ANTHROPIC_DEFAULT_SONNET_MODEL=$env:ANTHROPIC_DEFAULT_SONNET_MODEL;ANTHROPIC_DEFAULT_HAIKU_MODEL=$env:ANTHROPIC_DEFAULT_HAIKU_MODEL;CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC}\n";
+        o += &format!("      $h = Join-Path $env:USERPROFILE '.claude-split\\{n}\\.claude'\n");
+        o += "      New-Item -ItemType Directory -Force -Path $h | Out-Null\n";
+        o += "      $bk=@{CLAUDE_CONFIG_DIR=$env:CLAUDE_CONFIG_DIR;ANTHROPIC_BASE_URL=$env:ANTHROPIC_BASE_URL;ANTHROPIC_AUTH_TOKEN=$env:ANTHROPIC_AUTH_TOKEN;ANTHROPIC_DEFAULT_OPUS_MODEL=$env:ANTHROPIC_DEFAULT_OPUS_MODEL;ANTHROPIC_DEFAULT_SONNET_MODEL=$env:ANTHROPIC_DEFAULT_SONNET_MODEL;ANTHROPIC_DEFAULT_HAIKU_MODEL=$env:ANTHROPIC_DEFAULT_HAIKU_MODEL;CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC}\n";
         o += "      try {\n";
-        o += "        $env:USERPROFILE=$h\n";
+        o += "        $env:CLAUDE_CONFIG_DIR=$h\n";
         if p.type_ == "router" {
             o += &format!("        $env:ANTHROPIC_BASE_URL={}\n", ps_q(&p.base_url));
             o += "        $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1'\n";
@@ -211,8 +211,30 @@ fn ensure_line(path: &PathBuf, line: &str) -> std::io::Result<()> {
     fs::write(path, format!("{existing}{sep}{line}\n"))
 }
 
+// 旧方案重定向 HOME/USERPROFILE，实例的 .claude.json 落在实例根目录；
+// 新方案用 CLAUDE_CONFIG_DIR 指向 <实例>/.claude，CLI 会到该目录下找 .claude.json，
+// 这里把旧文件搬进去，保留登录态、项目信任等状态。
+fn migrate_instances(list: &[Profile]) {
+    for p in list {
+        if p.name.is_empty() {
+            continue;
+        }
+        let inst = home().join(".claude-split").join(&p.name);
+        let cfg = inst.join(".claude");
+        for f in [".claude.json", ".claude.json.backup"] {
+            let old = inst.join(f);
+            let new = cfg.join(f);
+            if old.is_file() && !new.exists() {
+                let _ = fs::create_dir_all(&cfg);
+                let _ = fs::rename(&old, &new);
+            }
+        }
+    }
+}
+
 fn install_integration(list: &[Profile]) -> Result<String, String> {
     fs::create_dir_all(cfg_dir()).map_err(|e| e.to_string())?;
+    migrate_instances(list);
     if cfg!(target_os = "windows") {
         fs::write(ps_path(), generate_ps1(list)).map_err(|e| e.to_string())?;
         let out = ps_command()
