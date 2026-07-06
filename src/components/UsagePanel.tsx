@@ -11,14 +11,16 @@ import {
   Popover,
 } from "@mantine/core";
 import { DatePicker } from "@mantine/dates";
+import type { DatesRangeValue } from "@mantine/dates";
 import "@mantine/dates/styles.css";
 import { IconRefresh, IconChartLine, IconInfoCircle, IconCalendar } from "@tabler/icons-react";
 import * as echarts from "echarts";
-import { api } from "../api.js";
+import type { EChartsOption } from "echarts";
+import type { UsageStats } from "../api";
 
-function EChart({ option, height = 340 }) {
-  const ref = useRef(null);
-  const inst = useRef(null);
+function EChart({ option, height = 340 }: { option: EChartsOption; height?: number }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const inst = useRef<echarts.ECharts | null>(null);
   useEffect(() => {
     if (!ref.current) return;
     inst.current = echarts.init(ref.current);
@@ -35,25 +37,30 @@ function EChart({ option, height = 340 }) {
   return <div ref={ref} style={{ width: "100%", height }} />;
 }
 
-const fmt = (n) => {
+const fmt = (n: number) => {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
   if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
   return String(Math.round(n));
 };
 
-const pad = (n) => String(n).padStart(2, "0");
-const dstr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const pad = (n: number) => String(n).padStart(2, "0");
+// 接受 Date 或 "YYYY-MM-DD" 字符串（Mantine 8 DatePicker 可能给任意一种）
+const dstr = (d: Date | string) =>
+  typeof d === "string"
+    ? d
+    : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 // UTC 的 "2026-06-22T04" → 本地 { date, hour }
-const toLocal = (dt) => {
+const toLocal = (dt: string) => {
   const d = new Date(dt + ":00:00Z");
   return { date: dstr(d), hour: d.getHours() };
 };
 const todayLocal = () => dstr(new Date());
-const daysAgoLocal = (n) => dstr(new Date(Date.now() - (n - 1) * 86400000));
+const daysAgoLocal = (n: number) => dstr(new Date(Date.now() - (n - 1) * 86400000));
 
 // 折线配色（不随主题，固定好看的渐变）
-const SERIES = [
+type SeriesKey = "input" | "output" | "cacheCreate" | "cacheRead";
+const SERIES: { key: SeriesKey; name: string; color: string }[] = [
   { key: "input", name: "输入", color: "#3b82f6" },
   { key: "output", name: "输出", color: "#10b981" },
   { key: "cacheCreate", name: "缓存创建", color: "#f59e0b" },
@@ -61,7 +68,13 @@ const SERIES = [
 ];
 
 // 卡片配色（各不相同）+ 计算口径说明
-const CARDS = [
+const CARDS: {
+  key: "input" | "output" | "requests" | "conversations" | "cacheRead";
+  label: string;
+  bg: string;
+  fg: string;
+  desc: string;
+}[] = [
   {
     key: "input",
     label: "总输入 token",
@@ -107,7 +120,19 @@ const QUICK = [
   { value: "all", label: "全部" },
 ];
 
-function StatCard({ label, value, bg, fg, desc }) {
+function StatCard({
+  label,
+  value,
+  bg,
+  fg,
+  desc,
+}: {
+  label: string;
+  value: string;
+  bg: string;
+  fg: string;
+  desc?: string;
+}) {
   return (
     <Card withBorder padding="md" radius="lg" style={{ background: bg }}>
       <Text size="xs" style={{ color: fg, opacity: 0.85 }}>
@@ -125,13 +150,19 @@ function StatCard({ label, value, bg, fg, desc }) {
   );
 }
 
-function StatCardDual() {
-  return null;
-}
-
-export default function UsagePanel({ data, err, busy, onRefresh }) {
-  const [range, setRange] = useState({ kind: "today" });
-  const [custom, setCustom] = useState([null, null]);
+export default function UsagePanel({
+  data,
+  err,
+  busy,
+  onRefresh,
+}: {
+  data: UsageStats | null;
+  err: string;
+  busy: boolean;
+  onRefresh: () => void;
+}) {
+  const [range, setRange] = useState<{ kind: string }>({ kind: "today" });
+  const [custom, setCustom] = useState<DatesRangeValue>([null, null]);
   const [pop, setPop] = useState(false);
   const [model, setModel] = useState("__all__");
   const [profile, setProfile] = useState("__all__");
@@ -203,7 +234,8 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
   }, [data, profile, bounds]);
 
   const series = useMemo(() => {
-    const bucket = new Map();
+    type BucketValue = { input: number; output: number; cacheCreate: number; cacheRead: number };
+    const bucket = new Map<string, BucketValue>();
     for (const r of rows) {
       const key = byHour ? pad(r.hour) : r.date;
       const cur = bucket.get(key) || { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 };
@@ -211,22 +243,22 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
       cur.cacheCreate += r.cacheCreate; cur.cacheRead += r.cacheRead;
       bucket.set(key, cur);
     }
-    let labels;
+    let labels: string[];
     if (byHour) labels = Array.from({ length: 24 }, (_, h) => pad(h));
     else labels = Array.from(bucket.keys()).sort();
-    const pick = (k) => labels.map((l) => (bucket.get(l) ? bucket.get(l)[k] : 0));
+    const pick = (k: keyof BucketValue) => labels.map((l) => (bucket.get(l) ? bucket.get(l)![k] : 0));
     const disp = byHour ? labels.map((h) => h + ":00") : labels;
     return { labels: disp, input: pick("input"), output: pick("output"), cacheCreate: pick("cacheCreate"), cacheRead: pick("cacheRead") };
   }, [rows, byHour]);
 
   const byModel = useMemo(() => {
-    const m = new Map();
+    const m = new Map<string, number>();
     for (const r of rows) m.set(r.model, (m.get(r.model) || 0) + r.input + r.output);
     return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [rows]);
 
-  const lineOption = useMemo(() => {
-    const mkArea = (color) => ({
+  const lineOption = useMemo((): EChartsOption => {
+    const mkArea = (color: string) => ({
       color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
         { offset: 0, color: color + "55" },
         { offset: 1, color: color + "05" },
@@ -237,7 +269,7 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
       legend: { data: SERIES.map((s) => s.name), top: 0 },
       grid: { left: 56, right: 22, top: 40, bottom: 48 },
       xAxis: { type: "category", boundaryGap: false, data: series.labels, axisLabel: { rotate: byHour ? 0 : 30 } },
-      yAxis: { type: "value", axisLabel: { formatter: (v) => fmt(v) } },
+      yAxis: { type: "value", axisLabel: { formatter: (v: number) => fmt(v) } },
       series: SERIES.map((s) => ({
         name: s.name,
         type: "line",
@@ -251,8 +283,8 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
     };
   }, [series, byHour]);
 
-  const pieOption = useMemo(() => ({
-    tooltip: { trigger: "item", formatter: (p) => `${p.name}<br/>${fmt(p.value)} (${p.percent}%)` },
+  const pieOption = useMemo((): EChartsOption => ({
+    tooltip: { trigger: "item", formatter: (p: any) => `${p.name}<br/>${fmt(Number(p.value))} (${p.percent ?? 0}%)` },
     legend: { type: "scroll", bottom: 0 },
     series: [{ type: "pie", radius: ["42%", "70%"], data: byModel, label: { formatter: "{b}" } }],
   }), [byModel]);
@@ -266,7 +298,7 @@ export default function UsagePanel({ data, err, busy, onRefresh }) {
     return QUICK.find((q) => q.value === range.kind)?.label || "当天";
   }, [range, custom]);
 
-  const pickQuick = (v) => {
+  const pickQuick = (v: string) => {
     setRange({ kind: v });
     setCustom([null, null]);
     setPop(false);

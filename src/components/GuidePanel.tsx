@@ -10,9 +10,6 @@ import {
   Code,
   List,
   Alert,
-  Badge,
-  Divider,
-  Box,
 } from "@mantine/core";
 import {
   IconRoute,
@@ -20,13 +17,21 @@ import {
   IconShieldLock,
   IconLink,
   IconBrandReact,
-  IconBulb,
   IconChecklist,
   IconArrowDown,
   IconTrash,
 } from "@tabler/icons-react";
+import type { ReactNode } from "react";
 
-function Tech({ icon, name, desc }) {
+function Tech({
+  icon,
+  name,
+  desc,
+}: {
+  icon: ReactNode;
+  name: string;
+  desc: string;
+}) {
   return (
     <Card withBorder radius="md" padding="md">
       <Group gap="sm" mb={6}>

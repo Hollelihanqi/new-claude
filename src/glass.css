@@ -1,7 +1,13 @@
 /* 干净实色 + 双主题 */
+html,
+body,
+#root {
+  height: 100%;
+}
 body {
   margin: 0;
   color: #3a3632;
+  overflow: hidden;
 }
 
 /* 隐藏滚动条，但保留滚动能力 */

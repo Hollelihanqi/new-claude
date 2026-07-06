@@ -29,7 +29,8 @@ import {
   IconCertificate,
   IconListSearch,
 } from "@tabler/icons-react";
-import { api } from "../api.js";
+import { api } from "../api";
+import type { Profile, EnvInfo } from "../api";
 
 // 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
 const PRESET_MODELS = [
@@ -53,7 +54,7 @@ const PRESET_MODELS = [
   "claude-qw3.6-plus",
 ];
 
-const empty = {
+const empty: FormState = {
   name: "",
   type: "router",
   baseUrl: "",
@@ -64,24 +65,50 @@ const empty = {
   haikuModel: "",
 };
 
-const isCertError = (s) => /cert|ssl|self.?signed|证书|signature/i.test(String(s));
+const isCertError = (s: string) =>
+  /cert|ssl|self.?signed|证书|signature/i.test(String(s));
 
-export default function ConfigPanel({ env, onChanged }) {
-  const [profiles, setProfiles] = useState([]);
-  const [sel, setSel] = useState(null);
-  const [form, setForm] = useState(empty);
+type StatusType = "info" | "error" | "success";
+
+interface FormState {
+  name: string;
+  type: Profile["type"];
+  baseUrl: string;
+  shareSkills: boolean;
+  sharePlugins: boolean;
+  opusModel: string;
+  sonnetModel: string;
+  haikuModel: string;
+}
+
+export default function ConfigPanel({
+  env,
+  onChanged,
+}: {
+  env: EnvInfo | null;
+  onChanged?: () => void;
+}) {
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [sel, setSel] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState>(empty);
   const [token, setToken] = useState("");
-  const [status, setStatus] = useState({ type: "info", msg: "" });
+  const [status, setStatus] = useState<{ type: StatusType; msg: string }>({
+    type: "info",
+    msg: "",
+  });
   const [busyAction, setBusyAction] = useState("");
   const [certPath, setCertPath] = useState("");
 
   // 检测到的当前实例模型（合并进下方下拉）
-  const [detected, setDetected] = useState([]);
+  const [detected, setDetected] = useState<string[]>([]);
   const [detectBusy, setDetectBusy] = useState(false);
 
   // CA 证书区（全局）：开关 + 反馈
   const [caOpen, setCaOpen] = useState(false);
-  const [caMsg, setCaMsg] = useState({ type: "info", msg: "" });
+  const [caMsg, setCaMsg] = useState<{ type: StatusType; msg: string }>({
+    type: "info",
+    msg: "",
+  });
   const certCount = env?.cert_count ?? 0;
 
   // 已导入证书时，默认展开 CA 区
@@ -97,7 +124,7 @@ export default function ConfigPanel({ env, onChanged }) {
   };
   useEffect(load, []);
 
-  const pickProfile = (p) => {
+  const pickProfile = (p: Profile) => {
     setSel(p.name);
     setForm({
       name: p.name,
@@ -279,7 +306,7 @@ export default function ConfigPanel({ env, onChanged }) {
         display: "flex",
         gap: 16,
         alignItems: "stretch",
-        height: "calc(100vh - 170px)",
+        height: "100%",
       }}
     >
       {/* 左栏：实例列表 + 全局 CA 证书，独立滚动 */}
@@ -432,7 +459,7 @@ export default function ConfigPanel({ env, onChanged }) {
                 { value: "account", label: "另一个账户（独立登录）" },
               ]}
               value={form.type}
-              onChange={(v) => setForm({ ...form, type: v || "router" })}
+              onChange={(v) => setForm({ ...form, type: (v || "router") as Profile["type"] })}
               allowDeselect={false}
             />
 
