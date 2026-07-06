@@ -37,6 +37,7 @@ struct EnvInfo {
     claude_found: bool,
     integrated: bool,
     cert_imported: bool,
+    cert_count: usize,
 }
 
 // ---------------- 路径 ----------------
@@ -483,22 +484,69 @@ fn environment() -> EnvInfo {
         claude_found: claude_found(),
         integrated: cfg_path().exists(),
         cert_imported: cert_path().exists(),
+        cert_count: count_certs(),
     }
 }
 
-// 导入 CA 证书：复制到固定位置，并刷新集成脚本（脚本顶部会设置 NODE_EXTRA_CA_CERTS）
+// 统计信任库里已有几张证书（按 PEM 块计数）
+fn count_certs() -> usize {
+    fs::read_to_string(cert_path())
+        .map(|s| s.matches("-----BEGIN CERTIFICATE-----").count())
+        .unwrap_or(0)
+}
+
+// 导入 CA 证书：去重追加到固定 bundle 文件，并刷新集成脚本（脚本顶部会设置 NODE_EXTRA_CA_CERTS）
+// 一个文件可放多张 PEM 证书，Node 会全部信任，故不同网关的不同证书都能共存、所有实例通用。
 #[tauri::command]
 fn import_cert(path: String) -> Result<String, String> {
     let src = PathBuf::from(path.trim());
     if !src.exists() {
         return Err("证书文件不存在，请确认路径。".into());
     }
+    let new_cert = fs::read_to_string(&src).map_err(|e| format!("读取证书失败：{e}"))?;
+    if !new_cert.contains("-----BEGIN CERTIFICATE-----") {
+        return Err("文件里没找到 PEM 证书（缺 -----BEGIN CERTIFICATE-----）。".into());
+    }
     fs::create_dir_all(cfg_dir()).map_err(|e| e.to_string())?;
-    fs::copy(&src, cert_path()).map_err(|e| format!("复制证书失败：{e}"))?;
+    let dest = cert_path();
+    let existing = fs::read_to_string(&dest).unwrap_or_default();
+    // 去重：按"去掉所有换行"后的整段文本比对，已存在则跳过
+    let norm = |s: &str| s.replace(['\r', '\n'], "");
+    if norm(&existing).contains(&norm(&new_cert)) {
+        return Ok(format!(
+            "该证书已在信任库中（当前共 {} 张），无需重复导入。",
+            count_certs()
+        ));
+    }
+    let sep = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let mut to_write = format!("{existing}{sep}{new_cert}");
+    if !to_write.ends_with('\n') {
+        to_write.push('\n');
+    }
+    fs::write(&dest, to_write).map_err(|e| format!("写入证书失败：{e}"))?;
     // 重新生成集成脚本，使其包含 NODE_EXTRA_CA_CERTS
     let list = load();
     let _ = install_integration(&list);
-    Ok("证书已导入。请重开终端后生效。".into())
+    Ok(format!(
+        "证书已导入（累计 {} 张）。请重开终端后生效。",
+        count_certs()
+    ))
+}
+
+// 清空所有 CA 证书
+#[tauri::command]
+fn clear_certs() -> Result<String, String> {
+    let p = cert_path();
+    if p.exists() {
+        fs::remove_file(&p).map_err(|e| format!("删除证书失败：{e}"))?;
+    }
+    let list = load();
+    let _ = install_integration(&list);
+    Ok("已清空所有 CA 证书。请重开终端后生效。".into())
 }
 
 // 检测网关可用模型：请求 {base_url}/v1/models
@@ -787,6 +835,7 @@ fn main() {
             sync_links,
             environment,
             import_cert,
+            clear_certs,
             detect_models,
             detect_models_for,
             usage_stats

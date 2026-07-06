@@ -7,11 +7,7 @@ import {
   Alert,
   Container,
   SegmentedControl,
-  Popover,
-  Select,
   Button,
-  Stack,
-  Loader,
 } from "@mantine/core";
 import {
   IconSettings,
@@ -22,8 +18,6 @@ import {
   IconBrandWindows,
   IconCircleCheck,
   IconAlertTriangle,
-  IconCertificate,
-  IconListSearch,
   IconDownload,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
@@ -88,96 +82,6 @@ function NavPill({ value, onChange }) {
   );
 }
 
-function ModelDetect({ profiles }) {
-  const [opened, setOpened] = useState(false);
-  const [sel, setSel] = useState(null);
-  const [list, setList] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-
-  const routerProfiles = (profiles || []).filter((p) => p.type === "router");
-  const opts = routerProfiles.map((p) => ({ value: p.name, label: p.name }));
-
-  const run = (name) => {
-    setSel(name);
-    setList([]);
-    setErr("");
-    if (!name) return;
-    setBusy(true);
-    api
-      .detectModelsFor(name)
-      .then(setList)
-      .catch((e) => setErr(String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  return (
-    <Popover opened={opened} onChange={setOpened} position="bottom-end" width={300} shadow="md">
-      <Popover.Target>
-        <Button
-          size="xs"
-          variant="white"
-          leftSection={<IconListSearch size={14} />}
-          onClick={() => setOpened((o) => !o)}
-        >
-          模型检测
-        </Button>
-      </Popover.Target>
-      <Popover.Dropdown>
-        <Stack gap="xs">
-          <Text size="sm" fw={600}>
-            查看网关可用模型
-          </Text>
-          <Select
-            placeholder={opts.length ? "选择实例" : "暂无自定义路由实例"}
-            data={opts}
-            value={sel}
-            onChange={run}
-            disabled={!opts.length}
-            comboboxProps={{ withinPortal: true }}
-          />
-          {busy && (
-            <Group gap={6}>
-              <Loader size="xs" />
-              <Text size="xs" c="dimmed">
-                检测中…
-              </Text>
-            </Group>
-          )}
-          {err && (
-            <Text size="xs" c="red">
-              {err}
-            </Text>
-          )}
-          {list.length > 0 && (
-            <>
-              <Text size="xs" c="dimmed">
-                共 {list.length} 个可用模型：
-              </Text>
-              <Group gap={5}>
-                {list.map((m) => (
-                  <Badge
-                    key={m}
-                    variant="light"
-                    style={{ textTransform: "none", cursor: "pointer" }}
-                    onClick={() => {
-                      try {
-                        navigator.clipboard?.writeText(m);
-                      } catch (_) {}
-                    }}
-                  >
-                    {m}
-                  </Badge>
-                ))}
-              </Group>
-            </>
-          )}
-        </Stack>
-      </Popover.Dropdown>
-    </Popover>
-  );
-}
-
 function StatusPills({ env }) {
   if (!env) return null;
   const PlatformIcon =
@@ -197,13 +101,6 @@ function StatusPills({ env }) {
       >
         {env.claude_found ? "claude 就绪" : "未装 claude"}
       </Badge>
-      <Badge
-        {...pill}
-        color={env.cert_imported ? "teal" : "gray"}
-        leftSection={<IconCertificate size={13} />}
-      >
-        {env.cert_imported ? "证书已导入" : "未导入证书"}
-      </Badge>
     </Group>
   );
 }
@@ -212,7 +109,6 @@ export default function App({ scheme, setScheme }) {
   const [env, setEnv] = useState(null);
   const [err, setErr] = useState("");
   const [view, setView] = useState("config");
-  const [profiles, setProfiles] = useState([]);
   const [upd, setUpd] = useState({ state: "idle" });
   const [appVersion, setAppVersion] = useState("");
   const [usageData, setUsageData] = useState(null);
@@ -290,7 +186,6 @@ export default function App({ scheme, setScheme }) {
 
   const refreshEnv = () => {
     api.environment().then(setEnv).catch((e) => setErr(String(e)));
-    api.listProfiles().then(setProfiles).catch(() => {});
   };
   useEffect(refreshEnv, []);
 
@@ -353,7 +248,6 @@ export default function App({ scheme, setScheme }) {
               >
                 检查更新
               </Button>
-              <ModelDetect profiles={profiles} />
               <Group gap={8}>
                 {[
                   { k: "a", c: "#fd752c", t: "橘橙主题" },

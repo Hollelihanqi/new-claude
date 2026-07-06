@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Grid,
   Card,
   Stack,
   Group,
@@ -11,7 +10,6 @@ import {
   Switch,
   Text,
   Title,
-  ScrollArea,
   NavLink,
   Badge,
   Code,
@@ -19,6 +17,7 @@ import {
   Box,
   Autocomplete,
   Divider,
+  Collapse,
 } from "@mantine/core";
 import {
   IconPlus,
@@ -27,8 +26,8 @@ import {
   IconWorld,
   IconUser,
   IconInfoCircle,
-  IconRefresh,
   IconCertificate,
+  IconListSearch,
 } from "@tabler/icons-react";
 import { api } from "../api.js";
 
@@ -76,6 +75,20 @@ export default function ConfigPanel({ env, onChanged }) {
   const [busyAction, setBusyAction] = useState("");
   const [certPath, setCertPath] = useState("");
 
+  // 检测到的当前实例模型（合并进下方下拉）
+  const [detected, setDetected] = useState([]);
+  const [detectBusy, setDetectBusy] = useState(false);
+
+  // CA 证书区（全局）：开关 + 反馈
+  const [caOpen, setCaOpen] = useState(false);
+  const [caMsg, setCaMsg] = useState({ type: "info", msg: "" });
+  const certCount = env?.cert_count ?? 0;
+
+  // 已导入证书时，默认展开 CA 区
+  useEffect(() => {
+    if (env && env.cert_count > 0) setCaOpen(true);
+  }, [env]);
+
   const load = () => {
     api
       .listProfiles()
@@ -97,12 +110,14 @@ export default function ConfigPanel({ env, onChanged }) {
       haikuModel: p.haikuModel || "",
     });
     setToken("");
+    setDetected([]);
   };
 
   const onNew = () => {
     setSel(null);
     setForm(empty);
     setToken("");
+    setDetected([]);
     setStatus({ type: "info", msg: "填写名称（即命令词，如 bj）后保存。" });
   };
 
@@ -112,6 +127,43 @@ export default function ConfigPanel({ env, onChanged }) {
     if (/[\s\\/:*?"<>|]/.test(n))
       return '名称不能含空格或 \\ / : * ? " < > | 等字符。';
     return null;
+  };
+
+  // 模型下拉候选 = 检测到的 + 预设，去重
+  const modelOpts = useMemo(
+    () => Array.from(new Set([...detected, ...PRESET_MODELS])),
+    [detected]
+  );
+
+  const onDetect = async () => {
+    setDetectBusy(true);
+    try {
+      let list;
+      if (sel) {
+        // 编辑已存在实例：用后端存的 key
+        list = await api.detectModelsFor(sel);
+      } else {
+        // 新建未保存：用表单里填的 baseUrl + key
+        if (!form.baseUrl.trim()) {
+          setStatus({ type: "error", msg: "请先填写网关地址再检测。" });
+          return;
+        }
+        if (!token.trim()) {
+          setStatus({ type: "error", msg: "新建实例需先填 API Key 才能检测模型。" });
+          return;
+        }
+        list = await api.detectModels(form.baseUrl.trim(), token.trim());
+      }
+      setDetected(list || []);
+      setStatus({
+        type: "success",
+        msg: `检测到 ${(list || []).length} 个可用模型，已加入下方下拉。`,
+      });
+    } catch (e) {
+      setStatus({ type: "error", msg: String(e) });
+    } finally {
+      setDetectBusy(false);
+    }
   };
 
   const onSave = async () => {
@@ -159,7 +211,7 @@ export default function ConfigPanel({ env, onChanged }) {
       setStatus({
         type: "error",
         msg: isCertError(m)
-          ? "保存出错，疑似证书问题。可在下方导入 CA 证书后重试。原始错误：" + m
+          ? "保存出错，疑似证书问题。可在左侧「CA 证书」导入证书后重试。原始错误：" + m
           : m,
       });
     } finally {
@@ -188,16 +240,29 @@ export default function ConfigPanel({ env, onChanged }) {
 
   const onImportCert = async () => {
     if (!certPath.trim()) {
-      setStatus({ type: "error", msg: "请填写证书文件（ca-cert.pem）的完整路径。" });
+      setCaMsg({ type: "error", msg: "请填写证书文件（ca-cert.pem）的完整路径。" });
       return;
     }
     setBusyAction("import");
     try {
       const msg = await api.importCert(certPath.trim());
       onChanged && onChanged();
-      setStatus({ type: "success", msg });
+      setCaMsg({ type: "success", msg });
     } catch (e) {
-      setStatus({ type: "error", msg: String(e) });
+      setCaMsg({ type: "error", msg: String(e) });
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const onClearCerts = async () => {
+    setBusyAction("clear");
+    try {
+      const msg = await api.clearCerts();
+      onChanged && onChanged();
+      setCaMsg({ type: "success", msg });
+    } catch (e) {
+      setCaMsg({ type: "error", msg: String(e) });
     } finally {
       setBusyAction("");
     }
@@ -209,21 +274,35 @@ export default function ConfigPanel({ env, onChanged }) {
     env?.platform === "windows" ? "C:\\ca-cert.pem" : "/Users/you/ca-cert.pem";
 
   return (
-    <Grid gutter="md">
-      <Grid.Col span={{ base: 12, sm: 4 }}>
-        <Card withBorder padding="sm" radius="md">
-          <Group justify="space-between" mb="xs">
-            <Title order={5}>实例</Title>
-            <Button
-              size="xs"
-              variant="light"
-              leftSection={<IconPlus size={14} />}
-              onClick={onNew}
-            >
-              新建
-            </Button>
-          </Group>
-          <ScrollArea.Autosize mah={420}>
+    <div
+      style={{
+        display: "flex",
+        gap: 16,
+        alignItems: "stretch",
+        height: "calc(100vh - 170px)",
+      }}
+    >
+      {/* 左栏：实例列表 + 全局 CA 证书，独立滚动 */}
+      <div
+        style={{
+          flex: "0 0 33.3333%",
+          minWidth: 260,
+          overflowY: "auto",
+        }}
+      >
+        <Stack gap="md">
+          <Card withBorder padding="sm" radius="md">
+            <Group justify="space-between" mb="xs">
+              <Title order={5}>实例</Title>
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconPlus size={14} />}
+                onClick={onNew}
+              >
+                新建
+              </Button>
+            </Group>
             <Stack gap={4}>
               {profiles.length === 0 && (
                 <Text size="sm" c="dimmed" p="xs">
@@ -247,11 +326,82 @@ export default function ConfigPanel({ env, onChanged }) {
                 />
               ))}
             </Stack>
-          </ScrollArea.Autosize>
-        </Card>
-      </Grid.Col>
+          </Card>
 
-      <Grid.Col span={{ base: 12, sm: 8 }}>
+          {/* 全局 CA 证书：整机共享，所有实例通用 */}
+          <Card withBorder padding="sm" radius="md">
+            <Group justify="space-between" mb={4}>
+              <Group gap={6}>
+                <IconCertificate size={16} />
+                <Title order={6}>CA 证书</Title>
+              </Group>
+              <Badge size="sm" variant="light" color={certCount ? "teal" : "gray"}>
+                {certCount ? `${certCount} 张` : "未导入"}
+              </Badge>
+            </Group>
+            <Text size="xs" c="dimmed" mb="xs">
+              整机共享：多张证书会自动合并到一个信任库，所有实例通用。
+            </Text>
+            <Switch
+              label="使用自定义 CA 证书"
+              checked={caOpen}
+              onChange={(e) => setCaOpen(e.currentTarget.checked)}
+            />
+            <Collapse in={caOpen}>
+              <Stack gap="xs" mt="sm">
+                {caMsg.msg && (
+                  <Text
+                    size="xs"
+                    c={
+                      caMsg.type === "error"
+                        ? "red"
+                        : caMsg.type === "success"
+                        ? "teal"
+                        : "dimmed"
+                    }
+                  >
+                    {caMsg.msg}
+                  </Text>
+                )}
+                <TextInput
+                  size="xs"
+                  placeholder={certPlaceholder}
+                  value={certPath}
+                  onChange={(e) => setCertPath(e.currentTarget.value)}
+                />
+                <Group gap="xs">
+                  <Button
+                    size="xs"
+                    onClick={onImportCert}
+                    loading={busyAction === "import"}
+                  >
+                    导入（追加）
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    color="red"
+                    onClick={onClearCerts}
+                    loading={busyAction === "clear"}
+                    disabled={!certCount}
+                  >
+                    清空
+                  </Button>
+                </Group>
+              </Stack>
+            </Collapse>
+          </Card>
+        </Stack>
+      </div>
+
+      {/* 右栏：实例设置表单（独立滚动） */}
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflowY: "auto",
+        }}
+      >
         <Card withBorder padding="lg" radius="md">
           <Stack gap="sm">
             <Group justify="space-between">
@@ -314,60 +464,42 @@ export default function ConfigPanel({ env, onChanged }) {
                   label="模型映射（把 Claude 的模型档位指到网关可用的模型）"
                   labelPosition="left"
                 />
-                <Text size="xs" c="dimmed">
-                  从下拉里选网关支持的模型；可用模型可在右上角「模型检测」查看。
-                </Text>
+                <Group justify="space-between" align="center">
+                  <Text size="xs" c="dimmed">
+                    点「检测模型」从当前网关拉取可用模型，自动加入下方下拉。
+                  </Text>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconListSearch size={14} />}
+                    onClick={onDetect}
+                    loading={detectBusy}
+                  >
+                    检测模型
+                  </Button>
+                </Group>
 
                 <Autocomplete
                   label="Opus 档（复杂任务，最强）"
                   placeholder="如 glm-5.2 / claude-opus-4-7"
-                  data={PRESET_MODELS}
+                  data={modelOpts}
                   value={form.opusModel}
                   onChange={(v) => setForm({ ...form, opusModel: v })}
                 />
                 <Autocomplete
                   label="Sonnet 档（日常默认）"
                   placeholder="如 glm-5.1 / claude-sonnet-4-6"
-                  data={PRESET_MODELS}
+                  data={modelOpts}
                   value={form.sonnetModel}
                   onChange={(v) => setForm({ ...form, sonnetModel: v })}
                 />
                 <Autocomplete
                   label="Haiku 档（轻量、快速、后台子任务）"
                   placeholder="如 glm-5-turbo / claude-haiku-4-5"
-                  data={PRESET_MODELS}
+                  data={modelOpts}
                   value={form.haikuModel}
                   onChange={(v) => setForm({ ...form, haikuModel: v })}
                 />
-
-                <Divider my={4} label="CA 证书（整机一次，所有实例共享）" labelPosition="left" />
-                <Alert
-                  variant="light"
-                  color={env?.cert_imported ? "teal" : "yellow"}
-                  icon={<IconCertificate size={16} />}
-                  title={
-                    env?.cert_imported
-                      ? "已导入 CA 证书"
-                      : "公司网关需先导入 CA 证书（否则连不上）"
-                  }
-                >
-                  <Text size="sm" mb={6}>
-                    公司网关用自签名证书。把管理员给的 <Code>ca-cert.pem</Code>{" "}
-                    填上完整路径后点「导入」，整机生效一次、所有实例共用，无需每个实例都弄。
-                  </Text>
-                  <Group align="flex-end" gap="xs">
-                    <TextInput
-                      style={{ flex: 1 }}
-                      size="xs"
-                      placeholder={certPlaceholder}
-                      value={certPath}
-                      onChange={(e) => setCertPath(e.currentTarget.value)}
-                    />
-                    <Button size="xs" onClick={onImportCert} loading={busyAction === "import"}>
-                      导入
-                    </Button>
-                  </Group>
-                </Alert>
               </>
             )}
 
@@ -448,7 +580,7 @@ export default function ConfigPanel({ env, onChanged }) {
             </Text>
           </Stack>
         </Card>
-      </Grid.Col>
-    </Grid>
+      </div>
+    </div>
   );
 }
