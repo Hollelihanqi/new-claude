@@ -74,7 +74,18 @@ export interface AvailablePlugin {
   marketplaceName: string;
   installCount?: number;
   version?: string;
+  source?: PluginSource;
 }
+
+export type PluginSource =
+  | string
+  | {
+      source?: string;
+      url?: string;
+      path?: string;
+      ref?: string;
+      sha?: string;
+    };
 
 export interface PluginListResult {
   installed: InstalledPlugin[];
@@ -115,4 +126,6 @@ export const api = {
     invoke("plugin_uninstall", { pluginId }),
   pluginSetEnabled: (pluginId: string, enabled: boolean): Promise<string> =>
     invoke("plugin_set_enabled", { pluginId, enabled }),
+  openExternalUrl: (url: string): Promise<void> =>
+    invoke("open_external_url", { url }),
 };

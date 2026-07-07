@@ -114,6 +114,28 @@ pub struct InstalledPlugin {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum PluginSource {
+    Text(String),
+    Object(PluginSourceObject),
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSourceObject {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default, rename = "ref")]
+    ref_: Option<String>,
+    #[serde(default)]
+    sha: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailablePlugin {
     plugin_id: String,
@@ -125,6 +147,8 @@ pub struct AvailablePlugin {
     install_count: Option<u64>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    source: Option<PluginSource>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,4 +206,33 @@ pub fn plugin_set_enabled(plugin_id: String, enabled: bool) -> Result<String, St
     let out = run_claude(&["plugin", sub, plugin_id.as_str(), "--scope", "user"])?;
     broadcast_after_mutate();
     Ok(out.trim().to_string())
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("只支持打开 http/https 链接".into());
+    }
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = Command::new("rundll32.exe");
+        c.args(["url.dll,FileProtocolHandler", url]);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打开链接失败：{e}"))
 }

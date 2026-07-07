@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Box,
   Group,
@@ -214,12 +214,17 @@ export default function App({
     api.syncAll().catch(() => {});
   }, []);
 
-  const loadUsage = () => {
+  const loadUsage = useCallback(() => {
     setUsageBusy(true);
     setUsageErr("");
     api.usageStats().then(setUsageData).catch((e) => setUsageErr(String(e))).finally(() => setUsageBusy(false));
-  };
-  useEffect(loadUsage, []);
+  }, []);
+  useEffect(() => {
+    loadUsage();
+  }, [loadUsage]);
+  useEffect(() => {
+    if (view === "usage") loadUsage();
+  }, [view, loadUsage]);
   useEffect(() => {
     checkUpdate(false);
     getVersion().then(setAppVersion).catch(() => {});

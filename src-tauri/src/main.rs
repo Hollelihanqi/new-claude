@@ -819,7 +819,8 @@ fn main() {
             marketplace::plugin_list,
             marketplace::plugin_install,
             marketplace::plugin_uninstall,
-            marketplace::plugin_set_enabled
+            marketplace::plugin_set_enabled,
+            marketplace::open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

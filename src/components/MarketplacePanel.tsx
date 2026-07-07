@@ -23,10 +23,12 @@ import {
   IconDownload,
   IconBuildingStore,
   IconWorld,
+  IconExternalLink,
+  IconGitBranch,
 } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { api } from "../api";
-import type { MarketplaceEntry, PluginListResult } from "../api";
+import type { MarketplaceEntry, PluginListResult, PluginSource } from "../api";
 
 type Tab = "all" | "installed" | "available";
 
@@ -38,7 +40,44 @@ interface CardItem {
   installCount?: number;
   installed: boolean;
   enabled?: boolean;
+  source?: PluginSource;
+  sourceUrl?: string;
+  sourceLabel?: string;
+  marketUrl?: string;
 }
+
+const githubRepoUrl = (repo?: string | null) =>
+  repo ? `https://github.com/${repo.replace(/^github:/, "").replace(/\.git$/, "")}` : "";
+
+const normalizeGitUrl = (url?: string) => (url ? url.replace(/\.git$/, "") : "");
+
+const joinGitPath = (repoUrl: string, ref?: string, path?: string) => {
+  const clean = normalizeGitUrl(repoUrl);
+  if (!clean || !path) return clean;
+  return `${clean}/tree/${ref || "main"}/${path.replace(/^\.?\//, "")}`;
+};
+
+const sourceUrl = (source: PluginSource | undefined, market?: MarketplaceEntry) => {
+  if (!source) return "";
+  if (typeof source === "string") {
+    if (/^https?:\/\//i.test(source)) return normalizeGitUrl(source);
+    const marketRoot = market?.url || githubRepoUrl(market?.repo);
+    if (source.startsWith("./") && marketRoot) return joinGitPath(marketRoot, "main", source);
+    return marketRoot;
+  }
+  if (source.url) return joinGitPath(source.url, source.ref, source.path);
+  return market?.url || githubRepoUrl(market?.repo);
+};
+
+const sourceLabel = (source: PluginSource | undefined) => {
+  if (!source) return "market source";
+  if (typeof source === "string") {
+    if (source.startsWith("./")) return source.replace(/^\.\//, "");
+    return source;
+  }
+  if (source.path) return source.path;
+  return source.source || "source";
+};
 
 export default function MarketplacePanel() {
   const [markets, setMarkets] = useState<MarketplaceEntry[]>([]);
@@ -80,30 +119,51 @@ export default function MarketplacePanel() {
   }, []);
 
   const items: CardItem[] = useMemo(() => {
+    const marketByName = new Map(markets.map((m) => [m.name, m]));
+    const installedIds = new Set(pluginData.installed.map((p) => p.id));
+    const availableById = new Map(pluginData.available.map((p) => [p.pluginId, p]));
     const installed: CardItem[] = pluginData.installed.map((p) => {
       const at = p.id.lastIndexOf("@");
       const name = at >= 0 ? p.id.slice(0, at) : p.id;
       const marketplaceName = at >= 0 ? p.id.slice(at + 1) : p.scope;
+      const meta = availableById.get(p.id);
+      const market = marketByName.get(meta?.marketplaceName || marketplaceName);
+      const src = meta?.source;
       return {
         key: p.id,
-        name,
-        marketplaceName,
+        name: meta?.name || name,
+        marketplaceName: meta?.marketplaceName || marketplaceName,
+        description: meta?.description,
+        installCount: meta?.installCount,
         installed: true,
         enabled: p.enabled,
+        source: src,
+        sourceUrl: sourceUrl(src, market),
+        sourceLabel: sourceLabel(src),
+        marketUrl: market?.url || githubRepoUrl(market?.repo),
       };
     });
-    const available: CardItem[] = pluginData.available.map((p) => ({
-      key: p.pluginId,
-      name: p.name,
-      marketplaceName: p.marketplaceName,
-      description: p.description,
-      installCount: p.installCount,
-      installed: false,
-    }));
+    const available: CardItem[] = pluginData.available
+      .filter((p) => !installedIds.has(p.pluginId))
+      .map((p) => {
+        const market = marketByName.get(p.marketplaceName);
+        return {
+          key: p.pluginId,
+          name: p.name,
+          marketplaceName: p.marketplaceName,
+          description: p.description,
+          installCount: p.installCount,
+          installed: false,
+          source: p.source,
+          sourceUrl: sourceUrl(p.source, market),
+          sourceLabel: sourceLabel(p.source),
+          marketUrl: market?.url || githubRepoUrl(market?.repo),
+        };
+      });
     if (tab === "installed") return installed;
     if (tab === "available") return available;
     return [...installed, ...available];
-  }, [pluginData, tab]);
+  }, [markets, pluginData, tab]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -228,6 +288,18 @@ export default function MarketplacePanel() {
       .finally(() => setBusyId(""));
   };
 
+  const openLink = (url?: string) => {
+    if (!url) return;
+    api.openExternalUrl(url).catch((e) =>
+      notifications.show({
+        color: "red",
+        title: "打开链接失败",
+        message: String(e),
+        autoClose: 5000,
+      })
+    );
+  };
+
   const marketOptions = [
     { value: "", label: "全部市场" },
     ...markets.map((m) => ({ value: m.name, label: m.name })),
@@ -254,10 +326,26 @@ export default function MarketplacePanel() {
               <Group key={m.name} justify="space-between" wrap="nowrap" gap={4}>
                 <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
                   <IconWorld size={14} />
-                  <Text size="sm" truncate>
-                    {m.name}
-                  </Text>
+                  <Stack gap={0} style={{ minWidth: 0 }}>
+                    <Text size="sm" truncate>
+                      {m.name}
+                    </Text>
+                    <Text size="xs" c="dimmed" truncate>
+                      {m.repo || m.url || m.source}
+                    </Text>
+                  </Stack>
                 </Group>
+                {(m.url || m.repo) && (
+                  <Tooltip label="打开市场仓库">
+                    <ActionIcon
+                      size="sm"
+                      variant="subtle"
+                      onClick={() => openLink(m.url || githubRepoUrl(m.repo))}
+                    >
+                      <IconExternalLink size={14} />
+                    </ActionIcon>
+                  </Tooltip>
+                )}
                 <Tooltip label="移除该市场">
                   <ActionIcon
                     size="sm"
@@ -354,9 +442,22 @@ export default function MarketplacePanel() {
                 <Card key={it.key} withBorder padding="sm" radius="md">
                   <Stack gap={4}>
                     <Group justify="space-between" wrap="nowrap">
-                      <Text fw={600} size="sm" truncate>
-                        {it.name}
-                      </Text>
+                      <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+                        <Text fw={600} size="sm" truncate>
+                          {it.name}
+                        </Text>
+                        {it.sourceUrl && (
+                          <Tooltip label="打开仓库或插件目录">
+                            <ActionIcon
+                              size="sm"
+                              variant="subtle"
+                              onClick={() => openLink(it.sourceUrl)}
+                            >
+                              <IconExternalLink size={14} />
+                            </ActionIcon>
+                          </Tooltip>
+                        )}
+                      </Group>
                       {it.installed ? (
                         <Badge size="sm" color="teal" variant="light">
                           已安装
@@ -368,10 +469,16 @@ export default function MarketplacePanel() {
                       )}
                     </Group>
                     {it.description && (
-                      <Text size="xs" c="dimmed" lineClamp={2}>
+                      <Text size="xs" c="dimmed" lineClamp={4}>
                         {it.description}
                       </Text>
                     )}
+                    <Group gap={6} wrap="nowrap" mt={2}>
+                      <IconGitBranch size={13} opacity={0.55} />
+                      <Text size="xs" c="dimmed" truncate>
+                        {it.sourceLabel || it.marketplaceName}
+                      </Text>
+                    </Group>
                     <Group justify="space-between" mt={4}>
                       <Text size="xs" c="dimmed">
                         {it.installed
