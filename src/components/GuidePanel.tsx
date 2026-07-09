@@ -210,6 +210,25 @@ export default function GuidePanel() {
       </Card>
 
       <Alert
+        color="orange"
+        variant="light"
+        icon={<IconChecklist size={18} />}
+        title="模型映射的两个注意点"
+      >
+        <List size="sm" spacing="xs">
+          <List.Item>
+            在实例会话里用 <Code>/model</Code> 时<b>只选档位别名</b>（Opus / Sonnet /
+            Haiku / Default），不要选具体型号 ID——具体型号会写死进实例配置、绕过
+            这里设置的模型映射。App 会在「实例配置」页检测到并提供一键还原。
+          </List.Item>
+          <List.Item>
+            尽量<b>在项目目录里</b>启动实例，别在家目录（~）下直接跑：家目录下主账户的{" "}
+            <Code>/model</Code> 选择会以"项目级配置"的身份覆盖实例的档位映射。
+          </List.Item>
+        </List>
+      </Alert>
+
+      <Alert
         color="teal"
         variant="light"
         icon={<IconShieldLock size={18} />}

@@ -25,9 +25,10 @@ import {
   IconUser,
   IconInfoCircle,
   IconListSearch,
+  IconAlertTriangle,
 } from "@tabler/icons-react";
 import { api } from "../api";
-import type { Profile } from "../api";
+import type { Profile, ModelPinWarning } from "../api";
 
 // 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
 const PRESET_MODELS = [
@@ -93,13 +94,38 @@ export default function ConfigPanel({
   const [detected, setDetected] = useState<string[]>([]);
   const [detectBusy, setDetectBusy] = useState(false);
 
+  // /model 钉死具体型号的告警（含主账户 __main__）
+  const [pins, setPins] = useState<ModelPinWarning[]>([]);
+  const [fixBusy, setFixBusy] = useState("");
+
+  const loadPins = () => {
+    api.modelPinWarnings().then((ws) => setPins(ws || [])).catch(() => {});
+  };
+
   const load = () => {
     api
       .listProfiles()
       .then((ps) => setProfiles(ps || []))
       .catch((e) => setStatus({ type: "error", msg: String(e) }));
+    loadPins();
   };
   useEffect(load, []);
+
+  const pinLabel = (profile: string) =>
+    profile === "__main__" ? "主账户" : `实例 ${profile}`;
+
+  const onFixPin = async (profile: string) => {
+    setFixBusy(profile);
+    try {
+      const m = await api.fixModelPin(profile);
+      setStatus({ type: "success", msg: `${pinLabel(profile)}：${m}` });
+      loadPins();
+    } catch (e) {
+      setStatus({ type: "error", msg: String(e) });
+    } finally {
+      setFixBusy("");
+    }
+  };
 
   const pickProfile = (p: Profile) => {
     setSel(p.name);
@@ -237,11 +263,59 @@ export default function ConfigPanel({
     <div
       style={{
         display: "flex",
-        gap: 16,
-        alignItems: "stretch",
+        flexDirection: "column",
+        gap: 12,
         height: "100%",
       }}
     >
+      {/* 模型映射被绕过的告警：/model 钉死了具体型号 */}
+      {pins.length > 0 && (
+        <Alert
+          color="orange"
+          variant="light"
+          icon={<IconAlertTriangle size={16} />}
+          title="模型映射被绕过"
+          style={{ flex: "0 0 auto" }}
+        >
+          <Stack gap={6}>
+            {pins.map((w) => (
+              <Group key={w.profile} gap="xs" wrap="nowrap" justify="space-between">
+                <Text size="sm">
+                  {pinLabel(w.profile)} 的 <Code>/model</Code> 钉死了具体型号{" "}
+                  <Code>{w.model}</Code>
+                  {w.profile === "__main__"
+                    ? "，在家目录下启动实例时会覆盖实例的档位映射。"
+                    : "，会绕过这里配置的档位映射。"}
+                </Text>
+                <Button
+                  size="xs"
+                  variant="light"
+                  color="orange"
+                  loading={fixBusy === w.profile}
+                  onClick={() => onFixPin(w.profile)}
+                  style={{ flexShrink: 0 }}
+                >
+                  一键还原
+                </Button>
+              </Group>
+            ))}
+            <Text size="xs" c="dimmed">
+              还原＝删除写死的型号、回到档位别名（映射重新生效）。会话内用 /model
+              时请只选 Opus / Sonnet / Haiku 档位，不要选具体型号。
+            </Text>
+          </Stack>
+        </Alert>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          gap: 16,
+          alignItems: "stretch",
+          flex: "1 1 auto",
+          minHeight: 0,
+        }}
+      >
       {/* 左栏：实例列表，独立滚动 */}
       <div
         style={{
@@ -280,6 +354,11 @@ export default function ConfigPanel({
                   ) : (
                     <IconUser size={16} />
                   )
+                }
+                rightSection={
+                  pins.some((w) => w.profile === p.name) ? (
+                    <IconAlertTriangle size={15} color="var(--mantine-color-orange-6)" />
+                  ) : undefined
                 }
                 onClick={() => pickProfile(p)}
               />
@@ -461,6 +540,7 @@ export default function ConfigPanel({
             </Text>
           </Stack>
         </Card>
+      </div>
       </div>
     </div>
   );

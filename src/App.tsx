@@ -34,6 +34,7 @@ import UsagePanel from "./components/UsagePanel";
 import GuidePanel from "./components/GuidePanel";
 import MarketplacePanel from "./components/MarketplacePanel";
 import CaCertButton from "./components/CaCertButton";
+import HealthButton from "./components/HealthButton";
 
 type ViewId = "config" | "usage" | "guide" | "marketplace";
 type Scheme = "a" | "b";
@@ -282,6 +283,7 @@ export default function App({
                 >
                   检查更新
                 </Button>
+                <HealthButton />
                 <CaCertButton env={env} onChanged={refreshEnv} />
                 <Group gap={8}>
                   {([

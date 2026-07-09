@@ -192,6 +192,36 @@ pub fn ensure_links(names: &[String]) -> Result<Vec<String>, String> {
     Ok(msgs)
 }
 
+// 健康检查用:找出各实例缺失/指错的共享目录链接,只报告不修复
+// (修复由 ensure_links 在下次启动时完成)。逻辑与 ensure_links 的判定分支一一对应。
+pub fn broken_links(names: &[String]) -> Vec<String> {
+    let master = master_dir();
+    let mut probs = vec![];
+    for name in names {
+        if name.is_empty() {
+            continue;
+        }
+        let inst = instance_dir(name);
+        if !inst.exists() {
+            continue; // 实例从未启动且未建链,不算异常
+        }
+        for sub in SHARED_SUBDIRS {
+            let dst = inst.join(sub);
+            match fs::symlink_metadata(&dst) {
+                Err(_) => probs.push(format!("{name}/{sub} 链接缺失")),
+                Ok(m) if m.file_type().is_symlink() => {
+                    if !link_points_to(&dst, &master.join(sub)) {
+                        probs.push(format!("{name}/{sub} 链接指向异常"));
+                    }
+                }
+                Ok(m) if m.is_dir() => probs.push(format!("{name}/{sub} 是独立目录（未共享）")),
+                Ok(_) => probs.push(format!("{name}/{sub} 被同名文件占用")),
+            }
+        }
+    }
+    probs
+}
+
 // ---------------- 配置字段合并同步 ----------------
 
 #[derive(Default, Serialize, Deserialize)]
@@ -243,7 +273,7 @@ fn read_replica(key: &str, path: &Path, field: &str) -> ReplicaState {
     }
 }
 
-fn write_json_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
+pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(v)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let tmp = path.with_extension("ccm-tmp");

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+mod health;
 mod marketplace;
 mod sync;
 
@@ -583,8 +584,9 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
     };
+    // 带超时:健康检查会对每个路由实例并行探测,不能被无响应的网关挂死
     let config = format!(
-        "silent\ninsecure\nheader = \"Authorization: Bearer {}\"\nurl = \"{}\"\n",
+        "silent\ninsecure\nconnect-timeout = 5\nmax-time = 15\nheader = \"Authorization: Bearer {}\"\nurl = \"{}\"\n",
         esc(token.trim()),
         esc(&url)
     );
@@ -901,6 +903,10 @@ fn main() {
             detect_models,
             detect_models_for,
             usage_stats,
+            health::model_pin_warnings,
+            health::fix_model_pin,
+            health::health_check,
+            health::export_diagnostics,
             marketplace::plugin_marketplace_list,
             marketplace::plugin_marketplace_add,
             marketplace::plugin_marketplace_remove,

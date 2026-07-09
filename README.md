@@ -129,19 +129,27 @@ App 内「使用指南」标签页有更详细的图文说明。
 ```
 cc-switch/
 ├── index.html / vite.config.js / package.json   前端入口与依赖
-├── src/                       React + Mantine 界面
-│   ├── App.jsx                顶部状态 + 两个 Tab
-│   ├── api.js                 调用 Rust 命令
+├── src/                       React + Mantine 界面（TypeScript）
+│   ├── App.tsx                顶栏 + 导航 + 自动更新
+│   ├── api.ts                 调用 Rust 命令（类型与后端一一对应）
 │   └── components/
-│       ├── ConfigPanel.jsx    实例配置
-│       └── GuidePanel.jsx     使用指南
+│       ├── ConfigPanel.tsx    实例配置（含模型钉死告警 + 一键还原）
+│       ├── MarketplacePanel.tsx  skill/插件市场
+│       ├── UsagePanel.tsx     用量统计
+│       ├── GuidePanel.tsx     使用指南
+│       ├── HealthButton.tsx   顶栏健康检查 + 导出诊断文件
+│       └── CaCertButton.tsx   顶栏 CA 证书管理
 ├── src-tauri/                 Rust 后端（系统操作）
-│   ├── src/main.rs            全部命令实现
+│   ├── src/main.rs            实例/集成/证书/用量等命令
+│   ├── src/health.rs          健康检查、模型钉死检测、诊断导出
+│   ├── src/sync.rs            共享链接与 MCP/插件启用状态合并同步
+│   ├── src/marketplace.rs     插件市场（封装 claude plugin 子命令）
 │   ├── tauri.conf.json        应用配置
 │   ├── capabilities/          权限
 │   ├── icons/                 各平台图标（已生成）
 │   └── Cargo.toml
-└── .github/workflows/release.yml   自动构建双平台包
+├── .github/workflows/ci.yml        每次 push/PR 跑前端构建 + Rust 单测
+└── .github/workflows/release.yml   打 tag 自动构建双平台包
 
 提示：未在 Linux 容器内本地编译 Rust（目标是 mac/win）。
 前端已通过 Vite 构建验证；Rust 端会在 GitHub Actions 或你本地首次构建时编译。

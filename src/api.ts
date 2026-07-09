@@ -48,6 +48,21 @@ export interface UsageStats {
   totalConversations: number;
 }
 
+/** ModelPinWarning（serde rename_all = camelCase）：/model 钉死具体型号、绕过档位映射 */
+export interface ModelPinWarning {
+  profile: string; // 实例名；主账户为 __main__
+  model: string;
+  settingsPath: string;
+}
+
+/** HealthItem（serde rename_all = camelCase） */
+export interface HealthItem {
+  id: string;
+  label: string;
+  status: "ok" | "warn" | "fail";
+  detail: string;
+}
+
 /** MarketplaceEntry（serde rename_all = camelCase） */
 export interface MarketplaceEntry {
   name: string;
@@ -112,6 +127,13 @@ export const api = {
   detectModelsFor: (name: string): Promise<string[]> =>
     invoke("detect_models_for", { name }),
   usageStats: (): Promise<UsageStats> => invoke("usage_stats"),
+  // 健康与诊断
+  modelPinWarnings: (): Promise<ModelPinWarning[]> =>
+    invoke("model_pin_warnings"),
+  fixModelPin: (profile: string): Promise<string> =>
+    invoke("fix_model_pin", { profile }),
+  healthCheck: (): Promise<HealthItem[]> => invoke("health_check"),
+  exportDiagnostics: (): Promise<string> => invoke("export_diagnostics"),
   // skill/plugin 市场：检索、安装均落到主账户 ~/.claude，装完自动广播给各实例
   pluginMarketplaceList: (): Promise<MarketplaceEntry[]> =>
     invoke("plugin_marketplace_list"),
