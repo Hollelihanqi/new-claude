@@ -439,3 +439,124 @@ pub fn sync_configs(names: &[String]) -> Result<String, String> {
     .map_err(|e| format!("写快照失败:{e}"))?;
     Ok(summary.join(";"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // 每个测试用独立临时目录，避免并行跑测试时互相踩文件；Drop 时自动清理。
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "ccm-sync-test-{tag}-{}-{n}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            TmpDir(dir)
+        }
+        fn file(&self, name: &str, content: &str) -> PathBuf {
+            let p = self.0.join(name);
+            fs::write(&p, content).unwrap();
+            p
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn sync_domain_first_run_unions_all_replicas() {
+        let dir = TmpDir::new("first-run");
+        let a = dir.file("a.json", r#"{"mcpServers":{"x":{"a":1}}}"#);
+        let b = dir.file("b.json", r#"{"mcpServers":{"y":{"b":2}}}"#);
+        let files = vec![("a".to_string(), a.clone()), ("b".to_string(), b.clone())];
+
+        let (snap, _written) = sync_domain("mcpServers", &files, None);
+
+        assert_eq!(snap.state.len(), 2);
+        assert!(snap.state.contains_key("x"));
+        assert!(snap.state.contains_key("y"));
+
+        // 首轮应把并集写回两边
+        let doc_a: Value = serde_json::from_str(&fs::read_to_string(&a).unwrap()).unwrap();
+        let merged_a = doc_a.get("mcpServers").unwrap().as_object().unwrap();
+        assert!(merged_a.contains_key("x"));
+        assert!(merged_a.contains_key("y"));
+    }
+
+    #[test]
+    fn sync_domain_propagates_deletion_to_other_replicas() {
+        let dir = TmpDir::new("delete");
+        // a 已经删除了 y，b 仍停留在旧状态
+        let a = dir.file("a.json", r#"{"mcpServers":{"x":{"v":1}}}"#);
+        let b = dir.file("b.json", r#"{"mcpServers":{"x":{"v":1},"y":{"v":2}}}"#);
+        let files = vec![("a".to_string(), a.clone()), ("b".to_string(), b.clone())];
+
+        let mut old_state = Map::new();
+        old_state.insert("x".to_string(), serde_json::json!({"v": 1}));
+        old_state.insert("y".to_string(), serde_json::json!({"v": 2}));
+        let old = DomainSnap {
+            state: old_state,
+            replicas: vec!["a".to_string(), "b".to_string()],
+        };
+
+        let (snap, written) = sync_domain("mcpServers", &files, Some(&old));
+
+        assert_eq!(written, 1, "只有 b 需要改写，a 已经是目标状态");
+        assert!(!snap.state.contains_key("y"), "删除应扩散进最终状态");
+        assert!(snap.state.contains_key("x"));
+
+        let doc_b: Value = serde_json::from_str(&fs::read_to_string(&b).unwrap()).unwrap();
+        let merged_b = doc_b.get("mcpServers").unwrap().as_object().unwrap();
+        assert!(!merged_b.contains_key("y"), "y 应已从 b 中删除");
+        assert!(merged_b.contains_key("x"));
+    }
+
+    #[test]
+    fn sync_domain_new_replica_does_not_delete_inherited_keys() {
+        let dir = TmpDir::new("new-replica");
+        // a 是旧副本、内容不变；c 是新加入的实例，只带了自己的 key
+        let a = dir.file("a.json", r#"{"mcpServers":{"x":{"v":1}}}"#);
+        let c = dir.file("c.json", r#"{"mcpServers":{"z":{"v":3}}}"#);
+        let files = vec![("a".to_string(), a.clone()), ("c".to_string(), c.clone())];
+
+        let mut old_state = Map::new();
+        old_state.insert("x".to_string(), serde_json::json!({"v": 1}));
+        let old = DomainSnap {
+            state: old_state,
+            replicas: vec!["a".to_string()],
+        };
+
+        let (snap, _written) = sync_domain("mcpServers", &files, Some(&old));
+
+        assert!(
+            snap.state.contains_key("x"),
+            "老实例的 key 不该因为新实例没有而被当成删除"
+        );
+        assert!(snap.state.contains_key("z"), "新实例带来的 key 应被采纳");
+    }
+
+    #[test]
+    fn sync_domain_skips_replica_whose_file_is_unparseable() {
+        let dir = TmpDir::new("bad-json");
+        let a = dir.file("a.json", r#"{"mcpServers":{"x":{"v":1}}}"#);
+        let broken = dir.file("broken.json", "not json");
+        let files = vec![
+            ("a".to_string(), a.clone()),
+            ("broken".to_string(), broken.clone()),
+        ];
+
+        let (snap, _written) = sync_domain("mcpServers", &files, None);
+
+        assert!(snap.state.contains_key("x"));
+        // 解析失败的副本不应被覆盖，等它自愈
+        assert_eq!(fs::read_to_string(&broken).unwrap(), "not json");
+    }
+}

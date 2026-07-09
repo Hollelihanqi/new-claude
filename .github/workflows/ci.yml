@@ -1,0 +1,47 @@
+name: ci
+
+# 每次 push / PR 都跑一遍前端构建（含 tsc 类型检查）和 Rust 单元测试，
+# 避免坏改动混进 main 才被 release.yml（仅打 tag 时触发）发现。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # 与 release.yml 保持一致：项目只支持 macOS / Windows，
+        # 用这两个平台的 runner 就不用额外装 Linux 上 tauri 依赖的 GTK/WebKit 系统库。
+        platform: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # npm run build = tsc --noEmit && vite build：既做类型检查，
+      # 又产出 dist/ —— cargo test 编译 tauri::generate_context! 时要求 frontendDist 存在
+      - name: 前端类型检查并构建
+        run: npm run build
+
+      - name: Rust 单元测试
+        working-directory: src-tauri
+        run: cargo test

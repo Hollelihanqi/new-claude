@@ -219,12 +219,12 @@ export default function App({
     setUsageErr("");
     api.usageStats().then(setUsageData).catch((e) => setUsageErr(String(e))).finally(() => setUsageBusy(false));
   }, []);
+  // 全量扫描各实例会话记录开销不小（主账户历史可达数百 MB），
+  // 不在启动时扫，首次进入用量页才加载；之后复用结果，手动点「刷新」再重扫。
   useEffect(() => {
-    loadUsage();
-  }, [loadUsage]);
-  useEffect(() => {
-    if (view === "usage") loadUsage();
-  }, [view, loadUsage]);
+    if (view === "usage" && !usageData && !usageBusy) loadUsage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, usageData, loadUsage]);
   useEffect(() => {
     checkUpdate(false);
     getVersion().then(setAppVersion).catch(() => {});

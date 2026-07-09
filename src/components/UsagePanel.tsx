@@ -177,7 +177,11 @@ export default function UsagePanel({
   }, [allRows]);
   const profileOpts = useMemo(() => {
     const set = Array.from(new Set(allRows.map((r) => r.profile))).sort();
-    return [{ value: "__all__", label: "全部实例" }, ...set.map((p) => ({ value: p, label: p }))];
+    // __main__ 是后端标记主账户的稳定键，显示文案在前端映射（同 __all__ 哨兵的处理方式）
+    return [
+      { value: "__all__", label: "全部实例" },
+      ...set.map((p) => ({ value: p, label: p === "__main__" ? "主账户" : p })),
+    ];
   }, [allRows]);
 
   // 计算有效起止（本地日期）

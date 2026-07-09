@@ -126,8 +126,13 @@ export default function ConfigPanel({
   const valid = () => {
     const n = form.name.trim();
     if (!n) return "请填写实例名称。";
-    if (/[\s\\/:*?"<>|]/.test(n))
-      return '名称不能含空格或 \\ / : * ? " < > | 等字符。';
+    // 编辑已有实例：名称不可改（输入框已禁用），旧规则时代的名字放行，只校验新建
+    if (sel) return null;
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(n))
+      return "名称只能包含英文字母、数字、下划线、短横线（1~40 个字符）。";
+    if (n.startsWith("__")) return "名称不能以 __ 开头（内部保留前缀）。";
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(n))
+      return "该名称是 Windows 保留设备名，请换一个。";
     return null;
   };
 
@@ -305,7 +310,7 @@ export default function ConfigPanel({
               description={
                 sel
                   ? "名称创建后不可修改（它是固定的命令词）。如需改名，请删除后重新新建。"
-                  : "例如填 bj，之后在终端用 claude bj。建议英文/数字、无空格。创建后名称不可修改。"
+                  : "例如填 bj，之后在终端用 claude bj。只能用英文字母/数字/下划线/短横线。创建后名称不可修改。"
               }
               placeholder="bj"
               value={form.name}

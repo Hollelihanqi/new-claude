@@ -8,7 +8,37 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 发版前先跑测试：不通过就不构建、不发布，避免 auto-updater 把未测试的包推给全体用户
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: 缓存 cargo 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: 安装前端依赖
+        run: npm ci
+      # 构建含 tsc 类型检查，并产出 cargo test 编译所需的 dist/
+      - name: 前端类型检查并构建
+        run: npm run build
+      - name: Rust 单元测试
+        working-directory: src-tauri
+        run: cargo test
+
   build:
+    needs: test
     permissions:
       contents: write
     strategy:

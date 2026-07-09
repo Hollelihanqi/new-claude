@@ -102,8 +102,8 @@ fn generate_sh(list: &[Profile]) -> String {
     o += "claude() {\n  case \"$1\" in\n";
     for p in list {
         let n = &p.name;
-        if n.is_empty() {
-            continue;
+        if !script_safe_name(n) {
+            continue; // 不安全名字绝不写进脚本；install_integration 会对此告警
         }
         o += &format!("    {n})\n");
         o += &format!(
@@ -160,8 +160,8 @@ fn generate_ps1(list: &[Profile]) -> String {
     o += "  switch ($sub) {\n";
     for p in list {
         let n = &p.name;
-        if n.is_empty() {
-            continue;
+        if !script_safe_name(n) {
+            continue; // 不安全名字绝不写进脚本；install_integration 会对此告警
         }
         o += &format!("    {} {{\n", ps_q(n));
         o += &format!("      $h = Join-Path $env:USERPROFILE '.claude-split\\{n}\\.claude'\n");
@@ -249,6 +249,36 @@ fn migrate_instances(list: &[Profile]) {
     }
 }
 
+// 实例名会被直接拼进生成的 cc.sh(bash case 分支)/cc.ps1(PowerShell switch 分支)里，
+// 必须限制为安全字符集，否则特殊字符(如 ) ; $ ` ' 空格)会破坏脚本语法，导致 claude 函数整体失效。
+// 只约束【新建】实例；已存在于 config.json 的旧名字走 script_safe_name 的生成期兜底。
+fn valid_name(n: &str) -> bool {
+    if n.is_empty()
+        || n.len() > 40
+        || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return false;
+    }
+    // __ 前缀保留给内部哨兵值(前端用 __all__ 作筛选哨兵、后端用 __main__ 标记主账户)
+    if n.starts_with("__") {
+        return false;
+    }
+    // Windows 保留设备名无法作为目录名创建(.claude-split/<name> 会失败)
+    !matches!(
+        n.to_ascii_lowercase().as_str(),
+        "con" | "prn" | "aux" | "nul"
+            | "com1" | "com2" | "com3" | "com4" | "com5" | "com6" | "com7" | "com8" | "com9"
+            | "lpt1" | "lpt2" | "lpt3" | "lpt4" | "lpt5" | "lpt6" | "lpt7" | "lpt8" | "lpt9"
+    )
+}
+
+// 脚本生成期的最后防线：存量配置里可能有旧规则时代保存的名字(中文/点号等)，
+// 它们本身无害、继续放行；只拦截会破坏 bash case 分支或引号/路径语法的字符。
+// is_alphanumeric 按 Unicode 判定，中文字母数字均通过；空白、) ; $ ` ' " 等一律拦下。
+fn script_safe_name(n: &str) -> bool {
+    !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 fn profile_names(list: &[Profile]) -> Vec<String> {
     list.iter()
         .map(|p| p.name.clone())
@@ -260,11 +290,23 @@ fn install_integration(list: &[Profile]) -> Result<String, String> {
     fs::create_dir_all(cfg_dir()).map_err(|e| e.to_string())?;
     migrate_instances(list);
     // 所有实例始终与主账户共享 skills/plugins/agents/commands(幂等)
-    let link_warns = sync::ensure_links(&profile_names(list)).unwrap_or_else(|e| vec![e]);
+    let mut link_warns = sync::ensure_links(&profile_names(list)).unwrap_or_else(|e| vec![e]);
+    // 名字含不安全字符的实例不会被写进终端脚本(generate_sh/ps1 里跳过)，明确告知而不是静默失效
+    let unsafe_names: Vec<&str> = list
+        .iter()
+        .map(|p| p.name.as_str())
+        .filter(|n| !n.is_empty() && !script_safe_name(n))
+        .collect();
+    if !unsafe_names.is_empty() {
+        link_warns.push(format!(
+            "实例 {} 的名称含不安全字符，已跳过、不会接入终端，请删除后用合规名称重建",
+            unsafe_names.join("、")
+        ));
+    }
     let warn_suffix = if link_warns.is_empty() {
         String::new()
     } else {
-        format!("（共享链接：{}）", link_warns.join("；"))
+        format!("（注意：{}）", link_warns.join("；"))
     };
     if cfg!(target_os = "windows") {
         fs::write(ps_path(), generate_ps1(list)).map_err(|e| e.to_string())?;
@@ -373,6 +415,15 @@ fn list_profiles() -> Vec<Profile> {
 fn save_profile(profile: Profile, token: Option<String>) -> Result<String, String> {
     let list = load();
     let mut p = profile;
+    // 先归一化再校验：校验和存储必须是同一个字符串
+    p.name = p.name.trim().to_string();
+    // 只校验新建；已存在的名字（旧规则时代创建）放行，否则老用户连换 key 都保存不了
+    let is_update = list.iter().any(|x| x.name == p.name);
+    if !is_update && !valid_name(&p.name) {
+        return Err(
+            "实例名称只能包含英文字母、数字、下划线、短横线（1~40 个字符），且不能以 __ 开头或使用 Windows 保留名。".into(),
+        );
+    }
     if p.type_ == "router" {
         match token.as_ref().filter(|s| !s.is_empty()) {
             Some(t) => match store_token(&p.name, t) {
@@ -522,19 +573,41 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
     } else {
         "curl"
     };
+    // 用 -K - 从 stdin 读取参数（含 Authorization 头），而不是拼进命令行参数，
+    // 避免 key 明文出现在本机进程列表(如 Windows 任务管理器/ps)的命令行里。
+    // curl 配置文件按行解析：先剔除控制字符(嵌入换行会跳出引号注入任意 curl 指令)，再转义 \ 和 "。
+    let esc = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !c.is_control())
+            .collect::<String>()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let config = format!(
+        "silent\ninsecure\nheader = \"Authorization: Bearer {}\"\nurl = \"{}\"\n",
+        esc(token.trim()),
+        esc(&url)
+    );
     let mut cmd = std::process::Command::new(curl);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    cmd.arg("-s");
-    // 检测仅读取模型列表、不传输敏感数据；跳过证书校验，避免证书不匹配导致无输出
-    cmd.arg("-k");
-    cmd.arg("-H")
-        .arg(format!("Authorization: Bearer {}", token.trim()));
-    cmd.arg(&url);
-    let out = cmd.output().map_err(|e| format!("调用 curl 失败：{e}"))?;
+    cmd.arg("-K").arg("-");
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("调用 curl 失败：{e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin
+            .write_all(config.as_bytes())
+            .map_err(|e| format!("写入 curl 参数失败：{e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("调用 curl 失败：{e}"))?;
     let body = String::from_utf8_lossy(&out.stdout).to_string();
     if body.trim().is_empty() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -656,128 +729,143 @@ fn collect_jsonl(dir: &PathBuf, out: &mut Vec<PathBuf>) {
     }
 }
 
+// 扫描单个实例(或主账户)的 projects 目录，把用量/对话记录累加进 map/conv。
+// 总计不在这里累加：全部可由 map/conv 推导，避免两套并行计数日后失步。
+fn scan_usage_dir(
+    profile: &str,
+    projects: &PathBuf,
+    map: &mut std::collections::HashMap<(String, String, String), UsageRow>,
+    conv: &mut Vec<ConvRow>,
+) {
+    let mut files = vec![];
+    collect_jsonl(projects, &mut files);
+    for f in files {
+        let content = match fs::read_to_string(&f) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            let has_usage = line.contains("\"usage\"");
+            // 用户真实提问：type=user 且不是工具返回（tool_result）
+            let maybe_user = line.contains("\"user\"") && !line.contains("tool_result");
+            if !has_usage && !maybe_user {
+                continue;
+            }
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(x) => x,
+                Err(_) => continue,
+            };
+            let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            // —— 对话次数：统计用户真实提问 ——
+            if typ == "user" {
+                let is_tool = v
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .map(|c| c.to_string().contains("tool_result"))
+                    .unwrap_or(false);
+                if is_tool {
+                    continue;
+                }
+                let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                if ts.len() < 13 {
+                    continue;
+                }
+                conv.push(ConvRow {
+                    datetime: ts[..13].to_string(),
+                    profile: profile.to_string(),
+                });
+                continue;
+            }
+
+            // —— API 调用次数 + token：统计 assistant 消息 ——
+            if typ != "assistant" {
+                continue;
+            }
+            let msg = match v.get("message") {
+                Some(m) => m,
+                None => continue,
+            };
+            let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("");
+            if model.is_empty() || model == "<synthetic>" {
+                continue;
+            }
+            let usage = match msg.get("usage") {
+                Some(u) => u,
+                None => continue,
+            };
+            let gi = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+            let input = gi("input_tokens");
+            let output = gi("output_tokens");
+            let cache_read = gi("cache_read_input_tokens");
+            let cache_create = gi("cache_creation_input_tokens");
+            if input + output + cache_read + cache_create == 0 {
+                continue;
+            }
+            let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+            if ts.len() < 13 {
+                continue;
+            }
+            let datetime = ts[..13].to_string(); // 例如 2026-06-22T04
+            let key = (datetime.clone(), model.to_string(), profile.to_string());
+            let row = map.entry(key).or_insert(UsageRow {
+                datetime,
+                model: model.to_string(),
+                profile: profile.to_string(),
+                input: 0,
+                output: 0,
+                cache_read: 0,
+                cache_create: 0,
+                requests: 0,
+            });
+            row.input += input;
+            row.output += output;
+            row.cache_read += cache_read;
+            row.cache_create += cache_create;
+            row.requests += 1;
+        }
+    }
+}
+
+// 主账户在用量数据里的稳定键；前端负责把它映射为显示文案（与 __all__ 哨兵同一命名空间，
+// valid_name 已保留 __ 前缀，新实例不可能占用；见 UsagePanel 的 profileOpts）。
+const MAIN_PROFILE_KEY: &str = "__main__";
+
 #[tauri::command]
 fn usage_stats() -> UsageStats {
     use std::collections::HashMap;
-    let split = home().join(".claude-split");
     let mut map: HashMap<(String, String, String), UsageRow> = HashMap::new();
     let mut conv: Vec<ConvRow> = Vec::new();
-    let mut total_input = 0u64;
-    let mut total_output = 0u64;
-    let mut total_requests = 0u64;
-    let mut total_conversations = 0u64;
 
+    // 主账户：直接跑 `claude`(不带子命令)的会话落在 ~/.claude/projects
+    let main_projects = home().join(".claude").join("projects");
+    scan_usage_dir(MAIN_PROFILE_KEY, &main_projects, &mut map, &mut conv);
+
+    let split = home().join(".claude-split");
     if let Ok(insts) = fs::read_dir(&split) {
         for inst in insts.flatten() {
             if !inst.path().is_dir() {
                 continue;
             }
             let profile = inst.file_name().to_string_lossy().to_string();
-            let projects = inst.path().join(".claude").join("projects");
-            let mut files = vec![];
-            collect_jsonl(&projects, &mut files);
-            for f in files {
-                let content = match fs::read_to_string(&f) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                for line in content.lines() {
-                    let has_usage = line.contains("\"usage\"");
-                    // 用户真实提问：type=user 且不是工具返回（tool_result）
-                    let maybe_user = line.contains("\"user\"") && !line.contains("tool_result");
-                    if !has_usage && !maybe_user {
-                        continue;
-                    }
-                    let v: serde_json::Value = match serde_json::from_str(line) {
-                        Ok(x) => x,
-                        Err(_) => continue,
-                    };
-                    let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                    // —— 对话次数：统计用户真实提问 ——
-                    if typ == "user" {
-                        let is_tool = v
-                            .get("message")
-                            .and_then(|m| m.get("content"))
-                            .map(|c| c.to_string().contains("tool_result"))
-                            .unwrap_or(false);
-                        if is_tool {
-                            continue;
-                        }
-                        let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
-                        if ts.len() < 13 {
-                            continue;
-                        }
-                        conv.push(ConvRow {
-                            datetime: ts[..13].to_string(),
-                            profile: profile.clone(),
-                        });
-                        total_conversations += 1;
-                        continue;
-                    }
-
-                    // —— API 调用次数 + token：统计 assistant 消息 ——
-                    if typ != "assistant" {
-                        continue;
-                    }
-                    let msg = match v.get("message") {
-                        Some(m) => m,
-                        None => continue,
-                    };
-                    let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("");
-                    if model.is_empty() || model == "<synthetic>" {
-                        continue;
-                    }
-                    let usage = match msg.get("usage") {
-                        Some(u) => u,
-                        None => continue,
-                    };
-                    let gi = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-                    let input = gi("input_tokens");
-                    let output = gi("output_tokens");
-                    let cache_read = gi("cache_read_input_tokens");
-                    let cache_create = gi("cache_creation_input_tokens");
-                    if input + output + cache_read + cache_create == 0 {
-                        continue;
-                    }
-                    let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
-                    if ts.len() < 13 {
-                        continue;
-                    }
-                    let datetime = ts[..13].to_string(); // 例如 2026-06-22T04
-                    let key = (datetime.clone(), model.to_string(), profile.clone());
-                    let row = map.entry(key).or_insert(UsageRow {
-                        datetime,
-                        model: model.to_string(),
-                        profile: profile.clone(),
-                        input: 0,
-                        output: 0,
-                        cache_read: 0,
-                        cache_create: 0,
-                        requests: 0,
-                    });
-                    row.input += input;
-                    row.output += output;
-                    row.cache_read += cache_read;
-                    row.cache_create += cache_create;
-                    row.requests += 1;
-                    total_input += input;
-                    total_output += output;
-                    total_requests += 1;
-                }
+            // 与主账户键同名的历史遗留目录跳过，宁可不显示也不能混进主账户数据
+            if profile == MAIN_PROFILE_KEY {
+                continue;
             }
+            let projects = inst.path().join(".claude").join("projects");
+            scan_usage_dir(&profile, &projects, &mut map, &mut conv);
         }
     }
 
     let mut daily: Vec<UsageRow> = map.into_values().collect();
     daily.sort_by(|a, b| a.datetime.cmp(&b.datetime));
     UsageStats {
+        total_input: daily.iter().map(|r| r.input).sum(),
+        total_output: daily.iter().map(|r| r.output).sum(),
+        total_requests: daily.iter().map(|r| r.requests).sum(),
+        total_conversations: conv.len() as u64,
         daily,
         conversations: conv,
-        total_input,
-        total_output,
-        total_requests,
-        total_conversations,
     }
 }
 
@@ -824,4 +912,124 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn router_profile(name: &str) -> Profile {
+        Profile {
+            name: name.to_string(),
+            type_: "router".to_string(),
+            base_url: "https://gw.example.com/anthropic".to_string(),
+            token_enc: None,
+            has_token: true,
+            opus_model: "opus-x".to_string(),
+            sonnet_model: "sonnet-x".to_string(),
+            haiku_model: "haiku-x".to_string(),
+        }
+    }
+
+    fn account_profile(name: &str) -> Profile {
+        Profile {
+            name: name.to_string(),
+            type_: "account".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn valid_name_accepts_ascii_word_chars() {
+        assert!(valid_name("bj"));
+        assert!(valid_name("corp-2"));
+        assert!(valid_name("a_b_c"));
+        assert!(valid_name(&"x".repeat(40)));
+    }
+
+    #[test]
+    fn valid_name_rejects_unsafe_or_empty() {
+        assert!(!valid_name(""));
+        assert!(!valid_name(&"x".repeat(41)));
+        assert!(!valid_name("has space"));
+        // 会破坏 bash case 分支语法
+        assert!(!valid_name("bad)name"));
+        // 会破坏命令分隔/变量展开
+        assert!(!valid_name("semi;colon"));
+        assert!(!valid_name("dollar$var"));
+        assert!(!valid_name("中文"));
+    }
+
+    #[test]
+    fn valid_name_rejects_reserved_names() {
+        // __ 前缀保留给内部哨兵值(__all__ / __main__)
+        assert!(!valid_name("__all__"));
+        assert!(!valid_name("__main__"));
+        assert!(!valid_name("__x"));
+        assert!(valid_name("_single_underscore_ok"));
+        // Windows 保留设备名（大小写不敏感）
+        assert!(!valid_name("con"));
+        assert!(!valid_name("NUL"));
+        assert!(!valid_name("Com3"));
+        assert!(!valid_name("lpt9"));
+        // 非保留的相似名放行
+        assert!(valid_name("com0"));
+        assert!(valid_name("com10"));
+        assert!(valid_name("console"));
+    }
+
+    #[test]
+    fn script_safe_name_grandfathers_legacy_but_blocks_metachars() {
+        // 旧规则时代的合法名字继续放行（不能让老用户的命令词升级后失效）
+        assert!(script_safe_name("中文"));
+        assert!(script_safe_name("gw.corp"));
+        assert!(script_safe_name("bj"));
+        // 会破坏脚本语法的一律拦下
+        assert!(!script_safe_name(""));
+        assert!(!script_safe_name("a b"));
+        assert!(!script_safe_name("bad)name"));
+        assert!(!script_safe_name("semi;colon"));
+        assert!(!script_safe_name("dollar$var"));
+        assert!(!script_safe_name("quo'te"));
+        assert!(!script_safe_name("multi\nline"));
+    }
+
+    #[test]
+    fn generate_sh_creates_case_branch_for_each_profile() {
+        let list = vec![router_profile("corp"), account_profile("alt")];
+        let script = generate_sh(&list);
+        assert!(script.contains("claude() {"));
+        assert!(script.contains("    corp)\n"));
+        assert!(script.contains("    alt)\n"));
+        assert!(script.contains("ANTHROPIC_BASE_URL="));
+        assert!(script.contains("ANTHROPIC_DEFAULT_OPUS_MODEL="));
+    }
+
+    #[test]
+    fn generate_sh_skips_empty_and_unsafe_names() {
+        // 空名 / 不安全名都不该产生 case 分支：输出必须与空列表逐字节一致
+        let list = vec![
+            account_profile(""),
+            router_profile("bad)name"),
+            account_profile("a b"),
+        ];
+        assert_eq!(generate_sh(&list), generate_sh(&[]));
+        assert_eq!(generate_ps1(&list), generate_ps1(&[]));
+    }
+
+    #[test]
+    fn generate_sh_handles_empty_profile_list() {
+        let script = generate_sh(&[]);
+        assert!(script.contains("claude() {"));
+        assert!(script.contains("*) _ccm_sync;"));
+    }
+
+    #[test]
+    fn generate_ps1_creates_switch_branch_for_each_profile() {
+        let list = vec![router_profile("corp")];
+        let script = generate_ps1(&list);
+        assert!(script.contains("function claude"));
+        assert!(script.contains("'corp' {"));
+        assert!(script.contains("ANTHROPIC_BASE_URL"));
+    }
 }
