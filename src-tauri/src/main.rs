@@ -584,9 +584,10 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
     };
-    // 带超时:健康检查会对每个路由实例并行探测,不能被无响应的网关挂死
+    // 带超时:健康检查会对每个路由实例并行探测,不能被无响应的网关挂死。
+    // silent 会吞掉错误原因,配合 show-error 让"无返回内容"时 stderr 里有真实原因可展示。
     let config = format!(
-        "silent\ninsecure\nconnect-timeout = 5\nmax-time = 15\nheader = \"Authorization: Bearer {}\"\nurl = \"{}\"\n",
+        "silent\nshow-error\ninsecure\nconnect-timeout = 5\nmax-time = 15\nheader = \"Authorization: Bearer {}\"\nurl = \"{}\"\n",
         esc(token.trim()),
         esc(&url)
     );

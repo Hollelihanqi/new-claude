@@ -139,6 +139,8 @@ export default function ConfigPanel({
     });
     setToken("");
     setDetected([]);
+    // 提示条是页面级共享状态，切实例必须清掉，否则上一个实例的报错会"跟着"过来
+    setStatus({ type: "info", msg: "" });
   };
 
   const onNew = () => {
