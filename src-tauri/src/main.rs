@@ -688,7 +688,7 @@ fn detect_models_for(name: String) -> Result<Vec<String>, String> {
 }
 
 // ---------------- 用量统计 ----------------
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct UsageRow {
     datetime: String,
@@ -701,7 +701,7 @@ struct UsageRow {
     requests: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ConvRow {
     datetime: String,
@@ -732,6 +732,47 @@ fn collect_jsonl(dir: &PathBuf, out: &mut Vec<PathBuf>) {
     }
 }
 
+// 按文件缓存解析结果：会话 jsonl 一旦写完就不再变化，mtime+size 未变的文件
+// 直接复用上次解析出的行，重复扫描只需重新解析正在追加的少数活跃文件。
+// 这是「用量页自动刷新」可行的前提——否则每 30 秒全量重读数百 MB 不可接受。
+struct UsageFileCache {
+    mtime: std::time::SystemTime,
+    size: u64,
+    rows: Vec<UsageRow>,
+    convs: Vec<ConvRow>,
+}
+
+fn usage_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, UsageFileCache>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, UsageFileCache>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn merge_rows(
+    rows: &[UsageRow],
+    map: &mut std::collections::HashMap<(String, String, String), UsageRow>,
+) {
+    for r in rows {
+        let key = (r.datetime.clone(), r.model.clone(), r.profile.clone());
+        let e = map.entry(key).or_insert_with(|| UsageRow {
+            datetime: r.datetime.clone(),
+            model: r.model.clone(),
+            profile: r.profile.clone(),
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_create: 0,
+            requests: 0,
+        });
+        e.input += r.input;
+        e.output += r.output;
+        e.cache_read += r.cache_read;
+        e.cache_create += r.cache_create;
+        e.requests += r.requests;
+    }
+}
+
 // 扫描单个实例(或主账户)的 projects 目录，把用量/对话记录累加进 map/conv。
 // 总计不在这里累加：全部可由 map/conv 推导，避免两套并行计数日后失步。
 fn scan_usage_dir(
@@ -742,100 +783,128 @@ fn scan_usage_dir(
 ) {
     let mut files = vec![];
     collect_jsonl(projects, &mut files);
+    let mut cache = usage_cache().lock().unwrap();
     for f in files {
-        let content = match fs::read_to_string(&f) {
-            Ok(c) => c,
+        let meta = match fs::metadata(&f) {
+            Ok(m) => m,
             Err(_) => continue,
         };
-        for line in content.lines() {
-            let has_usage = line.contains("\"usage\"");
-            // 用户真实提问：type=user 且不是工具返回（tool_result）
-            let maybe_user = line.contains("\"user\"") && !line.contains("tool_result");
-            if !has_usage && !maybe_user {
+        let size = meta.len();
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if let Some(hit) = cache.get(&f) {
+            if hit.size == size && hit.mtime == mtime {
+                merge_rows(&hit.rows, map);
+                conv.extend(hit.convs.iter().cloned());
                 continue;
             }
-            let v: serde_json::Value = match serde_json::from_str(line) {
-                Ok(x) => x,
-                Err(_) => continue,
-            };
-            let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        }
+        let (rows, convs) = parse_usage_file(profile, &f);
+        merge_rows(&rows, map);
+        conv.extend(convs.iter().cloned());
+        cache.insert(f, UsageFileCache { mtime, size, rows, convs });
+    }
+}
 
-            // —— 对话次数：统计用户真实提问 ——
-            if typ == "user" {
-                let is_tool = v
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .map(|c| c.to_string().contains("tool_result"))
-                    .unwrap_or(false);
-                if is_tool {
-                    continue;
-                }
-                let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
-                if ts.len() < 13 {
-                    continue;
-                }
-                conv.push(ConvRow {
-                    datetime: ts[..13].to_string(),
-                    profile: profile.to_string(),
-                });
-                continue;
-            }
+// 解析单个会话 jsonl，返回该文件内按 (datetime, model) 聚合的用量行和对话记录。
+fn parse_usage_file(profile: &str, f: &PathBuf) -> (Vec<UsageRow>, Vec<ConvRow>) {
+    let mut map: std::collections::HashMap<(String, String), UsageRow> =
+        std::collections::HashMap::new();
+    let mut conv: Vec<ConvRow> = Vec::new();
+    let content = match fs::read_to_string(f) {
+        Ok(c) => c,
+        Err(_) => return (vec![], conv),
+    };
+    for line in content.lines() {
+        let has_usage = line.contains("\"usage\"");
+        // 用户真实提问：type=user 且不是工具返回（tool_result）
+        let maybe_user = line.contains("\"user\"") && !line.contains("tool_result");
+        if !has_usage && !maybe_user {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(x) => x,
+            Err(_) => continue,
+        };
+        let typ = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-            // —— API 调用次数 + token：统计 assistant 消息 ——
-            if typ != "assistant" {
-                continue;
-            }
-            let msg = match v.get("message") {
-                Some(m) => m,
-                None => continue,
-            };
-            let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("");
-            if model.is_empty() || model == "<synthetic>" {
-                continue;
-            }
-            let usage = match msg.get("usage") {
-                Some(u) => u,
-                None => continue,
-            };
-            let gi = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-            let input = gi("input_tokens");
-            let output = gi("output_tokens");
-            let cache_read = gi("cache_read_input_tokens");
-            let cache_create = gi("cache_creation_input_tokens");
-            if input + output + cache_read + cache_create == 0 {
+        // —— 对话次数：统计用户真实提问 ——
+        if typ == "user" {
+            let is_tool = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .map(|c| c.to_string().contains("tool_result"))
+                .unwrap_or(false);
+            if is_tool {
                 continue;
             }
             let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
             if ts.len() < 13 {
                 continue;
             }
-            let datetime = ts[..13].to_string(); // 例如 2026-06-22T04
-            let key = (datetime.clone(), model.to_string(), profile.to_string());
-            let row = map.entry(key).or_insert(UsageRow {
-                datetime,
-                model: model.to_string(),
+            conv.push(ConvRow {
+                datetime: ts[..13].to_string(),
                 profile: profile.to_string(),
-                input: 0,
-                output: 0,
-                cache_read: 0,
-                cache_create: 0,
-                requests: 0,
             });
-            row.input += input;
-            row.output += output;
-            row.cache_read += cache_read;
-            row.cache_create += cache_create;
-            row.requests += 1;
+            continue;
         }
+
+        // —— API 调用次数 + token：统计 assistant 消息 ——
+        if typ != "assistant" {
+            continue;
+        }
+        let msg = match v.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+        let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("");
+        if model.is_empty() || model == "<synthetic>" {
+            continue;
+        }
+        let usage = match msg.get("usage") {
+            Some(u) => u,
+            None => continue,
+        };
+        let gi = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let input = gi("input_tokens");
+        let output = gi("output_tokens");
+        let cache_read = gi("cache_read_input_tokens");
+        let cache_create = gi("cache_creation_input_tokens");
+        if input + output + cache_read + cache_create == 0 {
+            continue;
+        }
+        let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+        if ts.len() < 13 {
+            continue;
+        }
+        let datetime = ts[..13].to_string(); // 例如 2026-06-22T04
+        let key = (datetime.clone(), model.to_string());
+        let row = map.entry(key).or_insert(UsageRow {
+            datetime,
+            model: model.to_string(),
+            profile: profile.to_string(),
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_create: 0,
+            requests: 0,
+        });
+        row.input += input;
+        row.output += output;
+        row.cache_read += cache_read;
+        row.cache_create += cache_create;
+        row.requests += 1;
     }
+    (map.into_values().collect(), conv)
 }
 
 // 主账户在用量数据里的稳定键；前端负责把它映射为显示文案（与 __all__ 哨兵同一命名空间，
 // valid_name 已保留 __ 前缀，新实例不可能占用；见 UsagePanel 的 profileOpts）。
 const MAIN_PROFILE_KEY: &str = "__main__";
 
+// async：首次全量扫描可能较慢（主账户历史可达数百 MB），放到异步线程执行，
+// 不阻塞主线程；之后的调用命中文件缓存，只重新解析有变动的活跃会话文件。
 #[tauri::command]
-fn usage_stats() -> UsageStats {
+async fn usage_stats() -> UsageStats {
     use std::collections::HashMap;
     let mut map: HashMap<(String, String, String), UsageRow> = HashMap::new();
     let mut conv: Vec<ConvRow> = Vec::new();

@@ -112,6 +112,15 @@ const CARDS: {
   },
 ];
 
+// 自动刷新间隔选项（秒），0 = 关闭；App 持久化所选值并驱动定时器
+export const USAGE_AUTO_OPTIONS = [
+  { value: 30, label: "30 秒" },
+  { value: 60, label: "1 分钟" },
+  { value: 300, label: "5 分钟" },
+  { value: 600, label: "10 分钟" },
+  { value: 0, label: "关闭" },
+];
+
 const QUICK = [
   { value: "today", label: "当天" },
   { value: "7", label: "近 7 天" },
@@ -154,11 +163,15 @@ export default function UsagePanel({
   data,
   err,
   busy,
+  autoSec,
+  onAutoChange,
   onRefresh,
 }: {
   data: UsageStats | null;
   err: string;
   busy: boolean;
+  autoSec: number;
+  onAutoChange: (sec: number) => void;
   onRefresh: () => void;
 }) {
   const [range, setRange] = useState<{ kind: string }>({ kind: "today" });
@@ -354,9 +367,20 @@ export default function UsagePanel({
           </Group>
           <Group gap="xs" align="center"><Text size="sm" fw={500}>模型</Text><Select data={modelOpts} value={model} onChange={(v) => setModel(v || "__all__")} w={170} /></Group>
           <Group gap="xs" align="center"><Text size="sm" fw={500}>实例</Text><Select data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={150} /></Group>
-          <Button size="xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={load} loading={busy} ml="auto">
-            刷新
-          </Button>
+          <Group gap="xs" align="center" ml="auto">
+            <Text size="xs" c="dimmed">自动刷新</Text>
+            <Select
+              size="xs"
+              w={96}
+              data={USAGE_AUTO_OPTIONS.map((o) => ({ value: String(o.value), label: o.label }))}
+              value={String(autoSec)}
+              onChange={(v) => v !== null && onAutoChange(parseInt(v, 10))}
+              allowDeselect={false}
+            />
+            <Button size="xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={load} loading={busy}>
+              刷新
+            </Button>
+          </Group>
         </Group>
       </Card>
 
@@ -366,7 +390,7 @@ export default function UsagePanel({
         <Card withBorder padding="xl" radius="lg">
           <Stack align="center" gap="xs">
             <IconChartLine size={40} opacity={0.4} />
-            <Text c="dimmed" size="sm">当前筛选下没有数据。换个时间范围、或用 claude 跑几次对话后刷新。</Text>
+            <Text c="dimmed" size="sm">当前筛选下没有数据。换个时间范围，或用 claude 跑几次对话——数据会自动刷新。</Text>
           </Stack>
         </Card>
       )}

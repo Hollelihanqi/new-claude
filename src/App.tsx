@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box,
   Group,
@@ -30,7 +30,7 @@ import { api } from "./api";
 import type { EnvInfo } from "./api";
 import type { UsageStats } from "./api";
 import ConfigPanel from "./components/ConfigPanel";
-import UsagePanel from "./components/UsagePanel";
+import UsagePanel, { USAGE_AUTO_OPTIONS } from "./components/UsagePanel";
 import GuidePanel from "./components/GuidePanel";
 import MarketplacePanel from "./components/MarketplacePanel";
 import CaCertButton from "./components/CaCertButton";
@@ -38,6 +38,9 @@ import HealthButton from "./components/HealthButton";
 
 type ViewId = "config" | "usage" | "guide" | "marketplace";
 type Scheme = "a" | "b";
+
+const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
+const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
 const NAV: { id: ViewId; label: string; icon: typeof IconSettings }[] = [
   { id: "config", label: "实例配置", icon: IconSettings },
@@ -215,17 +218,49 @@ export default function App({
     api.syncAll().catch(() => {});
   }, []);
 
-  const loadUsage = useCallback(() => {
-    setUsageBusy(true);
-    setUsageErr("");
-    api.usageStats().then(setUsageData).catch((e) => setUsageErr(String(e))).finally(() => setUsageBusy(false));
+  // silent=true 时不亮加载态（自动刷新在后台悄悄换数据，不闪按钮 spinner）；
+  // 用 ref 防重入：上一次扫描没回来之前，后续触发直接丢弃。
+  const usageInflight = useRef(false);
+  const loadUsage = useCallback((silent = false) => {
+    if (usageInflight.current) return;
+    usageInflight.current = true;
+    if (!silent) {
+      setUsageBusy(true);
+      setUsageErr("");
+    }
+    api.usageStats()
+      .then((d) => {
+        setUsageData(d);
+        setUsageErr("");
+      })
+      .catch((e) => setUsageErr(String(e)))
+      .finally(() => {
+        usageInflight.current = false;
+        if (!silent) setUsageBusy(false);
+      });
   }, []);
-  // 全量扫描各实例会话记录开销不小（主账户历史可达数百 MB），
-  // 不在启动时扫，首次进入用量页才加载；之后复用结果，手动点「刷新」再重扫。
+  // 自动刷新间隔（秒），0 表示关闭；在用量页可改，选择记进 localStorage。
+  const [usageAuto, setUsageAuto] = useState(() => {
+    const v = parseInt(localStorage.getItem(USAGE_AUTO_KEY) || "", 10);
+    return USAGE_AUTO_CHOICES.includes(v) ? v : 30;
+  });
+  const changeUsageAuto = useCallback((sec: number) => {
+    setUsageAuto(sec);
+    localStorage.setItem(USAGE_AUTO_KEY, String(sec));
+  }, []);
+  // 后端按文件 mtime/size 缓存解析结果，只有首次是全量扫描，之后仅重读有变动的
+  // 活跃会话文件。因此启动即后台预扫一次（首次进用量页立刻有数据），
+  // 停留在用量页期间按所选间隔静默刷新；手动「刷新」按钮保留，随时可立即重扫。
   useEffect(() => {
-    if (view === "usage" && !usageData && !usageBusy) loadUsage();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, usageData, loadUsage]);
+    loadUsage(true);
+  }, [loadUsage]);
+  useEffect(() => {
+    if (view !== "usage") return;
+    loadUsage(true);
+    if (!usageAuto) return;
+    const t = setInterval(() => loadUsage(true), usageAuto * 1000);
+    return () => clearInterval(t);
+  }, [view, usageAuto, loadUsage]);
   useEffect(() => {
     checkUpdate(false);
     getVersion().then(setAppVersion).catch(() => {});
@@ -374,7 +409,9 @@ export default function App({
                   data={usageData}
                   err={usageErr}
                   busy={usageBusy}
-                  onRefresh={loadUsage}
+                  autoSec={usageAuto}
+                  onAutoChange={changeUsageAuto}
+                  onRefresh={() => loadUsage()}
                 />
               </div>
             )}
