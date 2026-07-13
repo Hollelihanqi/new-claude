@@ -1277,6 +1277,15 @@ fn main() {
         return;
     }
     tauri::Builder::default()
+        // 必须最先注册：后续启动的进程会立即退出，并把已存在的主窗口
+        // 显示、从最小化恢复并置于前台。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
