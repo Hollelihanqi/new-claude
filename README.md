@@ -66,14 +66,14 @@ Windows 额外：
 ### 构建命令
 
 ```bash
-npm install
-npm run tauri build
+pnpm install
+pnpm tauri build
 ```
 
 完成后安装包在：`src-tauri/target/release/bundle/` 里
 （macOS 在 `dmg/`，Windows 在 `msi/` 和 `nsis/`）。
 
-> 想先看看效果、不打包，可运行 `npm run tauri dev` 直接开发预览。
+> 想先看看效果、不打包，可运行 `pnpm tauri dev` 直接开发预览。
 
 ---
 
@@ -134,7 +134,6 @@ cc-switch/
 │   ├── api.ts                 调用 Rust 命令（类型与后端一一对应）
 │   └── components/
 │       ├── ConfigPanel.tsx    实例配置（含模型钉死告警 + 一键还原）
-│       ├── MarketplacePanel.tsx  skill/插件市场
 │       ├── UsagePanel.tsx     用量统计
 │       ├── GuidePanel.tsx     使用指南
 │       ├── HealthButton.tsx   顶栏健康检查 + 导出诊断文件
@@ -143,7 +142,7 @@ cc-switch/
 │   ├── src/main.rs            实例/集成/证书/用量等命令
 │   ├── src/health.rs          健康检查、模型钉死检测、诊断导出
 │   ├── src/sync.rs            共享链接与 MCP/插件启用状态合并同步
-│   ├── src/marketplace.rs     插件市场（封装 claude plugin 子命令）
+│   ├── src/claude_cli.rs      Claude CLI 定位与环境探测
 │   ├── tauri.conf.json        应用配置
 │   ├── capabilities/          权限
 │   ├── icons/                 各平台图标（已生成）
