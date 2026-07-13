@@ -56,6 +56,7 @@ body {
   background: linear-gradient(145deg, var(--mantine-primary-color-5), var(--mantine-primary-color-7));
   box-shadow: 0 10px 24px rgba(0, 126, 154, .28), inset 0 1px rgba(255,255,255,.25);
 }
+.brand-mark svg { width: 29px; height: 29px; }
 .brand-copy { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-copy strong { font-size: 15px; letter-spacing: -.1px; }
 .brand-copy span { margin-top: 5px; font-size: 11px; color: rgba(255,255,255,.56); }
@@ -77,12 +78,11 @@ body {
 .side-nav-copy small { color: rgba(255,255,255,.38); font-size: 10px; }
 .side-nav-item.active small { color: rgba(255,255,255,.55); }
 .sidebar-spacer { flex: 1; }
-.sidebar-note { margin: 12px 4px; padding: 12px; display: flex; gap: 10px; align-items: flex-start; border-radius: 12px; color: #8bd8e5; background: rgba(70, 191, 210, .08); border: 1px solid rgba(91, 208, 225, .10); }
-.sidebar-note div { display: flex; flex-direction: column; gap: 3px; }
-.sidebar-note strong { color: rgba(255,255,255,.8); font-size: 11px; }
-.sidebar-note span { color: rgba(255,255,255,.39); font-size: 9px; }
-.sidebar-footer { min-height: 40px; padding: 12px 6px 0; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,.07); }
-.sidebar-footer > span { margin-right: auto; color: rgba(255,255,255,.42); font-size: 10px; }
+.sidebar-help { margin: 4px 0 10px; padding: 9px 11px; display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.52); border: 0; border-radius: 10px; background: transparent; cursor: pointer; font-family: inherit; font-size: 11px; }
+.sidebar-help:hover, .sidebar-help.active { color: #fff; background: rgba(255,255,255,.07); }
+.sidebar-footer { min-height: 44px; padding: 14px 6px 0; display: flex; align-items: center; gap: 10px; border-top: 1px solid rgba(255,255,255,.07); }
+.sidebar-footer > span { margin-right: auto; color: rgba(255,255,255,.58); font-size: 12px; font-weight: 500; line-height: 1.4; }
+.sidebar-footer .mantine-Badge-root { height: 24px; padding-inline: 10px; color: rgba(255,255,255,.68); background: rgba(255,255,255,.07); font-size: 11px; font-weight: 700; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
 .theme-dot { width: 15px; height: 15px; padding: 0; border: 2px solid rgba(255,255,255,.25); border-radius: 50%; cursor: pointer; }
 .theme-dot.active { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.18); }
 
@@ -106,6 +106,23 @@ body {
 .view-stage { flex: 1; min-height: 0; }
 .view-scroll { height: 100%; overflow-y: auto; padding-right: 6px; }
 
+/* Keep every workspace scrollable while removing the visual scrollbar chrome. */
+.view-scroll,
+.instances-pane,
+.editor-scroll,
+.sync-log-block {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.view-scroll::-webkit-scrollbar,
+.instances-pane::-webkit-scrollbar,
+.editor-scroll::-webkit-scrollbar,
+.sync-log-block::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 .config-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .config-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; align-items: stretch; }
 .instances-pane, .editor-scroll { min-height: 0; overflow-y: auto; }
@@ -116,6 +133,12 @@ body {
 .instances-card { min-height: 100%; }
 .instances-card .mantine-NavLink-root { margin-bottom: 5px; border-radius: 11px; border: 1px solid transparent; }
 .instances-card .mantine-NavLink-root[data-active] { color: var(--mantine-primary-color-8); background: var(--mantine-primary-color-0); border-color: var(--mantine-primary-color-1); }
+.main-account-card { margin-bottom: 9px; padding: 10px; display: flex; align-items: center; gap: 9px; border-radius: 11px; color: #30454f; background: #f6f9fa; border: 1px solid #e8edef; }
+.main-account-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto; color: var(--mantine-primary-color-7); background: var(--mantine-primary-color-0); border-radius: 9px; }
+.main-account-card > div:nth-child(2) { min-width: 0; flex: 1; }
+.main-account-usage { display: flex; flex-direction: column; align-items: flex-end; }
+.main-account-usage strong { font-size: 12px; }
+.main-account-usage span { color: #93a0a6; font-size: 8px; }
 .editor-card { min-height: 100%; overflow: visible; }
 .editor-toolbar {
   position: sticky; top: -20px; z-index: 5; margin: -20px -20px 6px; padding: 18px 20px 15px;
@@ -126,6 +149,24 @@ body {
 .form-section-label > div { display: flex; flex-direction: column; }
 .form-section-label strong { color: #263943; font-size: 12px; }
 .form-section-label small { margin-top: 2px; color: #8a979e; font-size: 9px; }
+.instance-health-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 3px currentColor; opacity: .75; }
+.instance-health-dot.ok { color: rgba(24, 166, 116, .15); background: #18a674; }
+.instance-health-dot.warn { color: rgba(232, 154, 45, .17); background: #e89a2d; }
+.instance-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-border); }
+.instance-overview > div { padding: 13px 16px; display: flex; flex-direction: column; gap: 6px; background: #f9fbfc; }
+.instance-overview span { color: #718087; font-size: 12px; font-weight: 500; line-height: 1.35; }
+.instance-overview strong { color: #243740; font-size: 16px; font-weight: 700; line-height: 1.35; letter-spacing: -.01em; }
+.instance-overview .status-ok { color: #16835f; }
+.instance-overview .status-warn { color: #b56a14; }
+.runtime-strip { padding: 9px 11px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-radius: 10px; background: #f6f9fa; }
+.runtime-strip > span { color: #87949b; font-size: 9px; }
+.runtime-strip code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extension-card { min-height: 220px; }
+.extension-items { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 6px; }
+.extension-items > span { max-width: 100%; padding: 5px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #425761; background: #f2f6f7; border: 1px solid #e5ecef; border-radius: 7px; font-size: 10px; }
+.diagnostic-summary { background: linear-gradient(120deg, #f7fbfc, #fff) !important; }
+.diagnostic-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sync-log-block { max-height: 220px; overflow: auto; color: #b9dbe2 !important; background: #102a34 !important; font-size: 10px !important; line-height: 1.6 !important; }
 
 .glass-card {
   background: var(--app-surface) !important;
@@ -141,7 +182,25 @@ body {
 .mantine-Input-input:focus { background: #fff; border-color: var(--mantine-primary-color-5); box-shadow: 0 0 0 3px var(--mantine-primary-color-0); }
 .mantine-InputWrapper-label { color: #263943; font-size: 12px; font-weight: 650; }
 .mantine-InputWrapper-description { color: #87949b; font-size: 10px; }
-.mantine-Button-root { font-weight: 650; letter-spacing: -.05px; }
+.mantine-Button-root {
+  --button-fz: 14px;
+  font-family: var(--mantine-font-family);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+.mantine-Button-label {
+  font: inherit;
+  line-height: 1.25;
+}
+.mantine-SegmentedControl-label {
+  font-family: var(--mantine-font-family);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
 .mantine-Modal-content { border: 1px solid var(--app-border); box-shadow: 0 24px 80px rgba(11, 32, 41, .2); }
 
 @media (max-width: 980px) {
@@ -156,9 +215,12 @@ body {
   .app-shell { grid-template-columns: 76px minmax(0, 1fr); }
   .app-sidebar { padding: 20px 10px 14px; }
   .brand-block { justify-content: center; padding: 0 0 26px; }
-  .brand-copy, .nav-eyebrow, .side-nav-copy, .side-nav-item > svg, .sidebar-note, .sidebar-footer > span, .sidebar-footer .mantine-Badge-root { display: none; }
+  .brand-copy, .nav-eyebrow, .side-nav-copy, .side-nav-item > svg, .sidebar-footer > span, .sidebar-footer .mantine-Badge-root { display: none; }
   .side-nav-item { justify-content: center; padding: 9px; }
   .side-nav-item.active { box-shadow: inset 2px 0 var(--mantine-primary-color-4); }
   .sidebar-footer { justify-content: center; flex-wrap: wrap; }
+  .sidebar-help { justify-content: center; padding: 9px; }
+  .sidebar-help span { display: none; }
   .config-grid { grid-template-columns: 190px minmax(0, 1fr); }
+  .instance-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

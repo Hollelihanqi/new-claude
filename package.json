@@ -1,7 +1,7 @@
 {
   "name": "cc-switch",
-  "version": "1.0.41",
-  "description": "Claude Code 多实例配置工具（账户 / 公司路由切换）",
+  "version": "2.0.0",
+  "description": "Claude Code 本地环境、扩展、洞察与诊断管理工具",
   "type": "module",
   "packageManager": "pnpm@11.9.0",
   "scripts": {

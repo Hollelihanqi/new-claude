@@ -1,14 +1,14 @@
 [package]
 name = "cc-switch"
-version = "1.0.41"
-description = "Claude Code 多实例配置工具"
+version = "2.0.0"
+description = "Claude Code 本地环境管理工具"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }

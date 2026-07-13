@@ -222,8 +222,8 @@ export default function GuidePanel() {
             这里设置的模型映射。App 会在「实例配置」页检测到并提供一键还原。
           </List.Item>
           <List.Item>
-            尽量<b>在项目目录里</b>启动实例，别在家目录（~）下直接跑：家目录下主账户的{" "}
-            <Code>/model</Code> 选择会以"项目级配置"的身份覆盖实例的档位映射。
+            尽量<b>在项目目录里</b>启动 Claude。从用户主目录（~）启动时，主账户通过{" "}
+            <Code>/model</Code> 固定选择的型号可能会优先于空间中的模型映射。
           </List.Item>
         </List>
       </Alert>

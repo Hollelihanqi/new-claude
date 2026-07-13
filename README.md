@@ -1,4 +1,4 @@
-# Claude Code 配置工具（Tauri 桌面应用）
+# Claude 管理中心（Tauri 桌面应用）
 
 一个跨平台（macOS / Windows）桌面 App：在一台电脑上管理多个 Claude Code 实例
 （你的主账户 + 公司路由），日常在任意项目目录直接 `claude` / `claude corp`，
@@ -130,14 +130,16 @@ App 内「使用指南」标签页有更详细的图文说明。
 cc-switch/
 ├── index.html / vite.config.js / package.json   前端入口与依赖
 ├── src/                       React + Mantine 界面（TypeScript）
-│   ├── App.tsx                顶栏 + 导航 + 自动更新
+│   ├── App.tsx                五大工作区导航 + 环境状态 + 自动更新
 │   ├── api.ts                 调用 Rust 命令（类型与后端一一对应）
 │   └── components/
 │       ├── ConfigPanel.tsx    实例配置（含模型钉死告警 + 一键还原）
+│       ├── ExtensionsPanel.tsx Skills / Plugins / MCP / Agents 扩展总览
 │       ├── UsagePanel.tsx     用量统计
+│       ├── DiagnosticsPanel.tsx 健康检查、同步修复与诊断导出
+│       ├── SettingsPanel.tsx  更新、证书、备份、主题与安全策略
 │       ├── GuidePanel.tsx     使用指南
-│       ├── HealthButton.tsx   顶栏健康检查 + 导出诊断文件
-│       └── CaCertButton.tsx   顶栏 CA 证书管理
+│       └── CaCertButton.tsx   CA 证书管理
 ├── src-tauri/                 Rust 后端（系统操作）
 │   ├── src/main.rs            实例/集成/证书/用量等命令
 │   ├── src/health.rs          健康检查、模型钉死检测、诊断导出

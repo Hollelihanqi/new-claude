@@ -23,6 +23,23 @@ export interface EnvInfo {
   cert_count: number;
 }
 
+export interface ProfileRuntimeInfo {
+  name: string;
+  configDir: string;
+  settingsExists: boolean;
+  hasProjectData: boolean;
+  lastUsed?: number;
+  authenticated: boolean;
+  sharedDirsOk: boolean;
+}
+
+export interface ExtensionGroup {
+  kind: "skills" | "plugins" | "agents" | "commands" | "mcp";
+  label: string;
+  path: string;
+  items: string[];
+}
+
 export interface UsageRow {
   datetime: string; // UTC，如 "2026-06-22T04"
   model: string;
@@ -76,6 +93,10 @@ export const api = {
   // 刷新集成脚本 + 建齐共享链接 + 合并同步 MCP/插件启用状态
   syncAll: (): Promise<string> => invoke("sync_all"),
   environment: (): Promise<EnvInfo> => invoke("environment"),
+  profileRuntimeInfo: (): Promise<ProfileRuntimeInfo[]> => invoke("profile_runtime_info"),
+  extensionOverview: (): Promise<ExtensionGroup[]> => invoke("extension_overview"),
+  backupConfig: (): Promise<string> => invoke("backup_config"),
+  recentSyncLog: (): Promise<string[]> => invoke("recent_sync_log"),
   importCert: (path: string): Promise<string> => invoke("import_cert", { path }),
   clearCerts: (): Promise<string> => invoke("clear_certs"),
   detectModels: (baseUrl: string, token: string): Promise<string[]> =>

@@ -28,7 +28,7 @@ import {
   IconAlertTriangle,
 } from "@tabler/icons-react";
 import { api } from "../api";
-import type { Profile, ModelPinWarning } from "../api";
+import type { EnvInfo, Profile, ModelPinWarning, ProfileRuntimeInfo, UsageStats } from "../api";
 
 // 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
 const PRESET_MODELS = [
@@ -77,8 +77,12 @@ interface FormState {
 
 export default function ConfigPanel({
   onChanged,
+  env,
+  usageData,
 }: {
   onChanged?: () => void;
+  env: EnvInfo | null;
+  usageData: UsageStats | null;
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [sel, setSel] = useState<string | null>(null);
@@ -90,6 +94,7 @@ export default function ConfigPanel({
   });
   const [busyAction, setBusyAction] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [runtime, setRuntime] = useState<ProfileRuntimeInfo[]>([]);
 
   // 检测到的当前实例模型（合并进下方下拉）
   const [detected, setDetected] = useState<string[]>([]);
@@ -109,6 +114,7 @@ export default function ConfigPanel({
       .then((ps) => setProfiles(ps || []))
       .catch((e) => setStatus({ type: "error", msg: String(e) }));
     loadPins();
+    api.profileRuntimeInfo().then(setRuntime).catch(() => {});
   };
   useEffect(load, []);
 
@@ -266,7 +272,35 @@ export default function ConfigPanel({
   };
 
   const selProfile = profiles.find((p) => p.name === sel);
+  const selRuntime = runtime.find((item) => item.name === sel);
   const isRouter = form.type === "router";
+
+  const usageFor = (name: string) => {
+    const today = new Date().toLocaleDateString("en-CA");
+    const rows = (usageData?.daily || []).filter((row) => {
+      if (row.profile !== name || row.datetime.length < 13) return false;
+      return new Date(`${row.datetime}:00:00Z`).toLocaleDateString("en-CA") === today;
+    });
+    return rows.reduce((sum, row) => ({ requests: sum.requests + row.requests, tokens: sum.tokens + row.input + row.output + row.cacheRead + row.cacheCreate }), { requests: 0, tokens: 0 });
+  };
+  const selectedUsage = sel ? usageFor(sel) : { requests: 0, tokens: 0 };
+  const mainUsage = usageFor("__main__");
+  const fmtNumber = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : String(value);
+  const formatLastUsed = (seconds?: number) => {
+    if (!seconds) return "尚未使用";
+    const delta = Math.max(0, Date.now() - seconds * 1000);
+    if (delta < 60_000) return "刚刚";
+    if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`;
+    if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`;
+    return `${Math.floor(delta / 86_400_000)} 天前`;
+  };
+  const profileHealthy = (profile: Profile) => {
+    const info = runtime.find((item) => item.name === profile.name);
+    const accessReady = profile.type === "router"
+      ? !!profile.baseUrl && profile.hasToken
+      : !!info?.authenticated;
+    return !!env?.claude_found && accessReady && info?.sharedDirsOk !== false;
+  };
 
   return (
     <div className="config-panel">
@@ -308,18 +342,17 @@ export default function ConfigPanel({
           color="orange"
           variant="light"
           icon={<IconAlertTriangle size={16} />}
-          title="模型映射被绕过"
+          title="模型设置存在冲突"
           style={{ flex: "0 0 auto" }}
         >
           <Stack gap={6}>
             {pins.map((w) => (
               <Group key={w.profile} gap="xs" wrap="nowrap" justify="space-between">
                 <Text size="sm">
-                  {pinLabel(w.profile)} 的 <Code>/model</Code> 钉死了具体型号{" "}
-                  <Code>{w.model}</Code>
+                  {pinLabel(w.profile)}当前固定使用模型 <Code>{w.model}</Code>
                   {w.profile === "__main__"
-                    ? "，在家目录下启动实例时会覆盖实例的档位映射。"
-                    : "，会绕过这里配置的档位映射。"}
+                    ? "。从用户主目录启动 Claude 时，这项设置会优先于空间中的 Opus、Sonnet 和 Haiku 映射，实际模型可能与空间配置不一致。"
+                    : "，因此该空间配置的 Opus、Sonnet 和 Haiku 映射不会生效。"}
                 </Text>
                 <Button
                   size="xs"
@@ -329,13 +362,13 @@ export default function ConfigPanel({
                   onClick={() => onFixPin(w.profile)}
                   style={{ flexShrink: 0 }}
                 >
-                  一键还原
+                  恢复档位选择
                 </Button>
               </Group>
             ))}
             <Text size="xs" c="dimmed">
-              还原＝删除写死的型号、回到档位别名（映射重新生效）。会话内用 /model
-              时请只选 Opus / Sonnet / Haiku 档位，不要选具体型号。
+              恢复后会清除固定型号，重新使用空间配置的模型映射。以后通过 /model
+              切换模型时，请选择 Opus、Sonnet 或 Haiku，而不是带版本号的具体型号。
             </Text>
           </Stack>
         </Alert>
@@ -359,6 +392,11 @@ export default function ConfigPanel({
               新建
             </Button>
           </Group>
+          <div className="main-account-card">
+            <div className="main-account-icon"><IconUser size={16} /></div>
+            <div><Text fw={650} size="sm">主账户</Text><Text size="xs" c="dimmed">默认 Claude 环境 · {env?.claude_found ? "正常" : "CLI 未就绪"}</Text></div>
+            <div className="main-account-usage"><strong>{mainUsage.requests}</strong><span>今日请求</span></div>
+          </div>
           <Stack gap={4}>
             {profiles.length === 0 && (
               <Text size="sm" c="dimmed" p="xs">
@@ -370,7 +408,7 @@ export default function ConfigPanel({
                 key={p.name}
                 active={sel === p.name}
                 label={<Text fw={650} size="sm">{p.name}</Text>}
-                description={p.type === "router" ? "公司网关路由" : "独立 Claude 账户"}
+                description={`${p.type === "router" ? "公司网关路由" : "独立 Claude 账户"} · ${profileHealthy(p) ? "正常" : "待完善"}`}
                 leftSection={
                   p.type === "router" ? (
                     <IconWorld size={16} />
@@ -381,7 +419,7 @@ export default function ConfigPanel({
                 rightSection={
                   pins.some((w) => w.profile === p.name) ? (
                     <IconAlertTriangle size={15} color="var(--mantine-color-orange-6)" />
-                  ) : undefined
+                  ) : <span className={`instance-health-dot ${profileHealthy(p) ? "ok" : "warn"}`} />
                 }
                 onClick={() => pickProfile(p)}
               />
@@ -423,6 +461,27 @@ export default function ConfigPanel({
                 </Button>
               </Group>
             </Group>
+
+            {sel && selProfile && (
+              <div className="instance-overview">
+                <div><span>运行状态</span><strong className={profileHealthy(selProfile) ? "status-ok" : "status-warn"}>{profileHealthy(selProfile) ? "环境正常" : "配置待完善"}</strong></div>
+                <div><span>最近使用</span><strong>{formatLastUsed(selRuntime?.lastUsed)}</strong></div>
+                <div><span>今日请求</span><strong>{selectedUsage.requests}</strong></div>
+                <div><span>今日 Token</span><strong>{fmtNumber(selectedUsage.tokens)}</strong></div>
+              </div>
+            )}
+
+            {selRuntime && (
+              <div className="runtime-strip">
+                <span>配置目录</span><Code>{selRuntime.configDir}</Code>
+                <Badge size="xs" variant="light" color={selRuntime.settingsExists ? "teal" : "gray"}>{selRuntime.settingsExists ? "配置已生成" : "等待首次启动"}</Badge>
+                <Badge size="xs" variant="light" color={selProfile?.type === "router" ? (selProfile.hasToken ? "teal" : "orange") : (selRuntime.authenticated ? "teal" : "orange")}>
+                  {selProfile?.type === "router" ? (selProfile.hasToken ? "凭证已保存" : "缺少凭证") : (selRuntime.authenticated ? "账户已登录" : "等待登录")}
+                </Badge>
+                <Badge size="xs" variant="light" color={selRuntime.sharedDirsOk ? "cyan" : "orange"}>{selRuntime.sharedDirsOk ? "扩展全局共享" : "共享待修复"}</Badge>
+                {selProfile?.type === "router" && <Badge size="xs" variant="light" color="blue">{[selProfile.opusModel, selProfile.sonnetModel, selProfile.haikuModel].filter(Boolean).length}/3 模型映射</Badge>}
+              </div>
+            )}
 
             <div className="form-section-label"><span>01</span><div><strong>连接信息</strong><small>实例身份与访问凭证</small></div></div>
 

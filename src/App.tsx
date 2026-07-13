@@ -1,23 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box,
-  Group,
   Text,
   Badge,
   Alert,
-  Button,
-  Tooltip,
 } from "@mantine/core";
 import {
   IconLayoutDashboard,
   IconChartLine,
-  IconBook2,
-  IconRoute,
   IconCircleCheck,
   IconAlertTriangle,
-  IconDownload,
   IconChevronRight,
-  IconSparkles,
+  IconStack2,
+  IconStethoscope,
+  IconSettings,
+  IconHelpCircle,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -31,20 +28,43 @@ import type { UsageStats } from "./api";
 import ConfigPanel from "./components/ConfigPanel";
 import UsagePanel, { USAGE_AUTO_OPTIONS } from "./components/UsagePanel";
 import GuidePanel from "./components/GuidePanel";
-import CaCertButton from "./components/CaCertButton";
-import HealthButton from "./components/HealthButton";
+import ExtensionsPanel from "./components/ExtensionsPanel";
+import DiagnosticsPanel from "./components/DiagnosticsPanel";
+import SettingsPanel from "./components/SettingsPanel";
 
-type ViewId = "config" | "usage" | "guide";
+type ViewId = "environment" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 type Scheme = "a" | "b";
 
 const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
 const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
 const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
-  { id: "config", label: "环境配置", desc: "实例与路由", icon: IconLayoutDashboard },
-  { id: "usage", label: "用量洞察", desc: "趋势与模型", icon: IconChartLine },
-  { id: "guide", label: "使用帮助", desc: "指南与原理", icon: IconBook2 },
+  { id: "environment", label: "空间", desc: "实例、网关与模型", icon: IconLayoutDashboard },
+  { id: "extensions", label: "扩展", desc: "Skills、MCP 与 Agents", icon: IconStack2 },
+  { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
+  { id: "diagnostics", label: "诊断", desc: "检查、日志与修复", icon: IconStethoscope },
+  { id: "settings", label: "设置", desc: "更新、证书与安全", icon: IconSettings },
 ];
+
+const VIEW_TITLES: Record<ViewId, string> = {
+  environment: "空间管理",
+  extensions: "扩展中心",
+  insights: "用量洞察",
+  diagnostics: "诊断中心",
+  settings: "系统设置",
+  guide: "使用帮助",
+};
+
+function BrandGlyph() {
+  return (
+    <svg viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M21.4 8.8a8.8 8.8 0 1 0 0 14.4" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" />
+      <path d="M15.8 16h7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+      <circle cx="15.8" cy="16" r="2.35" fill="#61d9e9" />
+      <circle cx="15.8" cy="16" r="1.05" fill="#073e4b" />
+    </svg>
+  );
+}
 
 function SideNav({
   value,
@@ -89,7 +109,7 @@ export default function App({
 }) {
   const [env, setEnv] = useState<EnvInfo | null>(null);
   const [err, setErr] = useState("");
-  const [view, setView] = useState<ViewId>("config");
+  const [view, setView] = useState<ViewId>("environment");
   const [upd, setUpd] = useState<{ obj?: Update }>({});
   const [appVersion, setAppVersion] = useState("");
   const [usageData, setUsageData] = useState<UsageStats | null>(null);
@@ -219,7 +239,7 @@ export default function App({
     loadUsage(true);
   }, [loadUsage]);
   useEffect(() => {
-    if (view !== "usage") return;
+    if (view !== "insights") return;
     loadUsage(true);
     if (!usageAuto) return;
     const t = setInterval(() => loadUsage(true), usageAuto * 1000);
@@ -230,34 +250,21 @@ export default function App({
     getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
-  const activeNav = NAV.find((item) => item.id === view) || NAV[0];
-
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
         <div className="brand-block">
-          <div className="brand-mark"><IconRoute size={24} stroke={2.1} /></div>
-          <div className="brand-copy"><strong>Claude 路由管理</strong><span>环境控制中心</span></div>
+          <div className="brand-mark"><BrandGlyph /></div>
+          <div className="brand-copy"><strong>Claude 管理中心</strong><span>Claude 本地工作空间</span></div>
         </div>
         <Text className="nav-eyebrow">工作台</Text>
         <SideNav value={view} onChange={setView} />
         <div className="sidebar-spacer" />
-        <div className="sidebar-note">
-          <IconSparkles size={17} />
-          <div><strong>本地优先</strong><span>密钥仅保存在此设备</span></div>
-        </div>
+        <button className={`sidebar-help ${view === "guide" ? "active" : ""}`} onClick={() => setView("guide")}>
+          <IconHelpCircle size={17} /><span>使用帮助</span>
+        </button>
         <div className="sidebar-footer">
-          <span>界面主题</span>
-          <Group gap={7}>
-            {([
-              { k: "b", c: "#087f9b", t: "深海蓝" },
-              { k: "a", c: "#f97316", t: "活力橙" },
-            ] as { k: Scheme; c: string; t: string }[]).map((it) => (
-              <Tooltip key={it.k} label={it.t}>
-                <button className={`theme-dot ${scheme === it.k ? "active" : ""}`} onClick={() => setScheme(it.k)} style={{ background: it.c }} />
-              </Tooltip>
-            ))}
-          </Group>
+          <span>Claude Center</span>
           <Badge variant="light" color="gray">v{appVersion || "--"}</Badge>
         </div>
       </aside>
@@ -266,17 +273,9 @@ export default function App({
         <header className="app-header">
           <div>
             <Text className="page-kicker">CLAUDE ENVIRONMENT</Text>
-            <Text className="page-title">{activeNav.label}</Text>
+            <Text className="page-title">{VIEW_TITLES[view]}</Text>
           </div>
-          <Group gap="sm" wrap="nowrap">
-            <EnvironmentStatus env={env} />
-            <div className="header-divider" />
-            <Tooltip label="检查软件更新">
-              <Button className="header-action" size="xs" variant="subtle" onClick={() => checkUpdate(true)} leftSection={<IconDownload size={15} />}>更新</Button>
-            </Tooltip>
-            <HealthButton />
-            <CaCertButton env={env} onChanged={refreshEnv} />
-          </Group>
+          <EnvironmentStatus env={env} />
         </header>
 
         <section className="app-content">
@@ -291,7 +290,7 @@ export default function App({
               {err}
             </Alert>
           )}
-          {env && !env.claude_found && view === "config" && (
+          {env && !env.claude_found && view === "environment" && (
             <Alert
               color="orange"
               icon={<IconAlertTriangle size={16} />}
@@ -303,8 +302,9 @@ export default function App({
             </Alert>
           )}
           <Box className="view-stage">
-            {view === "config" && <ConfigPanel onChanged={refreshEnv} />}
-            {view === "usage" && (
+            {view === "environment" && <ConfigPanel onChanged={refreshEnv} env={env} usageData={usageData} />}
+            {view === "extensions" && <ExtensionsPanel />}
+            {view === "insights" && (
               <div className="view-scroll">
                 <UsagePanel
                   data={usageData}
@@ -316,6 +316,8 @@ export default function App({
                 />
               </div>
             )}
+            {view === "diagnostics" && <DiagnosticsPanel />}
+            {view === "settings" && <SettingsPanel env={env} scheme={scheme} setScheme={setScheme} appVersion={appVersion} onCheckUpdate={() => checkUpdate(true)} onEnvironmentChanged={refreshEnv} />}
             {view === "guide" && (
               <div className="view-scroll">
                 <GuidePanel />

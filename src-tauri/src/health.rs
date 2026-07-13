@@ -289,7 +289,7 @@ fn run_health_checks() -> Vec<HealthItem> {
             &format!("模型映射（{who}）"),
             "warn",
             format!(
-                "{who} 的 /model 钉死了具体型号「{}」，会绕过模型映射。可在实例配置页一键还原。",
+                "{who} 当前固定使用模型「{}」，因此 Opus、Sonnet 和 Haiku 档位映射不会生效。可在空间管理中恢复档位选择。",
                 w.model
             ),
         ));

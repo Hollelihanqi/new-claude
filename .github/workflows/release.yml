@@ -89,7 +89,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Claude Code 配置工具 ${{ github.ref_name }}"
+          releaseName: "Claude 管理中心 ${{ github.ref_name }}"
           releaseBody: "下载对应你系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。首次打开若有安全提示，见仓库 README 的『同事如何安装』。"
           releaseDraft: false
           prerelease: false
