@@ -63,50 +63,6 @@ export interface HealthItem {
   detail: string;
 }
 
-/** MarketplaceEntry（serde rename_all = camelCase） */
-export interface MarketplaceEntry {
-  name: string;
-  source: string;
-  repo?: string;
-  url?: string;
-  installLocation?: string;
-}
-
-/** InstalledPlugin（serde rename_all = camelCase） */
-export interface InstalledPlugin {
-  id: string;
-  version: string;
-  scope: string;
-  enabled: boolean;
-  installPath: string;
-}
-
-/** AvailablePlugin（serde rename_all = camelCase） */
-export interface AvailablePlugin {
-  pluginId: string;
-  name: string;
-  description: string;
-  marketplaceName: string;
-  installCount?: number;
-  version?: string;
-  source?: PluginSource;
-}
-
-export type PluginSource =
-  | string
-  | {
-      source?: string;
-      url?: string;
-      path?: string;
-      ref?: string;
-      sha?: string;
-    };
-
-export interface PluginListResult {
-  installed: InstalledPlugin[];
-  available: AvailablePlugin[];
-}
-
 // 与 src-tauri 里的 #[tauri::command] 一一对应
 export const api = {
   listProfiles: (): Promise<Profile[]> => invoke("list_profiles"),
@@ -115,8 +71,8 @@ export const api = {
     token: string | null
   ): Promise<string> =>
     invoke("save_profile", { profile, token: token || null }),
-  deleteProfile: (name: string): Promise<string> =>
-    invoke("delete_profile", { name }),
+  deleteProfile: (name: string, purgeData = false): Promise<string> =>
+    invoke("delete_profile", { name, purgeData }),
   // 刷新集成脚本 + 建齐共享链接 + 合并同步 MCP/插件启用状态
   syncAll: (): Promise<string> => invoke("sync_all"),
   environment: (): Promise<EnvInfo> => invoke("environment"),
@@ -134,20 +90,4 @@ export const api = {
     invoke("fix_model_pin", { profile }),
   healthCheck: (): Promise<HealthItem[]> => invoke("health_check"),
   exportDiagnostics: (): Promise<string> => invoke("export_diagnostics"),
-  // skill/plugin 市场：检索、安装均落到主账户 ~/.claude，装完自动广播给各实例
-  pluginMarketplaceList: (): Promise<MarketplaceEntry[]> =>
-    invoke("plugin_marketplace_list"),
-  pluginMarketplaceAdd: (source: string): Promise<string> =>
-    invoke("plugin_marketplace_add", { source }),
-  pluginMarketplaceRemove: (name: string): Promise<string> =>
-    invoke("plugin_marketplace_remove", { name }),
-  pluginList: (): Promise<PluginListResult> => invoke("plugin_list"),
-  pluginInstall: (pluginId: string): Promise<string> =>
-    invoke("plugin_install", { pluginId }),
-  pluginUninstall: (pluginId: string): Promise<string> =>
-    invoke("plugin_uninstall", { pluginId }),
-  pluginSetEnabled: (pluginId: string, enabled: boolean): Promise<string> =>
-    invoke("plugin_set_enabled", { pluginId, enabled }),
-  openExternalUrl: (url: string): Promise<void> =>
-    invoke("open_external_url", { url }),
 };

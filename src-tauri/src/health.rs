@@ -174,7 +174,7 @@ fn run_health_checks() -> Vec<HealthItem> {
     let mut items = vec![];
 
     // 1. claude CLI
-    match crate::marketplace::resolve_claude_exe() {
+    match crate::claude_cli::resolve_claude_exe() {
         Some(p) => items.push(item("claude", "Claude Code CLI", "ok", format!("已找到：{}", p.display()))),
         None => items.push(item(
             "claude",

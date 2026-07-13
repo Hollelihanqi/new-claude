@@ -15,7 +15,7 @@ import {
   Alert,
   Box,
   Autocomplete,
-  Divider,
+  Modal,
 } from "@mantine/core";
 import {
   IconPlus,
@@ -89,6 +89,7 @@ export default function ConfigPanel({
     msg: "",
   });
   const [busyAction, setBusyAction] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   // 检测到的当前实例模型（合并进下方下拉）
   const [detected, setDetected] = useState<string[]>([]);
@@ -161,6 +162,11 @@ export default function ConfigPanel({
     if (n.startsWith("__")) return "名称不能以 __ 开头（内部保留前缀）。";
     if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(n))
       return "该名称是 Windows 保留设备名，请换一个。";
+    if (form.type === "router") {
+      const url = form.baseUrl.trim();
+      if (!/^https?:\/\/\S+$/i.test(url) || url.length > 2048)
+        return "网关地址必须以 http:// 或 https:// 开头，且不能包含空格。";
+    }
     return null;
   };
 
@@ -239,18 +245,19 @@ export default function ConfigPanel({
     }
   };
 
-  const onDelete = async () => {
+  const onDelete = async (purgeData: boolean) => {
     if (!sel) {
       setStatus({ type: "error", msg: "请先在左侧选中一个实例。" });
       return;
     }
-    setBusyAction("delete");
+    setBusyAction(purgeData ? "purge" : "remove");
     try {
-      await api.deleteProfile(sel);
+      const msg = await api.deleteProfile(sel, purgeData);
+      setDeleteOpen(false);
       onNew();
       load();
       onChanged && onChanged();
-      setStatus({ type: "success", msg: "已删除并更新终端集成。重开终端生效。" });
+      setStatus({ type: "success", msg: `${msg} 已更新终端集成，重开终端生效。` });
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
     } finally {
@@ -262,14 +269,39 @@ export default function ConfigPanel({
   const isRouter = form.type === "router";
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        height: "100%",
-      }}
-    >
+    <div className="config-panel">
+      <Modal
+        opened={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        title={`移除实例${sel ? `「${sel}」` : ""}`}
+        centered
+      >
+        <Stack gap="md">
+          <Alert color="orange" icon={<IconAlertTriangle size={16} />}>
+            请选择数据处理方式。彻底删除不可恢复，且会清除该实例的登录态、项目记录和历史用量数据。
+          </Alert>
+          <Button
+            variant="light"
+            onClick={() => onDelete(false)}
+            loading={busyAction === "remove"}
+            disabled={busyAction === "purge"}
+          >
+            仅移除，保留历史数据
+          </Button>
+          <Button
+            color="red"
+            leftSection={<IconTrash size={16} />}
+            onClick={() => onDelete(true)}
+            loading={busyAction === "purge"}
+            disabled={busyAction === "remove"}
+          >
+            彻底删除实例与数据
+          </Button>
+          <Button variant="subtle" color="gray" onClick={() => setDeleteOpen(false)}>
+            取消
+          </Button>
+        </Stack>
+      </Modal>
       {/* 模型映射被绕过的告警：/model 钉死了具体型号 */}
       {pins.length > 0 && (
         <Alert
@@ -309,26 +341,15 @@ export default function ConfigPanel({
         </Alert>
       )}
 
-      <div
-        style={{
-          display: "flex",
-          gap: 16,
-          alignItems: "stretch",
-          flex: "1 1 auto",
-          minHeight: 0,
-        }}
-      >
+      <div className="config-grid">
       {/* 左栏：实例列表，独立滚动 */}
-      <div
-        style={{
-          flex: "0 0 33.3333%",
-          minWidth: 260,
-          overflowY: "auto",
-        }}
-      >
-        <Card withBorder padding="sm" radius="md">
-          <Group justify="space-between" mb="xs">
-            <Title order={5}>实例</Title>
+      <div className="instances-pane">
+        <Card withBorder padding="sm" radius="lg" className="instances-card">
+          <Group justify="space-between" mb="sm" px={4}>
+            <div>
+              <Title order={5}>运行环境</Title>
+              <Text size="xs" c="dimmed">选择要配置的实例</Text>
+            </div>
             <Button
               size="xs"
               variant="light"
@@ -348,8 +369,8 @@ export default function ConfigPanel({
               <NavLink
                 key={p.name}
                 active={sel === p.name}
-                label={p.name}
-                description={p.type === "router" ? "公司路由" : "另一个账户"}
+                label={<Text fw={650} size="sm">{p.name}</Text>}
+                description={p.type === "router" ? "公司网关路由" : "独立 Claude 账户"}
                 leftSection={
                   p.type === "router" ? (
                     <IconWorld size={16} />
@@ -370,21 +391,40 @@ export default function ConfigPanel({
       </div>
 
       {/* 右栏：实例设置表单（独立滚动） */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          overflowY: "auto",
-        }}
-      >
-        <Card withBorder padding="lg" radius="md">
+      <div className="editor-scroll">
+        <Card withBorder padding="lg" radius="lg" className="editor-card">
           <Stack gap="sm">
-            <Group justify="space-between">
-              <Title order={5}>实例设置</Title>
-              <Badge variant="light" color={sel ? "blue" : "green"}>
-                {sel ? `编辑：${sel}` : "新建实例"}
-              </Badge>
+            <Group justify="space-between" className="editor-toolbar">
+              <div>
+                <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ letterSpacing: 1.1 }}>Environment settings</Text>
+                <Title order={4}>{sel ? sel : "创建新环境"}</Title>
+              </div>
+              <Group gap="xs">
+                <Badge variant="light" color={sel ? "blue" : "green"}>
+                  {sel ? "已创建" : "新实例"}
+                </Badge>
+                <Button
+                  variant="subtle"
+                  color="red"
+                  size="xs"
+                  leftSection={<IconTrash size={15} />}
+                  onClick={() => setDeleteOpen(true)}
+                  disabled={!sel}
+                >
+                  移除
+                </Button>
+                <Button
+                  size="xs"
+                  leftSection={<IconDeviceFloppy size={15} />}
+                  onClick={onSave}
+                  loading={busyAction === "save"}
+                >
+                  保存更改
+                </Button>
+              </Group>
             </Group>
+
+            <div className="form-section-label"><span>01</span><div><strong>连接信息</strong><small>实例身份与访问凭证</small></div></div>
 
             <TextInput
               label="实例名称 = 你要输入的命令词"
@@ -434,11 +474,7 @@ export default function ConfigPanel({
                   onChange={(e) => setToken(e.currentTarget.value)}
                 />
 
-                <Divider
-                  my={4}
-                  label="模型映射（把 Claude 的模型档位指到网关可用的模型）"
-                  labelPosition="left"
-                />
+                <div className="form-section-label"><span>02</span><div><strong>模型映射</strong><small>将 Claude 档位匹配到网关模型</small></div></div>
                 <Group justify="space-between" align="center">
                   <Text size="xs" c="dimmed">
                     点「检测模型」从当前网关拉取可用模型，自动加入下方下拉。
@@ -478,15 +514,13 @@ export default function ConfigPanel({
               </>
             )}
 
-            <Text size="sm" fw={500} mt={4}>
-              共享与同步（自动）
-            </Text>
-            <Text size="xs" c="dimmed">
-              所有实例自动与主账户共享 skills / plugins / agents / commands；
-              MCP 服务器与插件启用状态在每次启动 claude 时自动双向同步，
-              任一实例安装或删除，其他实例下次启动即生效。
-              跨实例共享的 MCP 请用 <Code>claude mcp add -s user</Code> 安装。
-            </Text>
+            <div className="form-section-label"><span>03</span><div><strong>自动化与命令</strong><small>共享策略与终端调用方式</small></div></div>
+            <Alert variant="light" color="cyan" icon={<IconInfoCircle size={16} />}>
+              <Text size="xs">
+                skills / plugins / agents / commands 会自动共享；MCP 与插件启用状态在每次启动 Claude 时双向同步。
+                跨实例共享的 MCP 请用 <Code>claude mcp add -s user</Code> 安装。
+              </Text>
+            </Alert>
 
             <Box>
               <Text size="sm" fw={500}>
@@ -498,26 +532,6 @@ export default function ConfigPanel({
                 }     # 切到这个实例，跑完自动恢复`}
               </Code>
             </Box>
-
-            <Group mt="xs">
-              <Button
-                leftSection={<IconDeviceFloppy size={16} />}
-                onClick={onSave}
-                loading={busyAction === "save"}
-              >
-                保存并接入终端
-              </Button>
-              <Button
-                variant="subtle"
-                color="red"
-                leftSection={<IconTrash size={16} />}
-                onClick={onDelete}
-                loading={busyAction === "delete"}
-                disabled={!sel}
-              >
-                删除
-              </Button>
-            </Group>
 
             {status.msg && (
               <Alert

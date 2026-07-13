@@ -71,7 +71,7 @@ export default function CaCertButton({
     <>
       <Button
         size="xs"
-        variant="white"
+        variant="light"
         leftSection={<IconCertificate size={14} />}
         onClick={() => setOpen(true)}
       >

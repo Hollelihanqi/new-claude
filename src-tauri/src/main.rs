@@ -2,10 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+mod claude_cli;
 mod health;
-mod marketplace;
 mod sync;
 
 const MARK: &str = "# cc-manager-integration";
@@ -50,6 +50,9 @@ fn cfg_dir() -> PathBuf {
 fn cfg_path() -> PathBuf {
     cfg_dir().join("config.json")
 }
+fn cfg_backup_path() -> PathBuf {
+    cfg_dir().join("config.backup.json")
+}
 fn cert_path() -> PathBuf {
     cfg_dir().join("ca-cert.pem")
 }
@@ -61,23 +64,143 @@ fn ps_path() -> PathBuf {
 }
 
 // ---------------- 配置读写 ----------------
-fn load() -> Vec<Profile> {
-    if let Ok(s) = fs::read_to_string(cfg_path()) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-            if let Some(arr) = v.get("profiles") {
-                if let Ok(list) = serde_json::from_value::<Vec<Profile>>(arr.clone()) {
-                    return list;
-                }
-            }
+fn normalize_base_url(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+fn parse_profiles(path: &Path) -> Option<Vec<Profile>> {
+    let text = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let profiles = value.get("profiles")?.clone();
+    let mut list = serde_json::from_value::<Vec<Profile>>(profiles).ok()?;
+    // 手工编辑的配置也要经过归一化，避免启动同步直接把首尾空格写进终端脚本。
+    for profile in &mut list {
+        if profile.type_ == "router" {
+            profile.base_url = normalize_base_url(&profile.base_url);
         }
+    }
+    Some(list)
+}
+
+fn corrupt_path(primary: &Path) -> PathBuf {
+    let first = primary.with_extension("corrupt.json");
+    if !first.exists() {
+        return first;
+    }
+    for i in 1..=9999 {
+        let candidate = primary.with_extension(format!("corrupt.{i}.json"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    primary.with_extension("corrupt.latest.json")
+}
+
+fn load_from(primary: &Path, backup: &Path) -> Vec<Profile> {
+    if let Some(list) = parse_profiles(primary) {
+        return list;
+    }
+    // 主配置缺失或损坏时回退到最近一次有效备份。恢复写回尽力而为；
+    // 即使磁盘暂时只读，本次启动仍能继续使用备份中的配置。
+    if let Some(list) = parse_profiles(backup) {
+        if primary.exists() {
+            // 恢复前保留损坏现场；移动失败时不覆盖原文件，但仍用备份支撑本次运行。
+            let _ = fs::rename(primary, corrupt_path(primary));
+        }
+        if !primary.exists() {
+            let _ = fs::copy(backup, primary);
+        }
+        return list;
     }
     vec![]
 }
 
-fn save(list: &[Profile]) -> std::io::Result<()> {
-    fs::create_dir_all(cfg_dir())?;
+fn load() -> Vec<Profile> {
+    load_from(&cfg_path(), &cfg_backup_path())
+}
+
+fn save_to(primary: &Path, backup: &Path, list: &[Profile]) -> std::io::Result<()> {
+    if let Some(parent) = primary.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let obj = serde_json::json!({ "profiles": list });
-    fs::write(cfg_path(), serde_json::to_string_pretty(&obj)?)
+    let text = serde_json::to_string_pretty(&obj)?;
+    let tmp = primary.with_extension("json.tmp");
+    fs::write(&tmp, text)?;
+
+    // 备份采用两阶段轮换：先生成 next，再把旧备份挪到 previous，最后提升 next。
+    // 全程不会出现“先删掉唯一备份、再尝试 rename”的无保护窗口。
+    if primary.exists() {
+        if parse_profiles(primary).is_some() {
+            let backup_next = backup.with_extension("next.json");
+            let backup_previous = backup.with_extension("previous.json");
+            if backup_next.exists() {
+                fs::remove_file(&backup_next)?;
+            }
+            fs::copy(primary, &backup_next)?;
+            if parse_profiles(&backup_next).is_none() {
+                let _ = fs::remove_file(&backup_next);
+                let _ = fs::remove_file(&tmp);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "新备份校验失败",
+                ));
+            }
+            if backup.exists() {
+                if backup_previous.exists() {
+                    fs::remove_file(&backup_previous)?;
+                }
+                fs::rename(backup, &backup_previous)?;
+            }
+            if let Err(e) = fs::rename(&backup_next, backup) {
+                if backup_previous.exists() && !backup.exists() {
+                    let _ = fs::rename(&backup_previous, backup);
+                }
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        } else {
+            // 不让损坏主文件挡住新配置落盘，同时保留现场便于诊断。
+            fs::rename(primary, corrupt_path(primary))?;
+        }
+    }
+
+    // Windows 不允许 rename 覆盖已有目标；先把主配置挪到 previous。
+    // 此时新的有效 backup 已经就位，提升失败仍可恢复主配置。
+    let primary_previous = primary.with_extension("previous.json");
+    if primary.exists() {
+        if primary_previous.exists() {
+            fs::remove_file(&primary_previous)?;
+        }
+        fs::rename(primary, &primary_previous)?;
+    }
+    if let Err(e) = fs::rename(&tmp, primary) {
+        if primary_previous.exists() {
+            let _ = fs::rename(&primary_previous, primary);
+        } else if !primary.exists() && backup.exists() {
+            let _ = fs::copy(backup, primary);
+        }
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let _ = fs::remove_file(&primary_previous);
+    let _ = fs::remove_file(backup.with_extension("previous.json"));
+    // 首次保存时还没有“上一版”，也留一份当前有效副本作为恢复基线。
+    if !backup.exists() {
+        fs::copy(primary, backup)?;
+    }
+    Ok(())
+}
+
+fn save(list: &[Profile]) -> std::io::Result<()> {
+    save_to(&cfg_path(), &cfg_backup_path(), list)
+}
+
+fn valid_base_url(value: &str) -> bool {
+    let value = normalize_base_url(value);
+    (value.starts_with("https://") || value.starts_with("http://"))
+        && value.len() <= 2048
+        && !value.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 // ---------------- shell 引用 ----------------
@@ -403,7 +526,7 @@ fn clear_token(name: &str) {
 
 // ---------------- claude 探测 ----------------
 fn claude_found() -> bool {
-    marketplace::resolve_claude_exe().is_some()
+    claude_cli::resolve_claude_exe().is_some()
 }
 
 // ---------------- 命令 ----------------
@@ -418,6 +541,7 @@ fn save_profile(profile: Profile, token: Option<String>) -> Result<String, Strin
     let mut p = profile;
     // 先归一化再校验：校验和存储必须是同一个字符串
     p.name = p.name.trim().to_string();
+    p.base_url = normalize_base_url(&p.base_url);
     // 只校验新建；已存在的名字（旧规则时代创建）放行，否则老用户连换 key 都保存不了
     let is_update = list.iter().any(|x| x.name == p.name);
     if !is_update && !valid_name(&p.name) {
@@ -426,6 +550,9 @@ fn save_profile(profile: Profile, token: Option<String>) -> Result<String, Strin
         );
     }
     if p.type_ == "router" {
+        if !valid_base_url(&p.base_url) {
+            return Err("网关地址必须是有效的 http:// 或 https:// 地址，且不能包含空格。".into());
+        }
         match token.as_ref().filter(|s| !s.is_empty()) {
             Some(t) => match store_token(&p.name, t) {
                 Ok(enc) => {
@@ -460,13 +587,46 @@ fn save_profile(profile: Profile, token: Option<String>) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn delete_profile(name: String) -> Result<(), String> {
+fn delete_profile(name: String, purge_data: bool) -> Result<String, String> {
     let mut list = load();
+    if !list.iter().any(|x| x.name == name) {
+        return Err("未找到要删除的实例。".into());
+    }
+    if purge_data {
+        purge_instance_data(&name)?;
+    }
     list.retain(|x| x.name != name);
     clear_token(&name);
     save(&list).map_err(|e| e.to_string())?;
     install_integration(&list)?;
-    Ok(())
+    Ok(if purge_data {
+        "实例及其登录态、项目记录和历史用量数据已彻底删除。".into()
+    } else {
+        "实例已从列表移除，历史数据仍保留，可通过同名实例恢复。".into()
+    })
+}
+
+fn purge_instance_data(name: &str) -> Result<(), String> {
+    // 名称来自配置文件，仍要防御被手工篡改后的路径穿越。
+    if name == "." || name == ".." || !script_safe_name(name) {
+        return Err("实例名称不安全，拒绝删除数据目录。请手动检查配置。".into());
+    }
+    let root = home().join(".claude-split").join(name);
+    if !root.exists() {
+        return Ok(());
+    }
+    // 先显式解除共享目录链接/Junction，确保递归删除永远不会触及主账户目录。
+    let claude = root.join(".claude");
+    for sub in sync::SHARED_SUBDIRS {
+        let link = claude.join(sub);
+        // read_link 同时识别 Unix symlink 与 Windows Junction；真实目录留给
+        // remove_dir_all 处理，不能误当链接调用平台相关的解除逻辑。
+        if fs::read_link(&link).is_ok() {
+            sync::remove_link(&link)
+                .map_err(|e| format!("解除共享链接 {} 失败：{e}", link.display()))?;
+        }
+    }
+    fs::remove_dir_all(&root).map_err(|e| format!("删除实例数据 {} 失败：{e}", root.display()))
 }
 
 // GUI 启动时调用:刷新集成脚本(exe 路径可能变化)+ 建齐共享链接 + 跑一轮配置合并
@@ -562,8 +722,8 @@ fn clear_certs() -> Result<String, String> {
 #[tauri::command]
 fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String> {
     let base = base_url.trim().trim_end_matches('/');
-    if base.is_empty() {
-        return Err("请先填写网关地址。".into());
+    if !valid_base_url(base) {
+        return Err("网关地址必须是有效的 http:// 或 https:// 地址，且不能包含空格。".into());
     }
     if token.trim().is_empty() {
         return Err("请先填写 API Key（检测需要鉴权）。".into());
@@ -903,8 +1063,7 @@ const MAIN_PROFILE_KEY: &str = "__main__";
 
 // async：首次全量扫描可能较慢（主账户历史可达数百 MB），放到异步线程执行，
 // 不阻塞主线程；之后的调用命中文件缓存，只重新解析有变动的活跃会话文件。
-#[tauri::command]
-async fn usage_stats() -> UsageStats {
+fn collect_usage_stats() -> UsageStats {
     use std::collections::HashMap;
     let mut map: HashMap<(String, String, String), UsageRow> = HashMap::new();
     let mut conv: Vec<ConvRow> = Vec::new();
@@ -939,6 +1098,13 @@ async fn usage_stats() -> UsageStats {
         daily,
         conversations: conv,
     }
+}
+
+#[tauri::command]
+async fn usage_stats() -> Result<UsageStats, String> {
+    tauri::async_runtime::spawn_blocking(collect_usage_stats)
+        .await
+        .map_err(|e| format!("用量扫描任务异常：{e}"))
 }
 
 fn main() {
@@ -976,15 +1142,7 @@ fn main() {
             health::model_pin_warnings,
             health::fix_model_pin,
             health::health_check,
-            health::export_diagnostics,
-            marketplace::plugin_marketplace_list,
-            marketplace::plugin_marketplace_add,
-            marketplace::plugin_marketplace_remove,
-            marketplace::plugin_list,
-            marketplace::plugin_install,
-            marketplace::plugin_uninstall,
-            marketplace::plugin_set_enabled,
-            marketplace::open_external_url
+            health::export_diagnostics
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -993,6 +1151,75 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_config_paths(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "cc-manager-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        (dir.join("config.json"), dir.join("config.backup.json"), dir)
+    }
+
+    #[test]
+    fn config_save_keeps_previous_valid_version_as_backup() {
+        let (primary, backup, dir) = temp_config_paths("backup");
+        save_to(&primary, &backup, &[router_profile("first")]).unwrap();
+        save_to(&primary, &backup, &[router_profile("second")]).unwrap();
+        assert_eq!(parse_profiles(&primary).unwrap()[0].name, "second");
+        assert_eq!(parse_profiles(&backup).unwrap()[0].name, "first");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn config_load_recovers_corrupt_primary_from_backup() {
+        let (primary, backup, dir) = temp_config_paths("recover");
+        fs::write(&primary, "not json").unwrap();
+        let obj = serde_json::json!({ "profiles": [router_profile("safe")] });
+        fs::write(&backup, serde_json::to_string_pretty(&obj).unwrap()).unwrap();
+        let loaded = load_from(&primary, &backup);
+        assert_eq!(loaded[0].name, "safe");
+        assert_eq!(parse_profiles(&primary).unwrap()[0].name, "safe");
+        assert_eq!(fs::read_to_string(primary.with_extension("corrupt.json")).unwrap(), "not json");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn config_save_replaces_corrupt_primary_without_losing_evidence() {
+        let (primary, backup, dir) = temp_config_paths("replace-corrupt");
+        fs::write(&primary, "truncated {").unwrap();
+        save_to(&primary, &backup, &[router_profile("fresh")]).unwrap();
+        assert_eq!(parse_profiles(&primary).unwrap()[0].name, "fresh");
+        assert_eq!(fs::read_to_string(primary.with_extension("corrupt.json")).unwrap(), "truncated {");
+        assert!(parse_profiles(&backup).is_some());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn base_url_requires_http_scheme_and_rejects_whitespace() {
+        assert!(valid_base_url("https://gateway.example.com/anthropic"));
+        assert!(valid_base_url("  https://gateway.example.com/anthropic/  "));
+        assert!(valid_base_url("http://10.0.0.2:8080/anthropic"));
+        assert!(!valid_base_url("gateway.example.com"));
+        assert!(!valid_base_url("https://example.com/a b"));
+        assert!(!valid_base_url("file:///tmp/config"));
+    }
+
+    #[test]
+    fn config_load_normalizes_manually_edited_base_url() {
+        let (primary, backup, dir) = temp_config_paths("normalize-url");
+        let mut profile = router_profile("manual");
+        profile.base_url = "  https://gateway.example.com/anthropic/  ".into();
+        let obj = serde_json::json!({ "profiles": [profile] });
+        fs::write(&primary, serde_json::to_string_pretty(&obj).unwrap()).unwrap();
+        let loaded = load_from(&primary, &backup);
+        assert_eq!(loaded[0].base_url, "https://gateway.example.com/anthropic");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn router_profile(name: &str) -> Profile {
         Profile {

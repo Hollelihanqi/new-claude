@@ -68,7 +68,7 @@ fn link_points_to(dst: &Path, src: &Path) -> bool {
 }
 
 // Windows 上目录型 reparse point(Junction)用 remove_dir 删链不删目标
-fn remove_link(p: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_link(p: &Path) -> std::io::Result<()> {
     if cfg!(windows) {
         fs::remove_dir(p)
     } else {

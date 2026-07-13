@@ -5,20 +5,19 @@ import {
   Text,
   Badge,
   Alert,
-  Container,
   Button,
+  Tooltip,
 } from "@mantine/core";
 import {
-  IconSettings,
+  IconLayoutDashboard,
   IconChartLine,
   IconBook2,
   IconRoute,
-  IconBrandApple,
-  IconBrandWindows,
   IconCircleCheck,
   IconAlertTriangle,
   IconDownload,
-  IconPuzzle,
+  IconChevronRight,
+  IconSparkles,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -32,24 +31,22 @@ import type { UsageStats } from "./api";
 import ConfigPanel from "./components/ConfigPanel";
 import UsagePanel, { USAGE_AUTO_OPTIONS } from "./components/UsagePanel";
 import GuidePanel from "./components/GuidePanel";
-import MarketplacePanel from "./components/MarketplacePanel";
 import CaCertButton from "./components/CaCertButton";
 import HealthButton from "./components/HealthButton";
 
-type ViewId = "config" | "usage" | "guide" | "marketplace";
+type ViewId = "config" | "usage" | "guide";
 type Scheme = "a" | "b";
 
 const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
 const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
-const NAV: { id: ViewId; label: string; icon: typeof IconSettings }[] = [
-  { id: "config", label: "实例配置", icon: IconSettings },
-  { id: "marketplace", label: "市场", icon: IconPuzzle },
-  { id: "usage", label: "用量统计", icon: IconChartLine },
-  { id: "guide", label: "使用指南", icon: IconBook2 },
+const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
+  { id: "config", label: "环境配置", desc: "实例与路由", icon: IconLayoutDashboard },
+  { id: "usage", label: "用量洞察", desc: "趋势与模型", icon: IconChartLine },
+  { id: "guide", label: "使用帮助", desc: "指南与原理", icon: IconBook2 },
 ];
 
-function NavPill({
+function SideNav({
   value,
   onChange,
 }: {
@@ -57,70 +54,29 @@ function NavPill({
   onChange: (v: ViewId) => void;
 }) {
   return (
-    <div
-      style={{
-        display: "inline-flex",
-        gap: 4,
-        padding: 5,
-        background: "rgba(0,0,0,0.045)",
-        borderRadius: 999,
-      }}
-    >
+    <nav className="side-nav">
       {NAV.map((it) => {
         const Icon = it.icon;
         const active = value === it.id;
         return (
-          <button
-            key={it.id}
-            onClick={() => onChange(it.id)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 7,
-              padding: "9px 18px",
-              border: "none",
-              cursor: "pointer",
-              borderRadius: 999,
-              fontSize: 14,
-              fontWeight: 600,
-              fontFamily: "inherit",
-              transition: "all .22s cubic-bezier(.4,0,.2,1)",
-              background: active
-                ? "var(--mantine-primary-color-filled)"
-                : "transparent",
-              color: active ? "#fff" : "#6b655f",
-              boxShadow: active ? "0 4px 12px rgba(0,0,0,0.15)" : "none",
-            }}
-          >
-            <Icon size={16} />
-            {it.label}
+          <button key={it.id} onClick={() => onChange(it.id)} className={`side-nav-item ${active ? "active" : ""}`}>
+            <span className="side-nav-icon"><Icon size={19} stroke={1.8} /></span>
+            <span className="side-nav-copy"><strong>{it.label}</strong><small>{it.desc}</small></span>
+            {active && <IconChevronRight size={15} />}
           </button>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
-function StatusPills({ env }: { env: EnvInfo | null }) {
+function EnvironmentStatus({ env }: { env: EnvInfo | null }) {
   if (!env) return null;
-  const PlatformIcon =
-    env.platform === "macos" ? IconBrandApple : IconBrandWindows;
-  const platformLabel =
-    env.platform === "macos" ? "macOS" : env.platform === "windows" ? "Windows" : "未知";
-  const pill = { radius: 999, variant: "white", size: "lg" };
   return (
-    <Group gap={8}>
-      <Badge {...pill} color="gray" leftSection={<PlatformIcon size={13} />}>
-        {platformLabel}
-      </Badge>
-      <Badge
-        {...pill}
-        color={env.claude_found ? "teal" : "orange"}
-        leftSection={env.claude_found ? <IconCircleCheck size={13} /> : <IconAlertTriangle size={13} />}
-      >
-        {env.claude_found ? "claude 就绪" : "未装 claude"}
-      </Badge>
-    </Group>
+    <div className={`env-status ${env.claude_found ? "ready" : "warning"}`}>
+      {env.claude_found ? <IconCircleCheck size={17} /> : <IconAlertTriangle size={17} />}
+      <div><strong>{env.claude_found ? "环境运行正常" : "环境需要处理"}</strong><span>{env.claude_found ? "Claude Code 已就绪" : "未检测到 Claude CLI"}</span></div>
+    </div>
   );
 }
 
@@ -213,9 +169,17 @@ export default function App({
     api.environment().then(setEnv).catch((e) => setErr(String(e)));
   };
   useEffect(refreshEnv, []);
-  // 启动即建齐共享链接并跑一轮 MCP/插件启用状态合并(静默,失败不打扰)
+  // 启动即建齐共享链接并跑一轮 MCP/插件启用状态合并。
+  // 失败不阻断应用，但必须让用户知道当前配置可能尚未同步。
   useEffect(() => {
-    api.syncAll().catch(() => {});
+    api.syncAll().catch((e) => {
+      notifications.show({
+        color: "orange",
+        title: "环境同步未完成",
+        message: `${String(e)}。可打开右上角「健康检查」查看原因，修复后重启应用。`,
+        autoClose: false,
+      });
+    });
   }, []);
 
   // silent=true 时不亮加载态（自动刷新在后台悄悄换数据，不闪按钮 spinner）；
@@ -266,116 +230,56 @@ export default function App({
     getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
-  const accentBg = scheme === "a" ? "#d7e7e3" : "#ecdfd0";
+  const activeNav = NAV.find((item) => item.id === view) || NAV[0];
 
   return (
-    <Box
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        background: accentBg,
-      }}
-    >
-      {/* 顶栏 + 导航：固定占自然高度，整页不滚 */}
-      <Box style={{ flex: "0 0 auto", zIndex: 10 }}>
-        {/* 顶栏 */}
-        <Box style={{ background: "var(--mantine-primary-color-filled)" }}>
-          <Container fluid px={48} py="lg">
-            <Group justify="space-between" wrap="nowrap">
-              <Group gap="sm" wrap="nowrap">
-                <Box
-                  style={{
-                    width: 46,
-                    height: 46,
-                    borderRadius: 15,
-                    background: "rgba(255,255,255,0.18)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                  }}
-                >
-                  <IconRoute size={26} color="#fff" />
-                </Box>
-                <div>
-                  <Text fw={700} size="md" lh={1.1} c="white">
-                    Claude 路由管理
-                  </Text>
-                  <Text size="xs" style={{ color: "rgba(255,255,255,0.82)" }}>
-                    多账户 / 公司网关，一处配好
-                    {appVersion ? ` · v${appVersion}` : ""}
-                  </Text>
-                </div>
-              </Group>
-              <Group gap="sm" wrap="nowrap">
-                <Button
-                  size="xs"
-                  variant="white"
-                  leftSection={<IconDownload size={14} />}
-                  onClick={() => checkUpdate(true)}
-                >
-                  检查更新
-                </Button>
-                <HealthButton />
-                <CaCertButton env={env} onChanged={refreshEnv} />
-                <Group gap={8}>
-                  {([
-                    { k: "a", c: "#fd752c", t: "橘橙主题" },
-                    { k: "b", c: "#0c7e9e", t: "孔雀蓝主题" },
-                  ] as { k: Scheme; c: string; t: string }[]).map((it) => (
-                    <button
-                      key={it.k}
-                      onClick={() => setScheme(it.k)}
-                      title={it.t}
-                      style={{
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
-                        cursor: "pointer",
-                        padding: 0,
-                        background: it.c,
-                        border:
-                          scheme === it.k
-                            ? "3px solid #fff"
-                            : "2px solid rgba(255,255,255,0.5)",
-                        boxShadow:
-                          scheme === it.k
-                            ? "0 0 0 2px rgba(255,255,255,0.9), 0 2px 6px rgba(0,0,0,0.25)"
-                            : "none",
-                        transition: "all .2s",
-                      }}
-                    />
-                  ))}
-                </Group>
-                <StatusPills env={env} />
-              </Group>
-            </Group>
-          </Container>
-        </Box>
+    <div className="app-shell">
+      <aside className="app-sidebar">
+        <div className="brand-block">
+          <div className="brand-mark"><IconRoute size={24} stroke={2.1} /></div>
+          <div className="brand-copy"><strong>Claude 路由管理</strong><span>环境控制中心</span></div>
+        </div>
+        <Text className="nav-eyebrow">工作台</Text>
+        <SideNav value={view} onChange={setView} />
+        <div className="sidebar-spacer" />
+        <div className="sidebar-note">
+          <IconSparkles size={17} />
+          <div><strong>本地优先</strong><span>密钥仅保存在此设备</span></div>
+        </div>
+        <div className="sidebar-footer">
+          <span>界面主题</span>
+          <Group gap={7}>
+            {([
+              { k: "b", c: "#087f9b", t: "深海蓝" },
+              { k: "a", c: "#f97316", t: "活力橙" },
+            ] as { k: Scheme; c: string; t: string }[]).map((it) => (
+              <Tooltip key={it.k} label={it.t}>
+                <button className={`theme-dot ${scheme === it.k ? "active" : ""}`} onClick={() => setScheme(it.k)} style={{ background: it.c }} />
+              </Tooltip>
+            ))}
+          </Group>
+          <Badge variant="light" color="gray">v{appVersion || "--"}</Badge>
+        </div>
+      </aside>
 
-        {/* 导航（居中） */}
-        <Box style={{ background: accentBg }}>
-          <Container fluid px={48} pt="md" pb="md" className="glass-content">
-            <Group justify="center">
-              <NavPill value={view} onChange={setView} />
-            </Group>
-          </Container>
-        </Box>
-      </Box>
+      <main className="app-main">
+        <header className="app-header">
+          <div>
+            <Text className="page-kicker">CLAUDE ENVIRONMENT</Text>
+            <Text className="page-title">{activeNav.label}</Text>
+          </div>
+          <Group gap="sm" wrap="nowrap">
+            <EnvironmentStatus env={env} />
+            <div className="header-divider" />
+            <Tooltip label="检查软件更新">
+              <Button className="header-action" size="xs" variant="subtle" onClick={() => checkUpdate(true)} leftSection={<IconDownload size={15} />}>更新</Button>
+            </Tooltip>
+            <HealthButton />
+            <CaCertButton env={env} onChanged={refreshEnv} />
+          </Group>
+        </header>
 
-      {/* 内容区：填满剩余空间，内部各自滚动，整页不滚 */}
-      <Box
-        style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}
-        className="glass-content"
-      >
-        <Container
-          fluid
-          px={48}
-          py="lg"
-          style={{ height: "100%", display: "flex", flexDirection: "column" }}
-        >
+        <section className="app-content">
           {err && (
             <Alert
               color="red"
@@ -387,7 +291,7 @@ export default function App({
               {err}
             </Alert>
           )}
-          {env && !env.claude_found && (view === "config" || view === "marketplace") && (
+          {env && !env.claude_found && view === "config" && (
             <Alert
               color="orange"
               icon={<IconAlertTriangle size={16} />}
@@ -398,13 +302,10 @@ export default function App({
               请先安装 Claude Code、确认终端能运行 <code>claude</code>，再来配置。
             </Alert>
           )}
-
-          {/* 各视图填满剩余高度；超出则各自滚动 */}
-          <Box style={{ flex: "1 1 auto", minHeight: 0 }}>
+          <Box className="view-stage">
             {view === "config" && <ConfigPanel onChanged={refreshEnv} />}
-            {view === "marketplace" && <MarketplacePanel />}
             {view === "usage" && (
-              <div style={{ height: "100%", overflowY: "auto" }}>
+              <div className="view-scroll">
                 <UsagePanel
                   data={usageData}
                   err={usageErr}
@@ -416,13 +317,13 @@ export default function App({
               </div>
             )}
             {view === "guide" && (
-              <div style={{ height: "100%", overflowY: "auto" }}>
+              <div className="view-scroll">
                 <GuidePanel />
               </div>
             )}
           </Box>
-        </Container>
-      </Box>
-    </Box>
+        </section>
+      </main>
+    </div>
   );
 }

@@ -38,6 +38,8 @@ export default function HealthButton() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<{ ok: boolean; msg: string }>({ ok: true, msg: "" });
   const [exportMsg, setExportMsg] = useState<{ ok: boolean; msg: string }>({
     ok: true,
     msg: "",
@@ -56,7 +58,22 @@ export default function HealthButton() {
   const onOpen = () => {
     setOpen(true);
     setExportMsg({ ok: true, msg: "" });
+    setSyncMsg({ ok: true, msg: "" });
     run();
+  };
+
+  const onSync = async () => {
+    setSyncBusy(true);
+    setSyncMsg({ ok: true, msg: "" });
+    try {
+      const msg = await api.syncAll();
+      setSyncMsg({ ok: true, msg });
+      run();
+    } catch (e) {
+      setSyncMsg({ ok: false, msg: String(e) });
+    } finally {
+      setSyncBusy(false);
+    }
   };
 
   const onExport = async () => {
@@ -81,7 +98,7 @@ export default function HealthButton() {
     <>
       <Button
         size="xs"
-        variant="white"
+        variant="light"
         leftSection={<IconStethoscope size={14} />}
         onClick={onOpen}
       >
@@ -161,6 +178,16 @@ export default function HealthButton() {
             </Alert>
           )}
 
+          {syncMsg.msg && (
+            <Alert
+              variant="light"
+              color={syncMsg.ok ? "teal" : "red"}
+              icon={<IconInfoCircle size={16} />}
+            >
+              <span style={{ wordBreak: "break-all" }}>{syncMsg.msg}</span>
+            </Alert>
+          )}
+
           <Group gap="xs" mt={4}>
             <Button
               size="sm"
@@ -170,6 +197,16 @@ export default function HealthButton() {
               loading={busy}
             >
               重新检测
+            </Button>
+            <Button
+              size="sm"
+              variant="default"
+              leftSection={<IconRefresh size={14} />}
+              onClick={onSync}
+              loading={syncBusy}
+              disabled={busy || exportBusy}
+            >
+              立即同步并修复
             </Button>
             <Button
               size="sm"
