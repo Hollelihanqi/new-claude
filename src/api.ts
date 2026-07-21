@@ -72,6 +72,18 @@ export interface ModelPinWarning {
   settingsPath: string;
 }
 
+/** InstanceSettings（serde rename_all = camelCase）：某个独立空间的 settings.json */
+export interface InstanceSettings {
+  path: string;
+  exists: boolean;
+  content: string;
+  /** 文件 mtime（毫秒）。保存时原样回传，用于检测后台 --sync 的并发改写 */
+  revision: number;
+  bypassEnabled: boolean;
+  /** 有更高优先级的配置也设了 defaultMode 时，给出那个文件的路径 */
+  overriddenBy?: string;
+}
+
 /** HealthItem（serde rename_all = camelCase） */
 export interface HealthItem {
   id: string;
@@ -104,6 +116,20 @@ export const api = {
   detectModelsFor: (name: string): Promise<string[]> =>
     invoke("detect_models_for", { name }),
   usageStats: (): Promise<UsageStats> => invoke("usage_stats"),
+  // 独立空间的 settings.json：开关与手动编辑共用同一份读写
+  readInstanceSettings: (name: string): Promise<InstanceSettings> =>
+    invoke("read_instance_settings", { name }),
+  writeInstanceSettings: (
+    name: string,
+    content: string,
+    revision: number
+  ): Promise<InstanceSettings> =>
+    invoke("write_instance_settings", { name, content, revision }),
+  setBypassPermissions: (
+    name: string,
+    enabled: boolean
+  ): Promise<InstanceSettings> =>
+    invoke("set_bypass_permissions", { name, enabled }),
   // 健康与诊断
   modelPinWarnings: (): Promise<ModelPinWarning[]> =>
     invoke("model_pin_warnings"),

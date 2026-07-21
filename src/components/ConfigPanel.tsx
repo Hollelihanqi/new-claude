@@ -29,6 +29,7 @@ import {
 } from "@tabler/icons-react";
 import { api } from "../api";
 import type { EnvInfo, Profile, ModelPinWarning, ProfileRuntimeInfo, UsageStats } from "../api";
+import InstanceSettingsCard from "./InstanceSettingsCard";
 
 // 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
 const PRESET_MODELS = [
@@ -580,6 +581,13 @@ export default function ConfigPanel({
                 跨实例共享的 MCP 请用 <Code>claude mcp add -s user</Code> 安装。
               </Text>
             </Alert>
+
+            {sel && (
+              <>
+                <div className="form-section-label"><span>04</span><div><strong>权限与高级配置</strong><small>该空间的 settings.json</small></div></div>
+                <InstanceSettingsCard name={sel} />
+              </>
+            )}
 
             <Box>
               <Text size="sm" fw={500}>

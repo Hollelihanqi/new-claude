@@ -20,7 +20,7 @@ pub const SHARED_SUBDIRS: [&str; 4] = ["skills", "plugins", "agents", "commands"
 fn master_dir() -> PathBuf {
     crate::home().join(".claude")
 }
-fn instance_dir(name: &str) -> PathBuf {
+pub(crate) fn instance_dir(name: &str) -> PathBuf {
     crate::home().join(".claude-split").join(name).join(".claude")
 }
 fn snapshot_path() -> PathBuf {
