@@ -2730,14 +2730,9 @@ mod tests {
     use serde_json::json;
 
     fn setup() -> (McpPaths, Temp) {
-        let dir = std::env::temp_dir().join(format!(
-            "ccm-mcp-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // CI 会并行创建大量测试目录，单靠系统时钟可能在同一时钟刻度内重名。
+        // uniq_token 同时包含进程号、时间与进程内原子序号，确保测试之间完全隔离。
+        let dir = std::env::temp_dir().join(format!("ccm-mcp-test-{}", uniq_token()));
         fs::create_dir_all(&dir).unwrap();
         let paths = McpPaths::for_test(dir.clone());
         (paths, Temp(dir))
