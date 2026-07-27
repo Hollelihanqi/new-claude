@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch"
-version = "2.1.0"
+version = "2.2.0"
 description = "Claude Code 本地环境管理工具"
 edition = "2021"
 
@@ -14,4 +14,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml_edit = "0.25"
 dirs = "5"
+tauri-plugin-dialog = "2"
+url = "2"

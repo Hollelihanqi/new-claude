@@ -96,8 +96,7 @@ pub fn model_pin_warnings() -> Vec<ModelPinWarning> {
 #[tauri::command]
 pub fn fix_model_pin(profile: String) -> Result<String, String> {
     // 只允许操作已知副本,防止前端传来任意路径片段
-    let known = profile == MAIN_PROFILE_KEY
-        || load().iter().any(|p| p.name == profile);
+    let known = profile == MAIN_PROFILE_KEY || load().iter().any(|p| p.name == profile);
     if !known {
         return Err("未找到该实例".into());
     }
@@ -105,9 +104,7 @@ pub fn fix_model_pin(profile: String) -> Result<String, String> {
     let text = fs::read_to_string(&path).map_err(|e| format!("读取 settings.json 失败：{e}"))?;
     let mut doc: Value =
         serde_json::from_str(&text).map_err(|e| format!("settings.json 不是有效 JSON：{e}"))?;
-    let obj = doc
-        .as_object_mut()
-        .ok_or("settings.json 顶层不是对象")?;
+    let obj = doc.as_object_mut().ok_or("settings.json 顶层不是对象")?;
     if obj.remove("model").is_none() {
         return Ok("该副本没有钉死模型，无需还原。".into());
     }
@@ -174,19 +171,29 @@ fn run_health_checks() -> Vec<HealthItem> {
     let mut items = vec![];
 
     // 1. claude CLI
-    match crate::claude_cli::resolve_claude_exe() {
-        Some(p) => items.push(item("claude", "Claude Code CLI", "ok", format!("已找到：{}", p.display()))),
-        None => items.push(item(
+    let detection = crate::claude_cli::detect_claude();
+    match detection.path {
+        Some(path) => items.push(item(
             "claude",
             "Claude Code CLI",
-            "fail",
-            "未找到 claude 可执行文件，请先安装 Claude Code。".into(),
+            "ok",
+            format!(
+                "已找到：{}（{}）",
+                path.display(),
+                detection.version.unwrap_or_else(|| "版本未知".to_string())
+            ),
         )),
+        None => items.push(item("claude", "Claude Code CLI", "fail", detection.detail)),
     }
 
     // 2. 终端集成
     if names.is_empty() {
-        items.push(item("integration", "终端集成", "warn", "还没有创建任何实例。".into()));
+        items.push(item(
+            "integration",
+            "终端集成",
+            "warn",
+            "还没有创建任何实例。".into(),
+        ));
     } else {
         let script = if cfg!(target_os = "windows") {
             crate::ps_path()
@@ -198,11 +205,19 @@ fn run_health_checks() -> Vec<HealthItem> {
                 "integration",
                 "终端集成",
                 "fail",
-                format!("集成脚本缺失（{}），请点一次「保存并接入终端」重建。", script.display()),
+                format!(
+                    "集成脚本缺失（{}），请点一次「保存并接入终端」重建。",
+                    script.display()
+                ),
             ));
         } else {
             let (ok, detail) = integration_line_present();
-            items.push(item("integration", "终端集成", if ok { "ok" } else { "fail" }, detail));
+            items.push(item(
+                "integration",
+                "终端集成",
+                if ok { "ok" } else { "fail" },
+                detail,
+            ));
         }
     }
 
@@ -214,14 +229,20 @@ fn run_health_checks() -> Vec<HealthItem> {
                 "links",
                 "共享目录链接",
                 "ok",
-                format!("{} 个实例的 skills/plugins/agents/commands 链接完好。", names.len()),
+                format!(
+                    "{} 个实例的 skills/plugins/agents/commands 链接完好。",
+                    names.len()
+                ),
             ));
         } else {
             items.push(item(
                 "links",
                 "共享目录链接",
                 "warn",
-                format!("发现异常：{}。下次启动 claude 或本程序时会自动修复。", probs.join("、")),
+                format!(
+                    "发现异常：{}。下次启动 claude 或本程序时会自动修复。",
+                    probs.join("、")
+                ),
             ));
         }
     }
@@ -230,7 +251,12 @@ fn run_health_checks() -> Vec<HealthItem> {
     let cert_count = crate::count_certs();
     let has_router = list.iter().any(|p| p.type_ == "router");
     if cert_count > 0 {
-        items.push(item("cert", "CA 证书", "ok", format!("信任库中共 {cert_count} 张证书。")));
+        items.push(item(
+            "cert",
+            "CA 证书",
+            "ok",
+            format!("信任库中共 {cert_count} 张证书。"),
+        ));
     } else if has_router {
         items.push(item(
             "cert",
@@ -239,11 +265,20 @@ fn run_health_checks() -> Vec<HealthItem> {
             "未导入任何证书。若公司网关用自签名证书，需在右上角「CA 证书」导入。".into(),
         ));
     } else {
-        items.push(item("cert", "CA 证书", "ok", "未导入（没有路由实例，无需证书）。".into()));
+        items.push(item(
+            "cert",
+            "CA 证书",
+            "ok",
+            "未导入（没有路由实例，无需证书）。".into(),
+        ));
     }
 
     // 5. 各路由实例的网关连通 + Key 有效性（并行探测）
-    let routers: Vec<Profile> = list.iter().filter(|p| p.type_ == "router").cloned().collect();
+    let routers: Vec<Profile> = list
+        .iter()
+        .filter(|p| p.type_ == "router")
+        .cloned()
+        .collect();
     let handles: Vec<_> = routers
         .into_iter()
         .map(|p| {
@@ -340,15 +375,31 @@ fn status_tag(s: &str) -> &'static str {
 
 // 实例配置的脱敏摘要:绝不输出 token_enc / 任何密钥内容
 fn profile_summary(p: &Profile) -> String {
-    let mut s = format!("- {}（{}）", p.name, if p.type_ == "router" { "自定义路由" } else { "另一个账户" });
+    let mut s = format!(
+        "- {}（{}）",
+        p.name,
+        if p.type_ == "router" {
+            "自定义路由"
+        } else {
+            "另一个账户"
+        }
+    );
     if p.type_ == "router" {
         fn or<'a>(s: &'a str, fallback: &'a str) -> &'a str {
-            if s.is_empty() { fallback } else { s }
+            if s.is_empty() {
+                fallback
+            } else {
+                s
+            }
         }
         s += &format!(
             "\n    网关: {}\n    Key: {}\n    映射: opus={} sonnet={} haiku={}",
             or(&p.base_url, "<未配置>"),
-            if p.has_token { "已保存（内容不导出）" } else { "未保存" },
+            if p.has_token {
+                "已保存（内容不导出）"
+            } else {
+                "未保存"
+            },
             or(&p.opus_model, "<未设>"),
             or(&p.sonnet_model, "<未设>"),
             or(&p.haiku_model, "<未设>"),
@@ -371,7 +422,10 @@ fn build_report(app_version: &str, items: &[HealthItem]) -> String {
     };
     let mut r = String::new();
     r += "=== cc-manager 诊断报告 ===\n";
-    r += &format!("生成时间: {}\nApp 版本: v{app_version}\n平台: {platform}\n", fmt_utc(now));
+    r += &format!(
+        "生成时间: {}\nApp 版本: v{app_version}\n平台: {platform}\n",
+        fmt_utc(now)
+    );
 
     r += "\n--- 健康检查 ---\n";
     for it in items {
@@ -393,7 +447,11 @@ fn build_report(app_version: &str, items: &[HealthItem]) -> String {
     keys.extend(profile_names(&list));
     for k in keys {
         let path = settings_path_for(&k);
-        let who = if k == MAIN_PROFILE_KEY { "主账户" } else { k.as_str() };
+        let who = if k == MAIN_PROFILE_KEY {
+            "主账户"
+        } else {
+            k.as_str()
+        };
         let val = fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())

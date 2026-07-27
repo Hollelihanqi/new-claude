@@ -21,7 +21,10 @@ fn master_dir() -> PathBuf {
     crate::home().join(".claude")
 }
 pub(crate) fn instance_dir(name: &str) -> PathBuf {
-    crate::home().join(".claude-split").join(name).join(".claude")
+    crate::home()
+        .join(".claude-split")
+        .join(name)
+        .join(".claude")
 }
 fn snapshot_path() -> PathBuf {
     crate::cfg_dir().join("sync-snapshot.json")
@@ -178,7 +181,13 @@ pub fn ensure_links(names: &[String]) -> Result<Vec<String>, String> {
                 .collect::<Vec<_>>()
                 .join("; ");
             let out = crate::ps_command()
-                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &inner])
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &inner,
+                ])
                 .output()
                 .map_err(|e| e.to_string())?;
             if !out.status.success() {
@@ -274,8 +283,7 @@ fn read_replica(key: &str, path: &Path, field: &str) -> ReplicaState {
 }
 
 pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(v)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let text = serde_json::to_string_pretty(v).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("ccm-tmp");
     fs::write(&tmp, text)?;
     fs::rename(&tmp, path)
@@ -291,13 +299,12 @@ fn sync_domain(
     field: &str,
     files: &[(String, PathBuf)],
     old: Option<&DomainSnap>,
-) -> (DomainSnap, usize) {
+) -> (DomainSnap, usize, Vec<String>) {
     let replicas: Vec<ReplicaState> = files
         .iter()
         .map(|(k, p)| read_replica(k, p, field))
         .collect();
-    let participating: Vec<&ReplicaState> =
-        replicas.iter().filter(|r| r.doc.is_some()).collect();
+    let participating: Vec<&ReplicaState> = replicas.iter().filter(|r| r.doc.is_some()).collect();
 
     let mut target: Map<String, Value>;
     match old {
@@ -348,12 +355,18 @@ fn sync_domain(
     // 写回:只动目标字段,文档其余部分(登录态、permissions 等)原样保留
     let mut written = 0usize;
     let mut ok_replicas: Vec<String> = vec![];
+    let mut warnings: Vec<String> = vec![];
     for r in &replicas {
         let dir_ok = r.path.parent().map(|d| d.is_dir()).unwrap_or(false);
         if !dir_ok {
             continue; // 实例目录不存在(从未启动且未建链)→ 跳过
         }
         if r.doc.is_none() && r.exists {
+            warnings.push(format!(
+                "{}（{}）无法解析，本轮未写回",
+                r.key,
+                r.path.display()
+            ));
             continue; // 文件在但解析失败:别覆盖,等它自愈
         }
         if r.doc.is_none() && target.is_empty() {
@@ -368,6 +381,11 @@ fn sync_domain(
         if r.exists {
             let now = fs::metadata(&r.path).and_then(|m| m.modified()).ok();
             if now != Some(r.mtime) {
+                warnings.push(format!(
+                    "{}（{}）在同步期间被外部修改，本轮未写回",
+                    r.key,
+                    r.path.display()
+                ));
                 continue;
             }
         }
@@ -381,7 +399,11 @@ fn sync_domain(
                 written += 1;
                 ok_replicas.push(r.key.clone());
             }
-            Err(e) => log_line(&format!("写回 {} 失败:{e}", r.path.display())),
+            Err(e) => {
+                let warning = format!("{}（{}）写回失败：{e}", r.key, r.path.display());
+                log_line(&warning);
+                warnings.push(warning);
+            }
         }
     }
     (
@@ -390,26 +412,29 @@ fn sync_domain(
             replicas: ok_replicas,
         },
         written,
+        warnings,
     )
 }
 
 // ---------------- 锁 ----------------
 
-struct LockGuard(PathBuf);
-impl Drop for LockGuard {
+// mcp 模块的 User/Local 写入与 CLI --sync 都需要串行化对 .claude.json 的改写，
+// 故把锁与同步体公开为 pub(crate)，供 mcp::apply_mcp_change 在同一把锁内完成。
+pub(crate) struct ConfigLockGuard(PathBuf);
+impl Drop for ConfigLockGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
 }
 
-fn acquire_lock() -> Option<LockGuard> {
+pub(crate) fn acquire_config_lock() -> Option<ConfigLockGuard> {
     let p = lock_path();
     let _ = fs::create_dir_all(crate::cfg_dir());
     for _ in 0..2 {
         match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
             Ok(mut f) => {
                 let _ = write!(f, "{}", std::process::id());
-                return Some(LockGuard(p.clone()));
+                return Some(ConfigLockGuard(p.clone()));
             }
             Err(_) => {
                 // 超过 60s 视为上次崩溃遗留的陈旧锁,删掉重试一次
@@ -432,11 +457,14 @@ fn acquire_lock() -> Option<LockGuard> {
 
 // ---------------- 入口 ----------------
 
-pub fn sync_configs(names: &[String]) -> Result<String, String> {
-    let _guard = match acquire_lock() {
-        Some(g) => g,
-        None => return Ok("另一个同步正在进行,本轮跳过".into()),
-    };
+// 调用方须已持有 acquire_config_lock()。GUI 启动走 sync_configs（自带锁），
+// mcp 的 User/Local 写入在 apply_mcp_change 内持同一把锁后调用本函数，避免与 CLI --sync 竞态。
+pub(crate) struct SyncOutcome {
+    pub summary: String,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) fn sync_configs_locked(names: &[String]) -> Result<SyncOutcome, String> {
     let snap: Snapshot = fs::read_to_string(snapshot_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -457,9 +485,21 @@ pub fn sync_configs(names: &[String]) -> Result<String, String> {
 
     let mut new_snap = Snapshot::default();
     let mut summary: Vec<String> = vec![];
-    for (field, files) in [("mcpServers", &mcp_files), ("enabledPlugins", &plugin_files)] {
-        let (dsnap, written) = sync_domain(field, files, snap.domains.get(field));
-        summary.push(format!("{field} {} 项/写回 {written} 份", dsnap.state.len()));
+    let mut warnings: Vec<String> = vec![];
+    for (field, files) in [
+        ("mcpServers", &mcp_files),
+        ("enabledPlugins", &plugin_files),
+    ] {
+        let (dsnap, written, domain_warnings) = sync_domain(field, files, snap.domains.get(field));
+        summary.push(format!(
+            "{field} {} 项/写回 {written} 份",
+            dsnap.state.len()
+        ));
+        warnings.extend(
+            domain_warnings
+                .into_iter()
+                .map(|warning| format!("{field}：{warning}")),
+        );
         new_snap.domains.insert(field.to_string(), dsnap);
     }
     write_json_atomic(
@@ -467,7 +507,18 @@ pub fn sync_configs(names: &[String]) -> Result<String, String> {
         &serde_json::to_value(&new_snap).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("写快照失败:{e}"))?;
-    Ok(summary.join(";"))
+    Ok(SyncOutcome {
+        summary: summary.join(";"),
+        warnings,
+    })
+}
+
+pub fn sync_configs(names: &[String]) -> Result<String, String> {
+    let _guard = match acquire_config_lock() {
+        Some(g) => g,
+        None => return Ok("另一个同步正在进行,本轮跳过".into()),
+    };
+    sync_configs_locked(names).map(|outcome| outcome.summary)
 }
 
 #[cfg(test)]
@@ -482,10 +533,8 @@ mod tests {
     impl TmpDir {
         fn new(tag: &str) -> Self {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let dir = std::env::temp_dir().join(format!(
-                "ccm-sync-test-{tag}-{}-{n}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("ccm-sync-test-{tag}-{}-{n}", std::process::id()));
             fs::create_dir_all(&dir).unwrap();
             TmpDir(dir)
         }
@@ -508,7 +557,7 @@ mod tests {
         let b = dir.file("b.json", r#"{"mcpServers":{"y":{"b":2}}}"#);
         let files = vec![("a".to_string(), a.clone()), ("b".to_string(), b.clone())];
 
-        let (snap, _written) = sync_domain("mcpServers", &files, None);
+        let (snap, _written, _warnings) = sync_domain("mcpServers", &files, None);
 
         assert_eq!(snap.state.len(), 2);
         assert!(snap.state.contains_key("x"));
@@ -537,7 +586,7 @@ mod tests {
             replicas: vec!["a".to_string(), "b".to_string()],
         };
 
-        let (snap, written) = sync_domain("mcpServers", &files, Some(&old));
+        let (snap, written, _warnings) = sync_domain("mcpServers", &files, Some(&old));
 
         assert_eq!(written, 1, "只有 b 需要改写，a 已经是目标状态");
         assert!(!snap.state.contains_key("y"), "删除应扩散进最终状态");
@@ -564,7 +613,7 @@ mod tests {
             replicas: vec!["a".to_string()],
         };
 
-        let (snap, _written) = sync_domain("mcpServers", &files, Some(&old));
+        let (snap, _written, _warnings) = sync_domain("mcpServers", &files, Some(&old));
 
         assert!(
             snap.state.contains_key("x"),
@@ -583,9 +632,10 @@ mod tests {
             ("broken".to_string(), broken.clone()),
         ];
 
-        let (snap, _written) = sync_domain("mcpServers", &files, None);
+        let (snap, _written, warnings) = sync_domain("mcpServers", &files, None);
 
         assert!(snap.state.contains_key("x"));
+        assert!(!warnings.is_empty());
         // 解析失败的副本不应被覆盖，等它自愈
         assert_eq!(fs::read_to_string(&broken).unwrap(), "not json");
     }

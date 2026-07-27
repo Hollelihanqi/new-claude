@@ -9,7 +9,6 @@ const ICONS = {
   plugins: IconPlugConnected,
   agents: IconRobot,
   commands: IconCommand,
-  mcp: IconTool,
 };
 
 export default function ExtensionsPanel() {
@@ -27,7 +26,7 @@ export default function ExtensionsPanel() {
     <div className="view-scroll">
       <Stack gap="md">
         <Group justify="space-between">
-          <div><Title order={3}>扩展中心</Title><Text size="sm" c="dimmed">统一查看主账户共享给所有实例的扩展能力。</Text></div>
+          <div><Title order={3}>扩展中心</Title><Text size="sm" c="dimmed">统一查看主账户共享给所有实例的 Skills、Plugins、Agents 与 Commands。</Text></div>
           <Button variant="light" leftSection={<IconRefresh size={15} />} loading={busy} onClick={load}>刷新状态</Button>
         </Group>
         <Alert color="cyan" variant="light">

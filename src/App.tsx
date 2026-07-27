@@ -4,6 +4,8 @@ import {
   Text,
   Badge,
   Alert,
+  Button,
+  Group,
 } from "@mantine/core";
 import {
   IconLayoutDashboard,
@@ -11,6 +13,7 @@ import {
   IconCircleCheck,
   IconAlertTriangle,
   IconChevronRight,
+  IconServerCog,
   IconStack2,
   IconStethoscope,
   IconSettings,
@@ -19,6 +22,7 @@ import {
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { open } from "@tauri-apps/plugin-dialog";
 import { notifications } from "@mantine/notifications";
 import { Progress } from "@mantine/core";
 import type { Update } from "@tauri-apps/plugin-updater";
@@ -29,10 +33,11 @@ import ConfigPanel from "./components/ConfigPanel";
 import UsagePanel, { USAGE_AUTO_OPTIONS } from "./components/UsagePanel";
 import GuidePanel from "./components/GuidePanel";
 import ExtensionsPanel from "./components/ExtensionsPanel";
+import McpPanel from "./components/mcp/McpPanel";
 import DiagnosticsPanel from "./components/DiagnosticsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 
-type ViewId = "environment" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
+type ViewId = "environment" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 type Scheme = "a" | "b";
 
 const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
@@ -40,7 +45,8 @@ const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
 const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
   { id: "environment", label: "空间", desc: "实例、网关与模型", icon: IconLayoutDashboard },
-  { id: "extensions", label: "扩展", desc: "Skills、MCP 与 Agents", icon: IconStack2 },
+  { id: "mcp", label: "MCP 服务", desc: "配置、作用域与测试", icon: IconServerCog },
+  { id: "extensions", label: "扩展", desc: "Skills、Plugins 与 Agents", icon: IconStack2 },
   { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
   { id: "diagnostics", label: "诊断", desc: "检查、日志与修复", icon: IconStethoscope },
   { id: "settings", label: "设置", desc: "更新、证书与安全", icon: IconSettings },
@@ -48,6 +54,7 @@ const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDas
 
 const VIEW_TITLES: Record<ViewId, string> = {
   environment: "空间管理",
+  mcp: "MCP 服务管理",
   extensions: "扩展中心",
   insights: "用量洞察",
   diagnostics: "诊断中心",
@@ -92,10 +99,17 @@ function SideNav({
 
 function EnvironmentStatus({ env }: { env: EnvInfo | null }) {
   if (!env) return null;
+  const subtitle = env.claude_found
+    ? env.claude_detection.version
+      ? `Claude Code ${env.claude_detection.version}`
+      : "Claude Code 已就绪"
+    : env.claude_detection.status === "unusable"
+      ? "Claude CLI 无法运行"
+      : "未定位到 Claude CLI";
   return (
     <div className={`env-status ${env.claude_found ? "ready" : "warning"}`}>
       {env.claude_found ? <IconCircleCheck size={17} /> : <IconAlertTriangle size={17} />}
-      <div><strong>{env.claude_found ? "环境运行正常" : "环境需要处理"}</strong><span>{env.claude_found ? "Claude Code 已就绪" : "未检测到 Claude CLI"}</span></div>
+      <div><strong>{env.claude_found ? "环境运行正常" : "环境需要处理"}</strong><span>{subtitle}</span></div>
     </div>
   );
 }
@@ -115,6 +129,7 @@ export default function App({
   const [usageData, setUsageData] = useState<UsageStats | null>(null);
   const [usageErr, setUsageErr] = useState("");
   const [usageBusy, setUsageBusy] = useState(false);
+  const [envBusy, setEnvBusy] = useState(false);
 
   const checkUpdate = async (manual: boolean) => {
     try {
@@ -185,10 +200,45 @@ export default function App({
     }
   };
 
-  const refreshEnv = () => {
-    api.environment().then(setEnv).catch((e) => setErr(String(e)));
+  const refreshEnv = useCallback(() => {
+    setEnvBusy(true);
+    setErr("");
+    return api.environment()
+      .then(setEnv)
+      .catch((e) => setErr(String(e)))
+      .finally(() => setEnvBusy(false));
+  }, []);
+  useEffect(() => {
+    void refreshEnv();
+  }, [refreshEnv]);
+
+  const chooseClaudeExecutable = async () => {
+    try {
+      const selected = await open({
+        title: "选择 Claude 可执行文件",
+        directory: false,
+        multiple: false,
+      });
+      if (!selected || Array.isArray(selected)) return;
+      const detection = await api.setClaudeExecutable(selected);
+      setEnv((current) => current
+        ? { ...current, claude_found: detection.found, claude_detection: detection }
+        : current);
+      notifications.show({
+        color: "teal",
+        title: "Claude Code 已识别",
+        message: detection.version
+          ? `${detection.version} · ${detection.path || selected}`
+          : detection.path || selected,
+      });
+    } catch (e) {
+      notifications.show({
+        color: "red",
+        title: "所选程序不可用",
+        message: String(e),
+      });
+    }
   };
-  useEffect(refreshEnv, []);
   // 启动即建齐共享链接并跑一轮 MCP/插件启用状态合并。
   // 失败不阻断应用，但必须让用户知道当前配置可能尚未同步。
   useEffect(() => {
@@ -295,14 +345,50 @@ export default function App({
               color="orange"
               icon={<IconAlertTriangle size={16} />}
               mb="md"
-              title="还没装 Claude Code"
+              title={env.claude_detection.status === "unusable"
+                ? "已找到 Claude Code，但暂时无法运行"
+                : "暂时没有定位到 Claude Code"}
               style={{ flex: "0 0 auto" }}
             >
-              请先安装 Claude Code、确认终端能运行 <code>claude</code>，再来配置。
+              <Text size="sm">{env.claude_detection.detail}</Text>
+              <Group gap="xs" mt="sm">
+                <Button
+                  size="xs"
+                  variant="light"
+                  color="orange"
+                  loading={envBusy}
+                  onClick={() => void refreshEnv()}
+                >
+                  重新检测
+                </Button>
+                <Button
+                  size="xs"
+                  variant="default"
+                  onClick={() => void chooseClaudeExecutable()}
+                >
+                  选择 Claude 程序
+                </Button>
+              </Group>
+              <details className="claude-detection-details">
+                <summary>查看检测详情</summary>
+                {env.claude_detection.shellWarning && (
+                  <p>终端环境：{env.claude_detection.shellWarning}</p>
+                )}
+                <p>已检查以下位置：</p>
+                <ul>
+                  {env.claude_detection.checkedPaths.slice(0, 30).map((path) => (
+                    <li key={path}><code>{path}</code></li>
+                  ))}
+                </ul>
+                {env.claude_detection.checkedPaths.length > 30 && (
+                  <p>另有 {env.claude_detection.checkedPaths.length - 30} 个位置未展开。</p>
+                )}
+              </details>
             </Alert>
           )}
           <Box className="view-stage">
             {view === "environment" && <ConfigPanel onChanged={refreshEnv} env={env} usageData={usageData} />}
+            {view === "mcp" && <McpPanel />}
             {view === "extensions" && <ExtensionsPanel />}
             {view === "insights" && (
               <div className="view-scroll">
