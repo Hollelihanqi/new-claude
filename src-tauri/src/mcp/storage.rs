@@ -3333,13 +3333,21 @@ mod tests {
         )
         .unwrap();
         let projs = doc["projects"].as_object().unwrap();
+        let proj1_canon = canonicalize_dir(&proj1.display().to_string())
+            .unwrap()
+            .display()
+            .to_string();
+        let proj2_canon = canonicalize_dir(&proj2.display().to_string())
+            .unwrap()
+            .display()
+            .to_string();
         let p1_key = projs
             .keys()
-            .find(|k| norm_path(k) == norm_path(&proj1.display().to_string()))
+            .find(|k| norm_path(k) == norm_path(&proj1_canon))
             .unwrap();
         let p2_key = projs
             .keys()
-            .find(|k| norm_path(k) == norm_path(&proj2.display().to_string()))
+            .find(|k| norm_path(k) == norm_path(&proj2_canon))
             .unwrap();
         assert!(
             projs[p1_key]["mcpServers"].get("mv").is_none(),
