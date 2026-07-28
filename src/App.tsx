@@ -36,6 +36,7 @@ import ExtensionsPanel from "./components/ExtensionsPanel";
 import McpPanel from "./components/mcp/McpPanel";
 import DiagnosticsPanel from "./components/DiagnosticsPanel";
 import SettingsPanel from "./components/SettingsPanel";
+import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
 
 type ViewId = "environment" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 type Scheme = "a" | "b";
@@ -136,7 +137,7 @@ export default function App({
       if (manual) {
         notifications.show({ id: "upd-check", loading: true, title: "检查更新", message: "正在检查…", autoClose: false, withCloseButton: false });
       }
-      const update = await check();
+      const update = await check(UPDATE_CHECK_OPTIONS);
       if (update) {
         if (manual) notifications.hide("upd-check");
         notifications.show({
@@ -153,15 +154,14 @@ export default function App({
       }
     } catch (e) {
       if (!manual) return;
-      const raw = String(e);
-      const soft = /fetch|json|platform|fallback|network|request|timeout|connect|releases|404/i.test(raw);
+      const notice = describeUpdateCheckError(e);
       notifications.update({
         id: "upd-check",
         loading: false,
-        color: soft ? "teal" : "red",
-        title: soft ? "已是最新" : "检查更新出错",
-        message: soft ? "你当前已经是最新版本。" : raw,
-        autoClose: soft ? 2500 : 6000,
+        color: "red",
+        title: notice.title,
+        message: notice.message,
+        autoClose: 8000,
         withCloseButton: true,
       });
     }
