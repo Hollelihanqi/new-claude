@@ -9,6 +9,7 @@ mod claude_cli;
 mod health;
 mod mcp;
 mod sync;
+mod workbuddy;
 
 const MARK: &str = "# cc-manager-integration";
 const KEYCHAIN_PREFIX: &str = "cc-manager";
@@ -1541,7 +1542,20 @@ fn main() {
             health::model_pin_warnings,
             health::fix_model_pin,
             health::health_check,
-            health::export_diagnostics
+            health::export_diagnostics,
+            workbuddy::workbuddy_state,
+            workbuddy::save_workbuddy_gateway,
+            workbuddy::save_workbuddy_organization,
+            workbuddy::delete_workbuddy_organization,
+            workbuddy::apply_workbuddy_organization_models,
+            workbuddy::import_workbuddy_ca,
+            workbuddy::list_workbuddy_models,
+            workbuddy::list_workbuddy_organization_models,
+            workbuddy::check_workbuddy_certificate,
+            workbuddy::save_workbuddy_model,
+            workbuddy::delete_workbuddy_model,
+            workbuddy::test_workbuddy_model,
+            workbuddy::launch_workbuddy
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

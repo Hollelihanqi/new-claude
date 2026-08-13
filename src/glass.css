@@ -194,6 +194,53 @@ body {
 .stable-refresh-label[aria-hidden="true"] { visibility: hidden; }
 .sync-log-block { max-height: 220px; overflow: auto; color: #b9dbe2 !important; background: #102a34 !important; font-size: 10px !important; line-height: 1.6 !important; }
 
+/* ---------------- WorkBuddy 公司网关模型页 ---------------- */
+.workbuddy-page { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+.workbuddy-environment-card { flex: 0 0 auto; }
+.workbuddy-status-icon {
+  width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto;
+  border-radius: 12px;
+}
+.workbuddy-status-icon.ready { color: #16835f; background: #eaf8f2; }
+.workbuddy-status-icon.warn { color: #b56a14; background: #fff4df; }
+.workbuddy-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 0; }
+.workbuddy-grid:not(.workbuddy-grid-empty) {
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 10px 34px rgba(27, 62, 74, .055);
+}
+.workbuddy-list-pane, .workbuddy-editor-scroll { min-height: 0; overflow-y: auto; scrollbar-width: none; }
+.workbuddy-list-pane::-webkit-scrollbar, .workbuddy-editor-scroll::-webkit-scrollbar { display: none; }
+.workbuddy-list-card, .workbuddy-editor-card { min-height: 100%; }
+.workbuddy-grid:not(.workbuddy-grid-empty) .workbuddy-list-card {
+  border: 0;
+  border-right: 1px solid var(--app-border);
+  border-radius: 0;
+  background: #f8fbfc;
+}
+.workbuddy-grid:not(.workbuddy-grid-empty) .workbuddy-editor-card {
+  border: 0;
+  border-radius: 0;
+}
+.workbuddy-list-card .mantine-NavLink-root { margin-bottom: 5px; border: 1px solid transparent; border-radius: 11px; }
+.workbuddy-list-card .mantine-NavLink-root[data-active] { color: var(--mantine-primary-color-8); background: var(--mantine-primary-color-0); border-color: var(--mantine-primary-color-1); }
+.workbuddy-editor-card { overflow: visible; }
+.workbuddy-setup-card {
+  width: min(1120px, 100%);
+  padding: 8px 0 0;
+  border: 0 !important;
+  background: transparent;
+  box-shadow: none;
+}
+.workbuddy-organization-summary { background: color-mix(in srgb, var(--mantine-primary-color-0) 55%, white); }
+.workbuddy-model-checklist .mantine-Card-root { transition: border-color 120ms ease, background-color 120ms ease; }
+.workbuddy-model-checklist .mantine-Card-root:has(input:checked) {
+  border-color: var(--mantine-primary-color-4);
+  background: var(--mantine-primary-color-0);
+}
+
 .glass-card {
   background: var(--app-surface) !important;
   border: 1px solid var(--app-border) !important;
@@ -249,6 +296,7 @@ body {
   .sidebar-help span { display: none; }
   .config-grid { grid-template-columns: 190px minmax(0, 1fr); }
   .instance-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workbuddy-grid { grid-template-columns: 210px minmax(0, 1fr); }
 }
 
 /* ---------------- MCP 服务页 ---------------- */

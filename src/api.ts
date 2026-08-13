@@ -308,6 +308,71 @@ export interface HealthItem {
   detail: string;
 }
 
+export interface WorkBuddyEnvironment {
+  found: boolean;
+  executablePath?: string;
+  version?: string;
+  configPath: string;
+  configExists: boolean;
+  configValid: boolean;
+  detail: string;
+}
+
+export interface WorkBuddyModel {
+  id: string;
+  name: string;
+  vendor: string;
+  url: string;
+  hasApiKey: boolean;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  supportsToolCall: boolean;
+  supportsImages: boolean;
+  supportsReasoning: boolean;
+  useCustomProtocol: boolean;
+  visible: boolean;
+  usesGlobalKey: boolean;
+}
+
+export interface WorkBuddyGatewayConfig {
+  url: string;
+  hasApiKey: boolean;
+}
+
+export interface WorkBuddyOrganization {
+  id: string;
+  name: string;
+  modelPrefix: string;
+  url: string;
+  selectedModels: string[];
+  hasApiKey: boolean;
+}
+
+export interface WorkBuddyState {
+  environment: WorkBuddyEnvironment;
+  gateway: WorkBuddyGatewayConfig;
+  organizations: WorkBuddyOrganization[];
+  models: WorkBuddyModel[];
+  revision: string;
+  warnings: string[];
+}
+
+export interface WorkBuddyModelInput extends Omit<WorkBuddyModel, "hasApiKey" | "usesGlobalKey"> {
+  apiKey?: string;
+  useGlobalKey: boolean;
+}
+
+export interface WorkBuddyTestResult {
+  ok: boolean;
+  statusCode: number;
+  detail: string;
+}
+
+export interface WorkBuddyCertificateStatus {
+  state: "checking" | "trusted" | "untrusted" | "notRequired" | "unreachable";
+  detail: string;
+}
+
 // 与 src-tauri 里的 #[tauri::command] 一一对应
 export const api = {
   listProfiles: (): Promise<Profile[]> => invoke("list_profiles"),
@@ -376,4 +441,60 @@ export const api = {
     invoke("fix_model_pin", { profile }),
   healthCheck: (): Promise<HealthItem[]> => invoke("health_check"),
   exportDiagnostics: (): Promise<string> => invoke("export_diagnostics"),
+  // WorkBuddy 独立模型配置
+  workBuddyState: (): Promise<WorkBuddyState> => invoke("workbuddy_state"),
+  saveWorkBuddyGateway: (url: string, apiKey: string | undefined): Promise<WorkBuddyState> =>
+    invoke("save_workbuddy_gateway", { request: { url, apiKey: apiKey || null } }),
+  saveWorkBuddyOrganization: (
+    id: string | undefined,
+    name: string,
+    modelPrefix: string,
+    url: string,
+    apiKey: string | undefined
+  ): Promise<WorkBuddyState> =>
+    invoke("save_workbuddy_organization", {
+      request: { id: id || null, name, modelPrefix, url, apiKey: apiKey || null },
+    }),
+  deleteWorkBuddyOrganization: (id: string): Promise<WorkBuddyState> =>
+    invoke("delete_workbuddy_organization", { id }),
+  applyWorkBuddyOrganizationModels: (
+    organizationId: string,
+    models: string[]
+  ): Promise<WorkBuddyState> =>
+    invoke("apply_workbuddy_organization_models", {
+      request: { organizationId, models },
+    }),
+  importWorkBuddyCa: (path: string): Promise<string> => invoke("import_workbuddy_ca", { path }),
+  listWorkBuddyModels: (id: string | undefined, url: string, apiKey: string | undefined): Promise<string[]> =>
+    invoke("list_workbuddy_models", { request: { id: id || null, url, apiKey: apiKey || null } }),
+  listWorkBuddyOrganizationModels: (id: string): Promise<string[]> =>
+    invoke("list_workbuddy_organization_models", { id }),
+  checkWorkBuddyCertificate: (url: string): Promise<WorkBuddyCertificateStatus> =>
+    invoke("check_workbuddy_certificate", { url }),
+  saveWorkBuddyModel: (
+    model: WorkBuddyModelInput,
+    previousId: string | undefined,
+    expectedRevision: string
+  ): Promise<WorkBuddyState> =>
+    invoke("save_workbuddy_model", {
+      request: { model, previousId, expectedRevision },
+    }),
+  deleteWorkBuddyModel: (
+    id: string,
+    expectedRevision: string
+  ): Promise<WorkBuddyState> =>
+    invoke("delete_workbuddy_model", {
+      request: { id, expectedRevision },
+    }),
+  testWorkBuddyModel: (
+    id: string,
+    url: string,
+    apiKey: string | undefined,
+    useCustomProtocol: boolean,
+    useGlobalKey: boolean
+  ): Promise<WorkBuddyTestResult> =>
+    invoke("test_workbuddy_model", {
+      request: { id, url, apiKey: apiKey || null, useCustomProtocol, useGlobalKey },
+    }),
+  launchWorkBuddy: (): Promise<void> => invoke("launch_workbuddy"),
 };

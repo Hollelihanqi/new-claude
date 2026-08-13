@@ -18,6 +18,7 @@ import {
   IconStethoscope,
   IconSettings,
   IconHelpCircle,
+  IconBrandOpenai,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -37,9 +38,10 @@ import McpPanel from "./components/mcp/McpPanel";
 import DiagnosticsPanel from "./components/DiagnosticsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import StableRefreshButton from "./components/StableRefreshButton";
+import WorkBuddyPanel from "./components/WorkBuddyPanel";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
 
-type ViewId = "environment" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
+type ViewId = "environment" | "workbuddy" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 type Scheme = "a" | "b";
 
 const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
@@ -47,6 +49,7 @@ const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
 const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
   { id: "environment", label: "空间", desc: "实例、网关与模型", icon: IconLayoutDashboard },
+  { id: "workbuddy", label: "WorkBuddy", desc: "公司网关模型", icon: IconBrandOpenai },
   { id: "mcp", label: "MCP 服务", desc: "配置、作用域与测试", icon: IconServerCog },
   { id: "extensions", label: "扩展", desc: "Skills、Plugins 与 Agents", icon: IconStack2 },
   { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
@@ -56,6 +59,7 @@ const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDas
 
 const VIEW_TITLES: Record<ViewId, string> = {
   environment: "空间管理",
+  workbuddy: "WorkBuddy 模型",
   mcp: "MCP 服务管理",
   extensions: "扩展中心",
   insights: "用量洞察",
@@ -330,10 +334,10 @@ export default function App({
       <main className="app-main">
         <header className="app-header">
           <div>
-            <Text className="page-kicker">CLAUDE ENVIRONMENT</Text>
+            <Text className="page-kicker">{view === "workbuddy" ? "WORKBUDDY GATEWAY" : "CLAUDE ENVIRONMENT"}</Text>
             <Text className="page-title">{VIEW_TITLES[view]}</Text>
           </div>
-          <EnvironmentStatus env={env} />
+          {view !== "workbuddy" && <EnvironmentStatus env={env} />}
         </header>
 
         <section className="app-content">
@@ -404,6 +408,7 @@ export default function App({
                 usageData={usageData}
               />
             )}
+            {view === "workbuddy" && <WorkBuddyPanel />}
             {view === "mcp" && <McpPanel />}
             {view === "extensions" && <ExtensionsPanel />}
             {view === "insights" && (

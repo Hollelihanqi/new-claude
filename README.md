@@ -113,6 +113,25 @@ pnpm tauri build
 只有改了配置才需要重开一次终端，之后正常用，不用再管。
 App 内「使用指南」标签页有更详细的图文说明。
 
+### WorkBuddy 公司网关模型
+
+WorkBuddy 配置与 Claude Code 实例完全独立。打开左侧「WorkBuddy」，填写模型 ID、
+MaaS Gateway 的 WorkBuddy 网关根地址和员工 Key，点击「保存并接入」。
+应用会安全合并写入 WorkBuddy 实际读取的 `~/.workbuddy/models.json`，保留已有模型和
+未知字段；WorkBuddy 通常会在 1 秒内热加载，随后可在它的自定义模型列表中直接选择。
+
+北京网关推荐地址：
+
+```
+https://10.0.147.128:8080
+```
+
+- HTTPS 8080 使用自签名证书时，需要先导入管理员提供的 CA 根证书。
+- HTTPS 8080 必须先将管理员提供的 CA 根证书导入系统信任库。
+- 「测试调用」会真实请求一次模型，可能产生少量用量并进入公司审计。
+- 员工 Key 按 WorkBuddy 官方配置格式保存在其本地 `models.json`，不会写入 Claude Code 配置。
+- 保存采用 revision 校验、备份和原子替换；检测到配置损坏或被其他程序并发修改时拒绝覆盖。
+
 ---
 
 ## 六、卸载 / 撤销
