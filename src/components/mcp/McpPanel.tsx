@@ -33,7 +33,6 @@ import {
   IconInfoCircle,
   IconPencil,
   IconPlus,
-  IconRefresh,
   IconSearch,
   IconTrash,
 } from "@tabler/icons-react";
@@ -52,7 +51,9 @@ import type {
   McpTestResult,
 } from "../../api";
 import McpImportModal from "./McpImportModal";
+import StableRefreshButton from "../StableRefreshButton";
 import McpServiceDrawer from "./McpServiceDrawer";
+import McpSummaryGrid from "./McpSummaryGrid";
 import {
   SCOPE_BADGE_COLOR,
   SCOPE_LABELS,
@@ -81,8 +82,15 @@ const EFFECTIVE_COLOR: Record<string, string> = {
   disabled: "red",
 };
 
+let cachedMcpState: McpState | null = null;
+
+function rememberMcpState(nextState: McpState) {
+  cachedMcpState = nextState;
+  return nextState;
+}
+
 export default function McpPanel() {
-  const [state, setState] = useState<McpState | null>(null);
+  const [state, setState] = useState<McpState | null>(() => cachedMcpState);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [query, setQuery] = useState("");
@@ -106,7 +114,7 @@ export default function McpPanel() {
     setErr("");
     api
       .listMcpServices()
-      .then(setState)
+      .then((nextState) => setState(rememberMcpState(nextState)))
       .catch((e) => setErr(String(e)))
       .finally(() => setBusy(false));
   }, []);
@@ -186,7 +194,7 @@ export default function McpPanel() {
     setApplying(true);
     try {
       const next = await api.applyMcpChange(previewState.request);
-      setState(next);
+      setState(rememberMcpState(next));
       setPreviewState(null);
       setDrawerState(null);
       setDetailService(null);
@@ -223,7 +231,7 @@ export default function McpPanel() {
       });
       if (typeof selected !== "string") return; // 取消或异常数组都不处理
       const next = await api.registerMcpProject(selected);
-      setState(next);
+      setState(rememberMcpState(next));
       notifications.show({ color: "teal", message: "项目已添加" });
     } catch (e) {
       notifications.show({ color: "red", title: "添加项目失败", message: String(e) });
@@ -237,7 +245,7 @@ export default function McpPanel() {
   async function unregisterProject(path: string) {
     try {
       const next = await api.unregisterMcpProject(path);
-      setState(next);
+      setState(rememberMcpState(next));
       notifications.show({ color: "teal", message: "已取消登记（项目文件未删除）" });
     } catch (e) {
       notifications.show({ color: "red", title: "取消登记失败", message: String(e) });
@@ -279,7 +287,7 @@ export default function McpPanel() {
         expectedTargetRevision: syncPreview.expectedTargetRevision,
         expectedRegistryRevision: syncPreview.expectedRegistryRevision,
       });
-      setState(next);
+      setState(rememberMcpState(next));
       setSyncPreview(null);
       notifications.show({
         color: "teal",
@@ -326,7 +334,7 @@ export default function McpPanel() {
         expectedRegistryRevision:
           state.syncTargetRevisions[target.targetId] ?? "missing",
       });
-      setState(next);
+      setState(rememberMcpState(next));
       notifications.show({
         color: "teal",
         title: `已关闭 ${targetLabel} 使用`,
@@ -352,19 +360,10 @@ export default function McpPanel() {
           <Title order={3}>MCP 服务</Title>
           <Text size="sm" c="dimmed">管理用户级、项目本地和项目共享的 MCP 配置。</Text>
         </div>
-        <Button variant="light" leftSection={<IconRefresh size={15} />} loading={busy} onClick={load}>
-          刷新
-        </Button>
+        <StableRefreshButton busy={busy} label="刷新" onClick={load} />
       </Group>
 
-      {summary && (
-        <SimpleGrid cols={{ base: 2, md: 4 }} className="mcp-summary-grid">
-          <SummaryCard label="全部定义" value={summary.total} />
-          <SummaryCard label="已启用" value={summary.enabled} color="teal" />
-          <SummaryCard label="存在警告" value={summary.warnings} color="orange" />
-          <SummaryCard label="被覆盖" value={summary.shadowed} color="gray" />
-        </SimpleGrid>
-      )}
+      <McpSummaryGrid summary={summary} />
 
       {err && (
         <Alert color="red" icon={<IconAlertTriangle size={16} />} title="加载失败">{err}</Alert>
@@ -1005,15 +1004,6 @@ function DetailField({
       <Text size="xs" c="dimmed">{label}</Text>
       <Text size="sm" className={mono ? "mcp-detail-path" : undefined}>{value || "—"}</Text>
     </Box>
-  );
-}
-
-function SummaryCard({ label, value, color }: { label: string; value: number; color?: string }) {
-  return (
-    <Card withBorder padding="md" radius="md">
-      <Text size="xs" c="dimmed">{label}</Text>
-      <Text fw={700} size="xl" c={color}>{value}</Text>
-    </Card>
   );
 }
 

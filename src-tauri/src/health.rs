@@ -334,8 +334,10 @@ fn run_health_checks() -> Vec<HealthItem> {
 }
 
 #[tauri::command]
-pub fn health_check() -> Vec<HealthItem> {
-    run_health_checks()
+pub async fn health_check() -> Result<Vec<HealthItem>, String> {
+    tauri::async_runtime::spawn_blocking(run_health_checks)
+        .await
+        .map_err(|e| format!("健康检查任务异常：{e}"))
 }
 
 // ---------------- 诊断报告导出 ----------------
@@ -544,6 +546,12 @@ pub fn export_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_check_command_remains_async() {
+        fn assert_future<T: std::future::Future>(_: T) {}
+        assert_future(health_check());
+    }
 
     #[test]
     fn model_alias_recognized_case_insensitive_with_1m_suffix() {

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconBrain, IconCommand, IconPlugConnected, IconRefresh, IconRobot, IconTool } from "@tabler/icons-react";
+import { Alert, Badge, Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { IconBrain, IconCommand, IconPlugConnected, IconRobot, IconTool } from "@tabler/icons-react";
 import { api } from "../api";
 import type { ExtensionGroup } from "../api";
+import StableRefreshButton from "./StableRefreshButton";
 
 const ICONS = {
   skills: IconBrain,
@@ -27,7 +28,7 @@ export default function ExtensionsPanel() {
       <Stack gap="md">
         <Group justify="space-between">
           <div><Title order={3}>扩展中心</Title><Text size="sm" c="dimmed">统一查看主账户共享给所有实例的 Skills、Plugins、Agents 与 Commands。</Text></div>
-          <Button variant="light" leftSection={<IconRefresh size={15} />} loading={busy} onClick={load}>刷新状态</Button>
+          <StableRefreshButton busy={busy} label="刷新状态" onClick={load} />
         </Group>
         <Alert color="cyan" variant="light">
           这里不提供第三方市场安装。扩展仍通过 Claude Code 或本地文件管理，本工具负责展示和跨实例共享。

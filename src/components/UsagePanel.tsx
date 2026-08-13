@@ -13,10 +13,12 @@ import {
 import { DatePicker } from "@mantine/dates";
 import type { DatesRangeValue } from "@mantine/dates";
 import "@mantine/dates/styles.css";
-import { IconRefresh, IconChartLine, IconInfoCircle, IconCalendar } from "@tabler/icons-react";
+import { IconChartLine, IconInfoCircle, IconCalendar } from "@tabler/icons-react";
 import * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
 import type { UsageStats } from "../api";
+import StableRefreshButton from "./StableRefreshButton";
+import { buildUsageProfileOptions } from "./usageProfileOptions";
 
 function EChart({ option, height = 340 }: { option: EChartsOption; height?: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -163,6 +165,7 @@ export default function UsagePanel({
   data,
   err,
   busy,
+  configuredProfiles,
   autoSec,
   onAutoChange,
   onRefresh,
@@ -170,6 +173,7 @@ export default function UsagePanel({
   data: UsageStats | null;
   err: string;
   busy: boolean;
+  configuredProfiles: string[];
   autoSec: number;
   onAutoChange: (sec: number) => void;
   onRefresh: () => void;
@@ -188,14 +192,10 @@ export default function UsagePanel({
     const set = Array.from(new Set(allRows.map((r) => r.model))).sort();
     return [{ value: "__all__", label: "全部模型" }, ...set.map((m) => ({ value: m, label: m }))];
   }, [allRows]);
-  const profileOpts = useMemo(() => {
-    const set = Array.from(new Set(allRows.map((r) => r.profile))).sort();
-    // __main__ 是后端标记主账户的稳定键，显示文案在前端映射（同 __all__ 哨兵的处理方式）
-    return [
-      { value: "__all__", label: "全部实例" },
-      ...set.map((p) => ({ value: p, label: p === "__main__" ? "主账户" : p })),
-    ];
-  }, [allRows]);
+  const profileOpts = useMemo(
+    () => buildUsageProfileOptions(allRows, configuredProfiles),
+    [allRows, configuredProfiles],
+  );
 
   // 计算有效起止（本地日期）
   // 依赖 data：刷新拿到新数据时，重新取一次"今天"——否则软件跨天开着、
@@ -377,9 +377,13 @@ export default function UsagePanel({
               onChange={(v) => v !== null && onAutoChange(parseInt(v, 10))}
               allowDeselect={false}
             />
-            <Button size="xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={load} loading={busy}>
-              刷新
-            </Button>
+            <StableRefreshButton
+              size="xs"
+              iconSize={14}
+              label="刷新"
+              busy={busy}
+              onClick={load}
+            />
           </Group>
         </Group>
       </Card>

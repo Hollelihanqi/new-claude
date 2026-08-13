@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Alert, Badge, Button, Card, Code, Group, Loader, Stack, Text, ThemeIcon, Title } from "@mantine/core";
-import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconFileDownload, IconRefresh, IconTool } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconFileDownload, IconTool } from "@tabler/icons-react";
 import { api } from "../api";
 import type { HealthItem } from "../api";
+import StableRefreshButton from "./StableRefreshButton";
 
 const STATUS = {
   ok: { color: "teal", Icon: IconCircleCheck },
@@ -44,7 +45,7 @@ export default function DiagnosticsPanel() {
         <Group justify="space-between">
           <div><Title order={3}>诊断中心</Title><Text size="sm" c="dimmed">集中检查、修复和导出环境状态。</Text></div>
           <Group gap="xs">
-            <Button variant="light" leftSection={<IconRefresh size={15} />} onClick={run} loading={busy}>重新检测</Button>
+            <StableRefreshButton busy={busy} busyLabel="检测中…" label="重新检测" onClick={run} />
             <Button leftSection={<IconTool size={15} />} onClick={sync} loading={action === "sync"}>同步并修复</Button>
             <Button variant="default" leftSection={<IconFileDownload size={15} />} onClick={exportReport} loading={action === "export"}>导出诊断</Button>
           </Group>

@@ -186,6 +186,12 @@ body {
 .extension-items > span { max-width: 100%; padding: 5px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #425761; background: #f2f6f7; border: 1px solid #e5ecef; border-radius: 7px; font-size: 10px; }
 .diagnostic-summary { background: linear-gradient(120deg, #f7fbfc, #fff) !important; }
 .diagnostic-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.stable-refresh-button[data-busy="true"] { cursor: wait; }
+.stable-refresh-icon { transform-origin: center; }
+.stable-refresh-loader { flex: none; }
+.stable-refresh-label-stack { display: inline-grid; align-items: center; }
+.stable-refresh-label { grid-area: 1 / 1; white-space: nowrap; }
+.stable-refresh-label[aria-hidden="true"] { visibility: hidden; }
 .sync-log-block { max-height: 220px; overflow: auto; color: #b9dbe2 !important; background: #102a34 !important; font-size: 10px !important; line-height: 1.6 !important; }
 
 .glass-card {

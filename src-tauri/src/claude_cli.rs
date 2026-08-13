@@ -215,8 +215,20 @@ fn clear_stale_cache(home: &Path) {
     }
 }
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[allow(unused_variables)]
+fn hide_console_window(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 fn command_for_executable(executable: &Path, args: &[&str]) -> Command {
-    if cfg!(target_os = "windows")
+    let mut command = if cfg!(target_os = "windows")
         && executable
             .extension()
             .and_then(OsStr::to_str)
@@ -230,7 +242,9 @@ fn command_for_executable(executable: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(executable);
         command.args(args);
         command
-    }
+    };
+    hide_console_window(&mut command);
+    command
 }
 
 fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {

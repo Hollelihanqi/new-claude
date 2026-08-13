@@ -36,6 +36,7 @@ import ExtensionsPanel from "./components/ExtensionsPanel";
 import McpPanel from "./components/mcp/McpPanel";
 import DiagnosticsPanel from "./components/DiagnosticsPanel";
 import SettingsPanel from "./components/SettingsPanel";
+import StableRefreshButton from "./components/StableRefreshButton";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
 
 type ViewId = "environment" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
@@ -128,6 +129,7 @@ export default function App({
   const [upd, setUpd] = useState<{ obj?: Update }>({});
   const [appVersion, setAppVersion] = useState("");
   const [usageData, setUsageData] = useState<UsageStats | null>(null);
+  const [usageProfiles, setUsageProfiles] = useState<string[]>([]);
   const [usageErr, setUsageErr] = useState("");
   const [usageBusy, setUsageBusy] = useState(false);
   const [envBusy, setEnvBusy] = useState(false);
@@ -208,9 +210,15 @@ export default function App({
       .catch((e) => setErr(String(e)))
       .finally(() => setEnvBusy(false));
   }, []);
+  const refreshUsageProfiles = useCallback(() => {
+    return api.listProfiles()
+      .then((profiles) => setUsageProfiles((profiles || []).map((profile) => profile.name)))
+      .catch((e) => setUsageErr(String(e)));
+  }, []);
   useEffect(() => {
     void refreshEnv();
-  }, [refreshEnv]);
+    void refreshUsageProfiles();
+  }, [refreshEnv, refreshUsageProfiles]);
 
   const chooseClaudeExecutable = async () => {
     try {
@@ -352,15 +360,14 @@ export default function App({
             >
               <Text size="sm">{env.claude_detection.detail}</Text>
               <Group gap="xs" mt="sm">
-                <Button
+                <StableRefreshButton
                   size="xs"
-                  variant="light"
                   color="orange"
-                  loading={envBusy}
+                  label="重新检测"
+                  busyLabel="检测中…"
+                  busy={envBusy}
                   onClick={() => void refreshEnv()}
-                >
-                  重新检测
-                </Button>
+                />
                 <Button
                   size="xs"
                   variant="default"
@@ -387,7 +394,16 @@ export default function App({
             </Alert>
           )}
           <Box className="view-stage">
-            {view === "environment" && <ConfigPanel onChanged={refreshEnv} env={env} usageData={usageData} />}
+            {view === "environment" && (
+              <ConfigPanel
+                onChanged={() => {
+                  void refreshEnv();
+                  void refreshUsageProfiles();
+                }}
+                env={env}
+                usageData={usageData}
+              />
+            )}
             {view === "mcp" && <McpPanel />}
             {view === "extensions" && <ExtensionsPanel />}
             {view === "insights" && (
@@ -396,6 +412,7 @@ export default function App({
                   data={usageData}
                   err={usageErr}
                   busy={usageBusy}
+                  configuredProfiles={usageProfiles}
                   autoSec={usageAuto}
                   onAutoChange={changeUsageAuto}
                   onRefresh={() => loadUsage()}

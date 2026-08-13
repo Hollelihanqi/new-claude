@@ -18,10 +18,10 @@ import {
   IconChevronRight,
   IconDeviceFloppy,
   IconInfoCircle,
-  IconRefresh,
 } from "@tabler/icons-react";
 import { api } from "../api";
 import type { InstanceSettings } from "../api";
+import StableRefreshButton from "./StableRefreshButton";
 
 // 空间从未启动过时文件还不存在，给个可直接编辑的骨架而不是空白
 const EMPTY_DOC = "{\n}\n";
@@ -32,10 +32,11 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
   const [data, setData] = useState<InstanceSettings | null>(null);
   const [draft, setDraft] = useState("");
   const [expanded, setExpanded] = useState(false);
-  const [busy, setBusy] = useState<"toggle" | "save" | null>(null);
+  const [busy, setBusy] = useState<"toggle" | "save" | "load" | null>(null);
   const [status, setStatus] = useState<Status>(null);
 
   const load = useCallback(() => {
+    setBusy("load");
     api
       .readInstanceSettings(name)
       .then((s) => {
@@ -43,7 +44,8 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
         setDraft(s.content.trim() ? s.content : EMPTY_DOC);
         setStatus(null);
       })
-      .catch((e) => setStatus({ type: "error", msg: String(e) }));
+      .catch((e) => setStatus({ type: "error", msg: String(e) }))
+      .finally(() => setBusy(null));
   }, [name]);
 
   // 切换空间时重置为收起状态，避免把上一个空间的草稿带过来
@@ -187,15 +189,15 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
             >
               保存
             </Button>
-            <Button
+            <StableRefreshButton
               size="xs"
-              variant="light"
-              leftSection={<IconRefresh size={14} />}
+              iconSize={14}
+              label="重新加载"
+              busyLabel="加载中…"
+              busy={busy === "load"}
               onClick={load}
-              disabled={busy !== null}
-            >
-              重新加载
-            </Button>
+              disabled={busy !== null && busy !== "load"}
+            />
           </Group>
         </Stack>
       </Collapse>
