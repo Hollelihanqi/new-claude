@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "cc-switch"
-version = "2.3.3"
+version = "2.3.4"
 dependencies = [
  "dirs 5.0.1",
  "reqwest",

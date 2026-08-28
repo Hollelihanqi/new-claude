@@ -680,9 +680,17 @@ fn workbuddy_cli_dir_for_platform(
     platform: WorkBuddyPlatform,
 ) -> Option<PathBuf> {
     match platform {
-        WorkBuddyPlatform::Windows => executable
-            .parent()
-            .map(|dir| dir.join("resources/app.asar.unpacked/cli")),
+        WorkBuddyPlatform::Windows => {
+            // This branch is also exercised on macOS CI. `Path::parent()` follows
+            // the host path syntax, so it cannot split a Windows path there.
+            let executable = executable.to_string_lossy();
+            let directory_end = executable.rfind(['\\', '/'])?;
+            let directory = &executable[..directory_end];
+            let separator = if directory.contains('\\') { "\\" } else { "/" };
+            Some(PathBuf::from(format!(
+                "{directory}{separator}resources{separator}app.asar.unpacked{separator}cli"
+            )))
+        }
         WorkBuddyPlatform::Macos => {
             Some(executable.join("Contents/Resources/app.asar.unpacked/cli"))
         }
