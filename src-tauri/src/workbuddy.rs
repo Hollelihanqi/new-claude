@@ -2032,6 +2032,7 @@ mod tests {
         assert_eq!(configured.as_deref(), Some(certificate));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn derives_workbuddy_cli_ca_path_from_executable() {
         let executable = Path::new(r"D:\Program Files\WorkBuddy\WorkBuddy.exe");
@@ -2039,6 +2040,18 @@ mod tests {
             workbuddy_ca_path_for(executable),
             Some(PathBuf::from(
                 r"D:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\ca.pem"
+            ))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn derives_workbuddy_cli_ca_path_from_macos_app() {
+        let executable = Path::new("/Applications/WorkBuddy.app");
+        assert_eq!(
+            workbuddy_ca_path_for(executable),
+            Some(PathBuf::from(
+                "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/ca.pem"
             ))
         );
     }
