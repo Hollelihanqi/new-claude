@@ -1544,6 +1544,7 @@ fn main() {
             health::health_check,
             health::export_diagnostics,
             workbuddy::workbuddy_state,
+            workbuddy::set_workbuddy_executable,
             workbuddy::save_workbuddy_gateway,
             workbuddy::save_workbuddy_organization,
             workbuddy::delete_workbuddy_organization,

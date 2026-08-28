@@ -443,6 +443,8 @@ export const api = {
   exportDiagnostics: (): Promise<string> => invoke("export_diagnostics"),
   // WorkBuddy 独立模型配置
   workBuddyState: (): Promise<WorkBuddyState> => invoke("workbuddy_state"),
+  setWorkBuddyExecutable: (path: string): Promise<WorkBuddyState> =>
+    invoke("set_workbuddy_executable", { path }),
   saveWorkBuddyGateway: (url: string, apiKey: string | undefined): Promise<WorkBuddyState> =>
     invoke("save_workbuddy_gateway", { request: { url, apiKey: apiKey || null } }),
   saveWorkBuddyOrganization: (

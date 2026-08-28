@@ -196,6 +196,10 @@ fn organizations_path() -> PathBuf {
     config_dir().join("cc-manager-organizations.json")
 }
 
+fn installation_path() -> PathBuf {
+    config_dir().join("cc-manager-installation.json")
+}
+
 fn read_organizations() -> Result<Vec<WorkBuddyOrganization>, String> {
     let path = organizations_path();
     if !path.exists() {
@@ -521,23 +525,63 @@ fn common_executable_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+fn clean_executable_path(value: &str) -> Option<PathBuf> {
+    let value = value.trim().trim_matches('"');
+    let value = value.strip_suffix(",0").unwrap_or(value).trim_matches('"');
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
 #[cfg(target_os = "windows")]
-fn registry_executable() -> Option<PathBuf> {
-    let script = r#"Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^WorkBuddy' } | Select-Object -First 1 -ExpandProperty DisplayIcon"#;
+fn powershell_path(script: &str) -> Option<PathBuf> {
     let mut command = Command::new("powershell");
     use std::os::windows::process::CommandExt;
     command.creation_flags(CREATE_NO_WINDOW);
+    let script = format!(
+        "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); {script}"
+    );
     let output = command
-        .args(["-NoProfile", "-Command", script])
+        .args(["-NoProfile", "-Command", &script])
         .output()
         .ok()?;
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let value = raw
-        .strip_suffix(",0")
-        .unwrap_or(&raw)
-        .trim_matches('"')
-        .to_string();
-    (!value.is_empty()).then(|| PathBuf::from(value))
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
+        .and_then(|value| clean_executable_path(&value))
+}
+
+#[cfg(target_os = "windows")]
+fn running_executable() -> Option<PathBuf> {
+    powershell_path(
+        "Get-Process -Name WorkBuddy -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1 -ExpandProperty Path",
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn running_executable() -> Option<PathBuf> {
+    None
+}
+
+fn saved_executable() -> Option<PathBuf> {
+    let path = installation_path();
+    let value: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    value
+        .get("executablePath")
+        .and_then(Value::as_str)
+        .and_then(clean_executable_path)
+}
+
+fn save_executable(executable: &Path) -> Result<(), String> {
+    write_document(
+        &installation_path(),
+        &serde_json::json!({ "executablePath": executable.display().to_string() }),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn registry_executable() -> Option<PathBuf> {
+    let script = r#"Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^WorkBuddy' } | Select-Object -First 1 -ExpandProperty DisplayIcon"#;
+    powershell_path(script)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -545,13 +589,50 @@ fn registry_executable() -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn shortcut_executable() -> Option<PathBuf> {
+    powershell_path(
+        r#"$roots = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('StartMenu'), [Environment]::GetFolderPath('CommonStartMenu')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }; $shell = New-Object -ComObject WScript.Shell; Get-ChildItem -Path $roots -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $target = $shell.CreateShortcut($_.FullName).TargetPath; if ([IO.Path]::GetFileName($target) -ieq 'WorkBuddy.exe') { $target } } | Select-Object -First 1"#,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn shortcut_executable() -> Option<PathBuf> {
+    None
+}
+
+fn is_workbuddy_executable(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    if cfg!(target_os = "windows") {
+        let is_named_workbuddy = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("WorkBuddy.exe"));
+        return is_named_workbuddy
+            && workbuddy_cli_dir_for(path).is_some_and(|cli| cli.join("product.json").exists());
+    }
+    if cfg!(target_os = "macos") {
+        return path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("WorkBuddy.app"))
+            && product_json_for(path).is_some_and(|product| product.exists());
+    }
+    false
+}
+
 fn find_executable() -> Option<PathBuf> {
-    registry_executable()
-        .filter(|path| path.exists())
+    saved_executable()
+        .filter(|path| is_workbuddy_executable(path))
+        .or_else(|| running_executable().filter(|path| is_workbuddy_executable(path)))
+        .or_else(|| registry_executable().filter(|path| is_workbuddy_executable(path)))
+        .or_else(|| shortcut_executable().filter(|path| is_workbuddy_executable(path)))
         .or_else(|| {
             common_executable_candidates()
                 .into_iter()
-                .find(|path| path.exists())
+                .find(|path| is_workbuddy_executable(path))
         })
 }
 
@@ -565,6 +646,96 @@ fn product_json_for(executable: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+fn workbuddy_cli_dir_for(executable: &Path) -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        executable
+            .parent()
+            .map(|dir| dir.join("resources/app.asar.unpacked/cli"))
+    } else if cfg!(target_os = "macos") {
+        Some(executable.join("Contents/Resources/app.asar.unpacked/cli"))
+    } else {
+        None
+    }
+}
+
+fn workbuddy_ca_path_for(executable: &Path) -> Option<PathBuf> {
+    workbuddy_cli_dir_for(executable).map(|dir| dir.join("ca.pem"))
+}
+
+fn pem_certificates(text: &str) -> Vec<String> {
+    text.split("-----BEGIN CERTIFICATE-----")
+        .skip(1)
+        .filter_map(|tail| {
+            let (body, _) = tail.split_once("-----END CERTIFICATE-----")?;
+            Some(format!(
+                "-----BEGIN CERTIFICATE-----{}-----END CERTIFICATE-----",
+                body
+            ))
+        })
+        .collect()
+}
+
+fn normalize_pem(certificate: &str) -> String {
+    certificate.replace(['\r', '\n'], "")
+}
+
+fn merge_ca_bundle(existing: &str, managed: &str) -> String {
+    let mut merged = existing.to_string();
+    let mut normalized = normalize_pem(existing);
+    for certificate in pem_certificates(managed) {
+        let candidate = normalize_pem(&certificate);
+        if normalized.contains(&candidate) {
+            continue;
+        }
+        if !merged.is_empty() && !merged.ends_with('\n') {
+            merged.push('\n');
+        }
+        merged.push_str(&certificate);
+        merged.push('\n');
+        normalized.push_str(&candidate);
+    }
+    merged
+}
+
+fn sync_workbuddy_ca_bundle(executable: &Path, bundle: &Path) -> Result<PathBuf, String> {
+    let target = workbuddy_ca_path_for(executable).ok_or("当前平台不支持同步 WorkBuddy CA。")?;
+    let parent = target
+        .parent()
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| "未找到 WorkBuddy CLI 目录；请重新检测安装位置。".to_string())?;
+    let managed =
+        fs::read_to_string(bundle).map_err(|error| format!("读取 CA bundle 失败：{error}"))?;
+    let existing = fs::read_to_string(&target).unwrap_or_default();
+    let merged = merge_ca_bundle(&existing, &managed);
+    if merged != existing {
+        fs::write(&target, merged).map_err(|error| {
+            format!(
+                "写入 WorkBuddy CA 文件失败（{}）：{error}",
+                parent.display()
+            )
+        })?;
+    }
+    Ok(target)
+}
+
+fn workbuddy_ca_bundle_is_synced(executable: &Path, bundle: &Path) -> bool {
+    let Some(target) = workbuddy_ca_path_for(executable) else {
+        return false;
+    };
+    let Ok(managed) = fs::read_to_string(bundle) else {
+        return false;
+    };
+    let Ok(installed) = fs::read_to_string(target) else {
+        return false;
+    };
+    let installed = normalize_pem(&installed);
+    let certificates = pem_certificates(&managed);
+    !certificates.is_empty()
+        && certificates
+            .iter()
+            .all(|certificate| installed.contains(&normalize_pem(certificate)))
 }
 
 fn installed_version(executable: &Path) -> Option<String> {
@@ -756,6 +927,25 @@ fn ensure_expected_revision(path: &Path, expected: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn workbuddy_state() -> WorkBuddyState {
     build_state()
+}
+
+#[tauri::command]
+pub fn set_workbuddy_executable(path: String) -> Result<WorkBuddyState, String> {
+    let candidate = clean_executable_path(&path).ok_or("请选择 WorkBuddy.exe。")?;
+    if !is_workbuddy_executable(&candidate) {
+        return Err(
+            "所选文件不是有效的 WorkBuddy.exe，或安装目录中缺少 resources/app.asar.unpacked/cli/product.json。"
+                .into(),
+        );
+    }
+    let executable = candidate.canonicalize().unwrap_or(candidate);
+    save_executable(&executable)?;
+
+    let certificate = crate::cert_path();
+    if certificate.exists() {
+        sync_workbuddy_ca_bundle(&executable, &certificate)?;
+    }
+    Ok(build_state())
 }
 
 #[tauri::command]
@@ -1094,6 +1284,10 @@ pub fn import_workbuddy_ca(path: String) -> Result<String, String> {
     validate_ca_certificate(&certificate)?;
     #[cfg(target_os = "windows")]
     {
+        crate::import_cert(path)?;
+        let executable = find_executable().ok_or("未检测到 WorkBuddy 安装，无法同步 CLI CA。")?;
+        let target = sync_workbuddy_ca_bundle(&executable, &crate::cert_path())?;
+
         use std::os::windows::process::CommandExt;
         let output = Command::new("certutil.exe")
             .args(["-user", "-addstore", "-f", "Root"])
@@ -1101,15 +1295,24 @@ pub fn import_workbuddy_ca(path: String) -> Result<String, String> {
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|error| format!("无法启动 Windows 证书导入：{error}"))?;
-        if !output.status.success() {
+        let windows_note = if output.status.success() {
+            "同时已加入当前 Windows 用户的受信任根证书库。".to_string()
+        } else {
             let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if detail.is_empty() {
-                format!("Windows 证书导入失败，退出码：{:?}", output.status.code())
+            if detail.is_empty() {
+                format!(
+                    "Windows 用户证书库导入未成功（退出码：{:?}），但不影响 WorkBuddy 自定义模型。",
+                    output.status.code()
+                )
             } else {
-                format!("Windows 证书导入失败：{detail}")
-            });
-        }
-        return Ok("CA 根证书已导入当前 Windows 用户的受信任根证书存储。".into());
+                format!("Windows 用户证书库导入未成功，但不影响 WorkBuddy 自定义模型：{detail}")
+            }
+        };
+        return Ok(format!(
+            "CA 已同步到 WorkBuddy CLI（{}）。{} 请完全退出 WorkBuddy（包括系统托盘）后重新打开。",
+            target.display(),
+            windows_note
+        ));
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1223,10 +1426,23 @@ pub async fn check_workbuddy_certificate(
             return Err("网关地址必须以 http:// 或 https:// 开头。".into());
         }
         match gateway_client()?.get(parsed).send() {
-            Ok(_) => Ok(WorkBuddyCertificateStatus {
-                state: "trusted".into(),
-                detail: "网关 TLS 握手成功，CA 证书已被系统信任。".into(),
-            }),
+            Ok(_) => {
+                let bundle = crate::cert_path();
+                if bundle.is_file() {
+                    if let Some(executable) = find_executable() {
+                        if !workbuddy_ca_bundle_is_synced(&executable, &bundle) {
+                            return Ok(WorkBuddyCertificateStatus {
+                                state: "untrusted".into(),
+                                detail: "管理中心可以访问网关，但 CA 尚未同步到 WorkBuddy CLI；请重新导入证书。".into(),
+                            });
+                        }
+                    }
+                }
+                Ok(WorkBuddyCertificateStatus {
+                    state: "trusted".into(),
+                    detail: "网关 TLS 握手成功，WorkBuddy CLI CA 已同步。".into(),
+                })
+            }
             Err(error) => {
                 let detail = request_error(error);
                 let state = if detail.starts_with("TLS 证书校验失败") {
@@ -1615,11 +1831,20 @@ pub async fn test_workbuddy_model(
     .map_err(|error| format!("WorkBuddy 测试任务异常：{error}"))?
 }
 
+fn configure_workbuddy_command(command: &mut Command, certificate: &Path) {
+    command.env("NODE_EXTRA_CA_CERTS", certificate);
+}
+
 #[tauri::command]
 pub fn launch_workbuddy() -> Result<(), String> {
     let executable = find_executable().ok_or("未检测到 WorkBuddy 安装。")?;
     if cfg!(target_os = "windows") {
-        let mut command = Command::new(executable);
+        let mut command = Command::new(&executable);
+        let certificate = crate::cert_path();
+        if certificate.is_file() {
+            sync_workbuddy_ca_bundle(&executable, &certificate)?;
+            configure_workbuddy_command(&mut command, &certificate);
+        }
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -1790,5 +2015,59 @@ mod tests {
         );
         assert!(classify_response(429, "").detail.contains("额度"));
         assert!(classify_response(503, "").detail.contains("上游"));
+    }
+
+    #[test]
+    fn workbuddy_launch_inherits_extra_ca_bundle() {
+        let mut command = Command::new("workbuddy-test");
+        let certificate = Path::new(r"C:\ca-cert.pem");
+
+        configure_workbuddy_command(&mut command, certificate);
+
+        let configured = command
+            .get_envs()
+            .find(|(name, _)| *name == "NODE_EXTRA_CA_CERTS")
+            .and_then(|(_, value)| value)
+            .map(PathBuf::from);
+        assert_eq!(configured.as_deref(), Some(certificate));
+    }
+
+    #[test]
+    fn derives_workbuddy_cli_ca_path_from_executable() {
+        let executable = Path::new(r"D:\Program Files\WorkBuddy\WorkBuddy.exe");
+        assert_eq!(
+            workbuddy_ca_path_for(executable),
+            Some(PathBuf::from(
+                r"D:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\ca.pem"
+            ))
+        );
+    }
+
+    #[test]
+    fn cleans_registry_and_manual_executable_paths() {
+        assert_eq!(
+            clean_executable_path(r#"  "D:\Apps\WorkBuddy\WorkBuddy.exe",0  "#),
+            Some(PathBuf::from(r"D:\Apps\WorkBuddy\WorkBuddy.exe"))
+        );
+        assert_eq!(clean_executable_path("   "), None);
+    }
+
+    #[test]
+    fn rejects_missing_workbuddy_executable() {
+        assert!(!is_workbuddy_executable(Path::new(
+            r"Z:\missing\WorkBuddy.exe"
+        )));
+    }
+
+    #[test]
+    fn merges_managed_certificates_without_removing_or_duplicating_existing_ones() {
+        let existing = "-----BEGIN CERTIFICATE-----\nEXISTING\n-----END CERTIFICATE-----\n";
+        let managed = "-----BEGIN CERTIFICATE-----\nEXISTING\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nMANAGED\n-----END CERTIFICATE-----\n";
+
+        let merged = merge_ca_bundle(existing, managed);
+
+        assert_eq!(merged.matches("EXISTING").count(), 1);
+        assert_eq!(merged.matches("MANAGED").count(), 1);
+        assert_eq!(merge_ca_bundle(&merged, managed), merged);
     }
 }
