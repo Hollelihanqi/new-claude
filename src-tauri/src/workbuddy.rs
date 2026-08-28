@@ -9,6 +9,7 @@ use std::process::Command;
 use std::time::Duration;
 
 const DEFAULT_ENDPOINT: &str = "https://10.0.147.128:8080";
+#[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ORGANIZATION_OWNER_FIELD: &str = "_ccManagerOrganizationId";
 
@@ -713,7 +714,14 @@ fn workbuddy_ca_path_for_platform(
     executable: &Path,
     platform: WorkBuddyPlatform,
 ) -> Option<PathBuf> {
-    workbuddy_cli_dir_for_platform(executable, platform).map(|dir| dir.join("ca.pem"))
+    let directory = workbuddy_cli_dir_for_platform(executable, platform)?;
+    match platform {
+        WorkBuddyPlatform::Windows => Some(PathBuf::from(format!(
+            "{}\\ca.pem",
+            directory.to_string_lossy()
+        ))),
+        WorkBuddyPlatform::Macos => Some(directory.join("ca.pem")),
+    }
 }
 
 fn pem_certificates(text: &str) -> Vec<String> {
