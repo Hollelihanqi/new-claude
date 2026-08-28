@@ -276,11 +276,12 @@ export default function WorkBuddyPanel() {
 
   const chooseWorkBuddyExecutable = async () => {
     try {
+      const macos = state?.environment.platform === "macos";
       const selected = await open({
-        title: "选择 WorkBuddy.exe",
+        title: macos ? "选择 WorkBuddy.app" : "选择 WorkBuddy.exe",
         directory: false,
         multiple: false,
-        filters: [{ name: "WorkBuddy 应用程序", extensions: ["exe"] }],
+        filters: [{ name: "WorkBuddy 应用程序", extensions: [macos ? "app" : "exe"] }],
       });
       if (!selected || Array.isArray(selected)) return;
       setBusy("executable");
@@ -320,6 +321,7 @@ export default function WorkBuddyPanel() {
   };
 
   const environment = state?.environment;
+  const isMacos = environment?.platform === "macos";
   const locked = environment?.configValid === false;
   const allModelIds = Array.from(new Set([...catalog, ...selectedModels])).sort();
   const certificateBadge = {
@@ -359,7 +361,9 @@ export default function WorkBuddyPanel() {
       >
         <Stack>
           <Alert color="orange" icon={<IconCertificate size={16} />}>
-            将所选 CA 加入当前 Windows 用户的“受信任根证书”存储，并同步到本机共享的 WorkBuddy 安装目录。此后，这台电脑上使用该 WorkBuddy 安装的所有用户都会在自定义模型请求中信任该 CA。请仅导入公司网关管理员提供的证书；WorkBuddy 更新后，管理中心会在启动时自动补写。
+            {isMacos
+              ? "将所选 CA 同步到 WorkBuddy.app 的内置 CLI 证书文件。不会修改 macOS 系统钥匙串；WorkBuddy 更新后，管理中心会在启动时自动补写。请仅导入公司网关管理员提供的证书。"
+              : "将所选 CA 加入当前 Windows 用户的“受信任根证书”存储，并同步到本机共享的 WorkBuddy 安装目录。此后，这台电脑上使用该 WorkBuddy 安装的所有用户都会在自定义模型请求中信任该 CA。请仅导入公司网关管理员提供的证书；WorkBuddy 更新后，管理中心会在启动时自动补写。"}
           </Alert>
           <Text size="sm" c="dimmed" lineClamp={2}>{certificatePath}</Text>
           <Group justify="flex-end">
@@ -409,6 +413,7 @@ export default function WorkBuddyPanel() {
               variant="default"
               leftSection={<IconFolderOpen size={15} />}
               loading={busy === "executable"}
+              disabled={!environment}
               onClick={() => void chooseWorkBuddyExecutable()}
             >
               选择安装位置

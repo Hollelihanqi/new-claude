@@ -16,6 +16,7 @@ const ORGANIZATION_OWNER_FIELD: &str = "_ccManagerOrganizationId";
 #[serde(rename_all = "camelCase")]
 pub struct WorkBuddyEnvironment {
     found: bool,
+    platform: String,
     executable_path: Option<String>,
     version: Option<String>,
     config_path: String,
@@ -531,6 +532,15 @@ fn clean_executable_path(value: &str) -> Option<PathBuf> {
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
+fn macos_app_from_process_command(command: &str) -> Option<PathBuf> {
+    let marker = "WorkBuddy.app/Contents/MacOS/";
+    let marker_start = command.find(marker)?;
+    let app_end = marker_start + "WorkBuddy.app".len();
+    let prefix = command[..app_end].trim().trim_matches('"');
+    let path_start = prefix.find('/')?;
+    Some(PathBuf::from(&prefix[path_start..]))
+}
+
 #[cfg(target_os = "windows")]
 fn powershell_path(script: &str) -> Option<PathBuf> {
     let mut command = Command::new("powershell");
@@ -559,7 +569,20 @@ fn running_executable() -> Option<PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 fn running_executable() -> Option<PathBuf> {
-    None
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("ps")
+            .args(["-axo", "command="])
+            .output()
+            .ok()?;
+        return String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(macos_app_from_process_command);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 fn saved_executable() -> Option<PathBuf> {
@@ -636,32 +659,53 @@ fn find_executable() -> Option<PathBuf> {
         })
 }
 
-fn product_json_for(executable: &Path) -> Option<PathBuf> {
+#[derive(Clone, Copy)]
+enum WorkBuddyPlatform {
+    Windows,
+    Macos,
+}
+
+fn current_workbuddy_platform() -> Option<WorkBuddyPlatform> {
     if cfg!(target_os = "windows") {
-        executable
-            .parent()
-            .map(|dir| dir.join("resources/app.asar.unpacked/cli/product.json"))
+        Some(WorkBuddyPlatform::Windows)
     } else if cfg!(target_os = "macos") {
-        Some(executable.join("Contents/Resources/app.asar.unpacked/cli/product.json"))
+        Some(WorkBuddyPlatform::Macos)
     } else {
         None
+    }
+}
+
+fn workbuddy_cli_dir_for_platform(
+    executable: &Path,
+    platform: WorkBuddyPlatform,
+) -> Option<PathBuf> {
+    match platform {
+        WorkBuddyPlatform::Windows => executable
+            .parent()
+            .map(|dir| dir.join("resources/app.asar.unpacked/cli")),
+        WorkBuddyPlatform::Macos => {
+            Some(executable.join("Contents/Resources/app.asar.unpacked/cli"))
+        }
     }
 }
 
 fn workbuddy_cli_dir_for(executable: &Path) -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        executable
-            .parent()
-            .map(|dir| dir.join("resources/app.asar.unpacked/cli"))
-    } else if cfg!(target_os = "macos") {
-        Some(executable.join("Contents/Resources/app.asar.unpacked/cli"))
-    } else {
-        None
-    }
+    workbuddy_cli_dir_for_platform(executable, current_workbuddy_platform()?)
+}
+
+fn product_json_for(executable: &Path) -> Option<PathBuf> {
+    workbuddy_cli_dir_for(executable).map(|dir| dir.join("product.json"))
 }
 
 fn workbuddy_ca_path_for(executable: &Path) -> Option<PathBuf> {
     workbuddy_cli_dir_for(executable).map(|dir| dir.join("ca.pem"))
+}
+
+fn workbuddy_ca_path_for_platform(
+    executable: &Path,
+    platform: WorkBuddyPlatform,
+) -> Option<PathBuf> {
+    workbuddy_cli_dir_for_platform(executable, platform).map(|dir| dir.join("ca.pem"))
 }
 
 fn pem_certificates(text: &str) -> Vec<String> {
@@ -763,6 +807,14 @@ fn environment_for(path: &Path, document: Result<&Value, &String>) -> WorkBuddyE
     };
     WorkBuddyEnvironment {
         found: executable.is_some(),
+        platform: if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "other"
+        }
+        .into(),
         executable_path: executable.as_ref().map(|value| value.display().to_string()),
         version,
         config_path: path.display().to_string(),
@@ -931,12 +983,16 @@ pub fn workbuddy_state() -> WorkBuddyState {
 
 #[tauri::command]
 pub fn set_workbuddy_executable(path: String) -> Result<WorkBuddyState, String> {
-    let candidate = clean_executable_path(&path).ok_or("请选择 WorkBuddy.exe。")?;
+    let expected = if cfg!(target_os = "macos") {
+        "WorkBuddy.app"
+    } else {
+        "WorkBuddy.exe"
+    };
+    let candidate = clean_executable_path(&path).ok_or_else(|| format!("请选择 {expected}。"))?;
     if !is_workbuddy_executable(&candidate) {
-        return Err(
-            "所选文件不是有效的 WorkBuddy.exe，或安装目录中缺少 resources/app.asar.unpacked/cli/product.json。"
-                .into(),
-        );
+        return Err(format!(
+            "所选路径不是有效的 {expected}，或应用中缺少 WorkBuddy CLI/product.json。"
+        ));
     }
     let executable = candidate.canonicalize().unwrap_or(candidate);
     save_executable(&executable)?;
@@ -1282,12 +1338,18 @@ fn validate_ca_certificate(path: &Path) -> Result<(), String> {
 pub fn import_workbuddy_ca(path: String) -> Result<String, String> {
     let certificate = PathBuf::from(path.trim());
     validate_ca_certificate(&certificate)?;
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        return Err("当前平台暂不支持从界面导入 WorkBuddy CA 证书。".into());
+    }
+
+    crate::import_cert(path)?;
+    let executable = find_executable().ok_or("未检测到 WorkBuddy 安装，无法同步 CLI CA。")?;
+    let target = sync_workbuddy_ca_bundle(&executable, &crate::cert_path())?;
+
     #[cfg(target_os = "windows")]
     {
-        crate::import_cert(path)?;
-        let executable = find_executable().ok_or("未检测到 WorkBuddy 安装，无法同步 CLI CA。")?;
-        let target = sync_workbuddy_ca_bundle(&executable, &crate::cert_path())?;
-
         use std::os::windows::process::CommandExt;
         let output = Command::new("certutil.exe")
             .args(["-user", "-addstore", "-f", "Root"])
@@ -1314,9 +1376,13 @@ pub fn import_workbuddy_ca(path: String) -> Result<String, String> {
             windows_note
         ));
     }
-    #[cfg(not(target_os = "windows"))]
+
+    #[cfg(target_os = "macos")]
     {
-        Err("当前版本仅支持在 Windows 中从界面导入 WorkBuddy CA 证书。".into())
+        Ok(format!(
+            "CA 已同步到 WorkBuddy CLI（{}）。请完全退出 WorkBuddy 后重新打开。",
+            target.display()
+        ))
     }
 }
 
@@ -1838,11 +1904,13 @@ fn configure_workbuddy_command(command: &mut Command, certificate: &Path) {
 #[tauri::command]
 pub fn launch_workbuddy() -> Result<(), String> {
     let executable = find_executable().ok_or("未检测到 WorkBuddy 安装。")?;
+    let certificate = crate::cert_path();
+    if certificate.is_file() && cfg!(any(target_os = "windows", target_os = "macos")) {
+        sync_workbuddy_ca_bundle(&executable, &certificate)?;
+    }
     if cfg!(target_os = "windows") {
         let mut command = Command::new(&executable);
-        let certificate = crate::cert_path();
         if certificate.is_file() {
-            sync_workbuddy_ca_bundle(&executable, &certificate)?;
             configure_workbuddy_command(&mut command, &certificate);
         }
         #[cfg(target_os = "windows")]
@@ -2032,27 +2100,39 @@ mod tests {
         assert_eq!(configured.as_deref(), Some(certificate));
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn derives_workbuddy_cli_ca_path_from_executable() {
         let executable = Path::new(r"D:\Program Files\WorkBuddy\WorkBuddy.exe");
         assert_eq!(
-            workbuddy_ca_path_for(executable),
+            workbuddy_ca_path_for_platform(executable, WorkBuddyPlatform::Windows),
             Some(PathBuf::from(
                 r"D:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\ca.pem"
             ))
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn derives_workbuddy_cli_ca_path_from_macos_app() {
         let executable = Path::new("/Applications/WorkBuddy.app");
         assert_eq!(
-            workbuddy_ca_path_for(executable),
+            workbuddy_ca_path_for_platform(executable, WorkBuddyPlatform::Macos),
             Some(PathBuf::from(
                 "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/ca.pem"
             ))
+        );
+    }
+
+    #[test]
+    fn derives_macos_app_from_running_process_command() {
+        assert_eq!(
+            macos_app_from_process_command(
+                "/Users/test/Apps/WorkBuddy.app/Contents/MacOS/WorkBuddy --flag"
+            ),
+            Some(PathBuf::from("/Users/test/Apps/WorkBuddy.app"))
+        );
+        assert_eq!(
+            macos_app_from_process_command("/System/Applications/Finder.app/Contents/MacOS/Finder"),
+            None
         );
     }
 

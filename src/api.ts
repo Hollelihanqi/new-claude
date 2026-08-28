@@ -310,6 +310,7 @@ export interface HealthItem {
 
 export interface WorkBuddyEnvironment {
   found: boolean;
+  platform: "windows" | "macos" | "other";
   executablePath?: string;
   version?: string;
   configPath: string;
