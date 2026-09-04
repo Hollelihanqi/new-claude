@@ -30,28 +30,7 @@ import {
 import { api } from "../api";
 import type { EnvInfo, Profile, ModelPinWarning, ProfileRuntimeInfo, UsageStats } from "../api";
 import InstanceSettingsCard from "./InstanceSettingsCard";
-
-// 文档里列出的常用模型别名，作为下拉候选（检测到的真实模型会合并进来）
-const PRESET_MODELS = [
-  "claude-sonnet-4-6",
-  "claude-opus-4-7",
-  "claude-haiku-4-5",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
-  "glm-5.2",
-  "glm-5.1",
-  "glm-5",
-  "glm-5-turbo",
-  "claude-zhipu-5.2",
-  "kimi-k2.7-code",
-  "kimi-k2.6",
-  "minimax-m2.7",
-  "qwen3.7-max",
-  "qwen3.7-plus",
-  "qwen3.6-flash",
-  "claude-qw3.7-max",
-  "claude-qw3.6-plus",
-];
+import { buildModelOptions } from "./modelOptions";
 
 const empty: FormState = {
   name: "",
@@ -177,10 +156,16 @@ export default function ConfigPanel({
     return null;
   };
 
-  // 模型下拉候选 = 检测到的 + 预设，去重
+  // 模型下拉候选:检测成功 → 只显示当前网关的可用模型(附带已保存取值);
+  // 从未检测成功 → 预设兜底。见 modelOptions.ts
   const modelOpts = useMemo(
-    () => Array.from(new Set([...detected, ...PRESET_MODELS])),
-    [detected]
+    () =>
+      buildModelOptions(detected, [
+        form.opusModel,
+        form.sonnetModel,
+        form.haikuModel,
+      ]),
+    [detected, form.opusModel, form.sonnetModel, form.haikuModel]
   );
 
   const onDetect = async () => {
@@ -205,7 +190,7 @@ export default function ConfigPanel({
       setDetected(list || []);
       setStatus({
         type: "success",
-        msg: `检测到 ${(list || []).length} 个可用模型，已加入下方下拉。`,
+        msg: `检测到 ${(list || []).length} 个可用模型，下拉已切换为该网关的模型。`,
       });
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
@@ -537,7 +522,7 @@ export default function ConfigPanel({
                 <div className="form-section-label"><span>02</span><div><strong>模型映射</strong><small>将 Claude 档位匹配到网关模型</small></div></div>
                 <Group justify="space-between" align="center">
                   <Text size="xs" c="dimmed">
-                    点「检测模型」从当前网关拉取可用模型，自动加入下方下拉。
+                    点「检测模型」从当前网关拉取可用模型；检测成功后下拉只显示该网关的模型。
                   </Text>
                   <Button
                     size="xs"
