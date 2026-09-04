@@ -71,18 +71,25 @@ const SERIES: { key: SeriesKey; name: string; color: string }[] = [
 
 // 卡片配色（各不相同）+ 计算口径说明
 const CARDS: {
-  key: "input" | "output" | "requests" | "conversations" | "cacheRead";
+  key: "realTotal" | "input" | "output" | "requests" | "conversations" | "cacheRead" | "hitRate";
   label: string;
   bg: string;
   fg: string;
   desc: string;
 }[] = [
   {
+    key: "realTotal",
+    label: "真实消耗 Tokens",
+    bg: "#f0f7ff",
+    fg: "#0f4c81",
+    desc: "输入+输出+缓存创建+缓存命中的总和，即模型实际处理的全部 token",
+  },
+  {
     key: "input",
     label: "总输入 token",
     bg: "#eef4ff",
     fg: "#2563eb",
-    desc: "你发给模型的内容（含每轮带上的历史上下文）消耗的 token 累加",
+    desc: "未命中缓存、需按输入价计费的 token 累加（历史上下文的大头在缓存里，不在此列）",
   },
   {
     key: "output",
@@ -111,6 +118,13 @@ const CARDS: {
     bg: "#e9f8fb",
     fg: "#0891b2",
     desc: "命中提示缓存、被复用的 token 累加（通常比重新输入更省）",
+  },
+  {
+    key: "hitRate",
+    label: "缓存命中率",
+    bg: "#e8f9f0",
+    fg: "#059669",
+    desc: "缓存命中 ÷（输入+缓存创建+缓存命中），衡量上下文缓存的复用效率",
   },
 ];
 
@@ -229,11 +243,16 @@ export default function UsagePanel({
   }, [allRows, model, profile, bounds]);
 
   const totals = useMemo(() => {
-    let input = 0, output = 0, requests = 0, cacheRead = 0;
+    let input = 0, output = 0, requests = 0, cacheRead = 0, cacheCreate = 0;
     for (const r of rows) {
-      input += r.input; output += r.output; requests += r.requests; cacheRead += r.cacheRead;
+      input += r.input; output += r.output; requests += r.requests;
+      cacheRead += r.cacheRead; cacheCreate += r.cacheCreate;
     }
-    return { input, output, requests, cacheRead };
+    // cc-switch 口径:真实消耗 = 四桶之和;命中率 = 缓存读 ÷(输入+缓存创建+缓存命中,不含输出)
+    const realTotal = input + output + cacheCreate + cacheRead;
+    const cacheable = input + cacheCreate + cacheRead;
+    const hitRate = cacheable > 0 ? cacheRead / cacheable : 0;
+    return { input, output, requests, cacheRead, cacheCreate, realTotal, hitRate };
   }, [rows]);
 
   // 对话次数：用户真实提问数（按时间范围 + 实例筛选；提问不区分模型，故不随模型筛选变化）
@@ -401,12 +420,18 @@ export default function UsagePanel({
 
       {hasData && (
         <>
-          <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }}>
+          <SimpleGrid cols={{ base: 2, sm: 3, lg: 4 }}>
             {CARDS.map((c) => (
               <StatCard
                 key={c.key}
                 label={c.label}
-                value={fmt(c.key === "conversations" ? convCount : totals[c.key])}
+                value={
+                  c.key === "conversations"
+                    ? fmt(convCount)
+                    : c.key === "hitRate"
+                      ? `${(totals.hitRate * 100).toFixed(1)}%`
+                      : fmt(totals[c.key])
+                }
                 bg={c.bg}
                 fg={c.fg}
                 desc={c.desc}
@@ -414,7 +439,7 @@ export default function UsagePanel({
             ))}
           </SimpleGrid>
           <Text size="xs" c="dimmed">
-            说明：以上为当前筛选（时间范围 / 模型 / 实例）下的合计；数值取自本机各实例会话记录中模型返回的 usage 用量，已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
+            说明：以上为当前筛选（时间范围 / 模型 / 实例）下的合计；数值取自本机各实例会话记录中模型返回的 usage 用量，同一响应的多行记录已按消息 ID 去重（与 cc-switch 同口径），并已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
           </Text>
 
           <Card withBorder padding="md" radius="lg">

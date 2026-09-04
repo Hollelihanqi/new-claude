@@ -1322,8 +1322,25 @@ fn scan_usage_dir(
 }
 
 // 解析单个会话 jsonl，返回该文件内按 (datetime, model) 聚合的用量行和对话记录。
+//
+// 同一 message.id 会落多行：Claude Code 对多内容块消息（文本 + 多个工具调用）
+// 逐块写行，这些行的 usage/stop_reason/时间戳完全相同；流式过程还会先写不带
+// stop_reason 的快照行、再写终行。不去重会让输入/缓存命中虚高数倍（实测主账
+// 户 60 天数据：输入约 3.2 倍、缓存命中约 2.5 倍）。与 cc-switch 会话导入同
+// 口径按 message.id 去重：优先保留带 stop_reason 的终行，stop_reason 有无一致
+// 时保留 output_tokens 更大者（等值不替换）。
 fn parse_usage_file(profile: &str, f: &PathBuf) -> (Vec<UsageRow>, Vec<ConvRow>) {
-    let mut map: std::collections::HashMap<(String, String), UsageRow> =
+    // 第一阶段：按 message.id 收集去重后的代表行
+    struct MsgEntry {
+        model: String,
+        datetime: String,
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cache_create: u64,
+        has_stop: bool,
+    }
+    let mut messages: std::collections::HashMap<String, MsgEntry> =
         std::collections::HashMap::new();
     let mut conv: Vec<ConvRow> = Vec::new();
     let content = match fs::read_to_string(f) {
@@ -1380,23 +1397,58 @@ fn parse_usage_file(profile: &str, f: &PathBuf) -> (Vec<UsageRow>, Vec<ConvRow>)
             Some(u) => u,
             None => continue,
         };
+        // 无 message.id 的 assistant 行无法可靠去重，跳过（cc-switch 同口径；
+        // 实测正常会话文件中不存在此类行）
+        let id = match msg.get("id").and_then(|m| m.as_str()) {
+            Some(x) => x.to_string(),
+            None => continue,
+        };
         let gi = |k: &str| usage.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         let input = gi("input_tokens");
         let output = gi("output_tokens");
         let cache_read = gi("cache_read_input_tokens");
         let cache_create = gi("cache_creation_input_tokens");
-        if input + output + cache_read + cache_create == 0 {
-            continue;
-        }
         let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
         if ts.len() < 13 {
             continue;
         }
         let datetime = ts[..13].to_string(); // 例如 2026-06-22T04
-        let key = (datetime.clone(), model.to_string());
+        let has_stop = msg.get("stop_reason").and_then(|s| s.as_str()).is_some();
+        // cc-switch 代表行规则：新行有 stop_reason 而已存行没有 → 替换；
+        // 两者都有/都没有 → 仅 output_tokens 严格更大才替换（等值重复行保持首行）
+        let should_replace = match messages.get(&id) {
+            None => true,
+            Some(e) => (has_stop && !e.has_stop) || (has_stop == e.has_stop && output > e.output),
+        };
+        if should_replace {
+            messages.insert(
+                id,
+                MsgEntry {
+                    model: model.to_string(),
+                    datetime,
+                    input,
+                    output,
+                    cache_read,
+                    cache_create,
+                    has_stop,
+                },
+            );
+        }
+    }
+
+    // 第二阶段：去重后的代表行入 (datetime, model) 桶。四桶全零的条目跳过
+    // （失败/未连通请求 token 为 0 不计入；仅 cache_read > 0 的全缓存请求是
+    // 真实计费，保留）。
+    let mut map: std::collections::HashMap<(String, String), UsageRow> =
+        std::collections::HashMap::new();
+    for m in messages.values() {
+        if m.input + m.output + m.cache_read + m.cache_create == 0 {
+            continue;
+        }
+        let key = (m.datetime.clone(), m.model.clone());
         let row = map.entry(key).or_insert(UsageRow {
-            datetime,
-            model: model.to_string(),
+            datetime: m.datetime.clone(),
+            model: m.model.clone(),
             profile: profile.to_string(),
             input: 0,
             output: 0,
@@ -1404,10 +1456,10 @@ fn parse_usage_file(profile: &str, f: &PathBuf) -> (Vec<UsageRow>, Vec<ConvRow>)
             cache_create: 0,
             requests: 0,
         });
-        row.input += input;
-        row.output += output;
-        row.cache_read += cache_read;
-        row.cache_create += cache_create;
+        row.input += m.input;
+        row.output += m.output;
+        row.cache_read += m.cache_read;
+        row.cache_create += m.cache_create;
         row.requests += 1;
     }
     (map.into_values().collect(), conv)
@@ -1660,6 +1712,222 @@ mod tests {
             type_: "account".to_string(),
             ..Default::default()
         }
+    }
+
+    // —— 用量统计：message.id 去重回归测试（平台无关，任一开发机均可跑）——
+
+    fn write_usage_fixture(lines: &[serde_json::Value]) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "cc-manager-usage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("session.jsonl");
+        let body = lines
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&f, body).unwrap();
+        (f, dir)
+    }
+
+    fn assistant_line(
+        id: &str,
+        model: &str,
+        stop_reason: Option<&str>,
+        ts: &str,
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cache_create: u64,
+    ) -> serde_json::Value {
+        let mut message = serde_json::json!({
+            "id": id,
+            "model": model,
+            "usage": {
+                "input_tokens": input,
+                "output_tokens": output,
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_create
+            }
+        });
+        if let Some(sr) = stop_reason {
+            message["stop_reason"] = serde_json::json!(sr);
+        }
+        serde_json::json!({ "type": "assistant", "timestamp": ts, "message": message })
+    }
+
+    #[test]
+    fn parse_usage_file_dedups_identical_block_lines() {
+        // 真实数据的主导形态：多内容块消息逐块写行，同 message.id 的多行
+        // usage/stop_reason 完全相同（实测样本 msg_202609041433383dbf0a0121d948df）
+        let entry = assistant_line(
+            "msg_dup_1",
+            "claude-sonnet-4-5",
+            Some("tool_use"),
+            "2026-09-04T06:12:00Z",
+            10925,
+            484,
+            39872,
+            0,
+        );
+        let (f, dir) = write_usage_fixture(&[entry.clone(), entry.clone(), entry.clone()]);
+        let (rows, convs) = parse_usage_file("p1", &f);
+        assert_eq!(convs.len(), 0);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.requests, 1, "同 id 三行只计一次调用");
+        assert_eq!(r.input, 10925, "输入不因重复行膨胀 3 倍");
+        assert_eq!(r.output, 484);
+        assert_eq!(r.cache_read, 39872);
+        assert_eq!(r.cache_create, 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_usage_file_prefers_final_entry_over_stream_snapshot() {
+        // 流式形态：先写无 stop_reason 的快照行（output 为中间值），后写终行。
+        // 必须取终行,且时间桶用终行时间戳(旧实现会在 05/06 两个桶各记一次)
+        let snapshot = assistant_line(
+            "msg_snap",
+            "claude-opus-4-6",
+            None,
+            "2026-09-04T05:59:00Z",
+            100,
+            1,
+            5000,
+            100,
+        );
+        let final_line = assistant_line(
+            "msg_snap",
+            "claude-opus-4-6",
+            Some("end_turn"),
+            "2026-09-04T06:01:00Z",
+            100,
+            150,
+            5000,
+            100,
+        );
+        let (f, dir) = write_usage_fixture(&[snapshot, final_line]);
+        let (rows, _) = parse_usage_file("p1", &f);
+        assert_eq!(rows.len(), 1, "快照+终行只入一个桶");
+        let r = &rows[0];
+        assert_eq!(r.datetime, "2026-09-04T06", "时间取终行时间戳");
+        assert_eq!(r.requests, 1);
+        assert_eq!(r.output, 150, "output 取终行完整值而非快照中间值");
+        assert_eq!(r.input, 100);
+        assert_eq!(r.cache_read, 5000);
+        assert_eq!(r.cache_create, 100);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_usage_file_keeps_snapshot_only_short_requests() {
+        // 并行短命请求可能只有快照行(无 stop_reason)没有终行,但其
+        // input/cache 已真实计费,必须保留(cc-switch 实测低估 4.1% 的教训)
+        let (f, dir) = write_usage_fixture(&[assistant_line(
+            "msg_short",
+            "claude-haiku-4-5",
+            None,
+            "2026-09-04T06:00:00Z",
+            3,
+            1,
+            5000,
+            0,
+        )]);
+        let (rows, _) = parse_usage_file("p1", &f);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].requests, 1);
+        assert_eq!(rows[0].input, 3);
+        assert_eq!(rows[0].cache_read, 5000);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_usage_file_skips_zero_usage_and_counts_user_questions() {
+        // 对话次数只计用户真实提问;工具返回、全零 usage、<synthetic> 均不计
+        let question = serde_json::json!({
+            "type": "user",
+            "message": { "content": [{ "type": "text", "text": "帮我看看这个问题" }] },
+            "timestamp": "2026-09-04T06:00:00Z"
+        });
+        let tool_result = serde_json::json!({
+            "type": "user",
+            "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1" }] },
+            "timestamp": "2026-09-04T06:01:00Z"
+        });
+        let zero_usage = assistant_line(
+            "msg_zero",
+            "m",
+            Some("end_turn"),
+            "2026-09-04T06:02:00Z",
+            0,
+            0,
+            0,
+            0,
+        );
+        let synthetic = assistant_line(
+            "msg_syn",
+            "<synthetic>",
+            Some("end_turn"),
+            "2026-09-04T06:03:00Z",
+            10,
+            5,
+            0,
+            0,
+        );
+        let (f, dir) = write_usage_fixture(&[question, tool_result, zero_usage, synthetic]);
+        let (rows, convs) = parse_usage_file("p1", &f);
+        assert_eq!(convs.len(), 1, "只计一次真实提问,工具返回不计");
+        assert_eq!(convs[0].datetime, "2026-09-04T06");
+        assert!(rows.is_empty(), "全零 usage 与 <synthetic> 不产生用量行");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_usage_file_buckets_by_hour_and_model() {
+        // 不同 (小时, 模型) 分桶;requests 按去重后的消息数计
+        let (f, dir) = write_usage_fixture(&[
+            assistant_line(
+                "m1",
+                "sonnet",
+                Some("end_turn"),
+                "2026-09-04T05:59:00Z",
+                10,
+                5,
+                0,
+                0,
+            ),
+            assistant_line(
+                "m2",
+                "opus",
+                Some("end_turn"),
+                "2026-09-04T05:58:00Z",
+                7,
+                3,
+                0,
+                0,
+            ),
+            assistant_line(
+                "m3",
+                "sonnet",
+                Some("end_turn"),
+                "2026-09-04T06:30:00Z",
+                1,
+                1,
+                0,
+                0,
+            ),
+        ]);
+        let (rows, _) = parse_usage_file("p1", &f);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.requests == 1));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
