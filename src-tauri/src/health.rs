@@ -287,7 +287,7 @@ fn run_health_checks() -> Vec<HealthItem> {
                     Err("未配置网关地址".to_string())
                 } else {
                     crate::decrypt_token(&p)
-                        .and_then(|t| crate::detect_models(p.base_url.clone(), t))
+                        .and_then(|t| crate::detect_models_blocking(p.base_url.clone(), t))
                 };
                 (p.name, res)
             })

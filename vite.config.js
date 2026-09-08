@@ -5,6 +5,10 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // 洞察页按需加载；提前预构建图表模块，避免首次打开时优化器刷新整个桌面页面。
+  optimizeDeps: {
+    include: ["echarts/core", "echarts/charts", "echarts/components", "echarts/renderers"],
+  },
   server: {
     port: 1420,
     strictPort: true,

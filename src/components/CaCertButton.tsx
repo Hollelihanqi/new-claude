@@ -1,3 +1,4 @@
+import { usePageActive } from "./PersistentPage";
 import { useState } from "react";
 import {
   Button,
@@ -24,6 +25,7 @@ export default function CaCertButton({
   env: EnvInfo | null;
   onChanged?: () => void;
 }) {
+  const pageActive = usePageActive();
   const [open, setOpen] = useState(false);
   const [certPath, setCertPath] = useState("");
   const [msg, setMsg] = useState<{ type: StatusType; msg: string }>({
@@ -89,7 +91,7 @@ export default function CaCertButton({
       </Button>
 
       <Modal
-        opened={open}
+        opened={pageActive && (open)}
         onClose={() => setOpen(false)}
         title={
           <Group gap={6} wrap="nowrap">

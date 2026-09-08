@@ -24,21 +24,15 @@ export const PRESET_MODELS = [
 
 /**
  * 模型下拉候选:检测成功(detected 非空)→ 只显示当前网关的可用模型,
- * 并附带表单已保存的档位取值(防既有选择从选项里凭空消失);
+ * 表单已保存的取值由输入框独立保留，不混入可用模型列表。
  * 从未检测成功 → 预设兜底。输入做 trim/去空,结果去重且保持顺序稳定。
  */
-export function buildModelOptions(
-  detected: string[],
-  savedModels: string[]
-): string[] {
+export function buildModelOptions(detected: string[]): string[] {
   const clean = (arr: string[]) =>
     arr.map((m) => m.trim()).filter((m) => m.length > 0);
 
   if (detected.length > 0) {
-    const list = clean(detected);
-    const seen = new Set(list);
-    const extras = clean(savedModels).filter((m) => !seen.has(m));
-    return [...list, ...extras];
+    return [...new Set(clean(detected))];
   }
   return PRESET_MODELS;
 }

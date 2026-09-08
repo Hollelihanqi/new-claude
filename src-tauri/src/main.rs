@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 mod claude_cli;
+mod credentials;
 mod health;
 mod mcp;
 mod sync;
@@ -583,7 +584,7 @@ struct InstanceSettings {
     exists: bool,
     content: String,
     // 保存时回传做冲突检测：后台 --sync 也会写这个文件（只改 enabledPlugins 字段）
-    revision: u64,
+    revision: String,
     bypass_enabled: bool,
     // 更高优先级的配置也设了 defaultMode 时，本开关不生效
     overridden_by: Option<String>,
@@ -597,13 +598,32 @@ fn instance_settings_path(name: &str) -> Result<PathBuf, String> {
     Ok(sync::instance_dir(name).join("settings.json"))
 }
 
-fn settings_revision(path: &Path) -> u64 {
-    fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+fn settings_revision(content: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    match content {
+        None => "missing".into(),
+        Some(text) => hex::encode(Sha256::digest(text.as_bytes())),
+    }
+}
+
+fn settings_content(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("读取设置失败：{e}")),
+    }
+}
+
+fn save_settings_checked(
+    path: &Path,
+    value: &serde_json::Value,
+    revision: &str,
+) -> Result<(), String> {
+    let current = settings_content(path)?;
+    if settings_revision(current.as_deref()) != revision {
+        return Err("该文件已被后台同步修改，请重新加载后再保存".into());
+    }
+    save_settings_value(path, value)
 }
 
 fn bypass_mode_of(value: &serde_json::Value) -> Option<&str> {
@@ -644,7 +664,7 @@ fn save_settings_value(path: &Path, value: &serde_json::Value) -> Result<(), Str
     }
     // 手工编辑随时可能写坏，落盘前留一份上一版
     if path.exists() {
-        let _ = fs::copy(path, path.with_extension("json.bak"));
+        fs::copy(path, path.with_extension("json.bak")).map_err(|e| format!("备份失败：{e}"))?;
     }
     sync::write_json_atomic(path, value).map_err(|e| format!("写入失败：{e}"))
 }
@@ -663,13 +683,16 @@ fn load_settings_value(path: &Path) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn read_instance_settings(name: String) -> Result<InstanceSettings, String> {
+    let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
+    read_instance_settings_locked(name)
+}
+
+fn read_instance_settings_locked(name: String) -> Result<InstanceSettings, String> {
     let path = instance_settings_path(&name)?;
-    let exists = path.exists();
-    let content = if exists {
-        fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?
-    } else {
-        String::new()
-    };
+    let snapshot = settings_content(&path)?;
+    let revision = settings_revision(snapshot.as_deref());
+    let exists = snapshot.is_some();
+    let content = snapshot.unwrap_or_default();
     // 开关状态以文件为唯一真相：内容解析不了就按未开启显示，交给编辑器修
     let bypass_enabled = serde_json::from_str::<serde_json::Value>(&content)
         .ok()
@@ -679,7 +702,7 @@ fn read_instance_settings(name: String) -> Result<InstanceSettings, String> {
         path: path.display().to_string(),
         exists,
         content,
-        revision: settings_revision(&path),
+        revision,
         bypass_enabled,
         overridden_by: bypass_override_source(),
     })
@@ -689,29 +712,27 @@ fn read_instance_settings(name: String) -> Result<InstanceSettings, String> {
 fn write_instance_settings(
     name: String,
     content: String,
-    revision: u64,
+    revision: String,
 ) -> Result<InstanceSettings, String> {
+    let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
     let path = instance_settings_path(&name)?;
     let value: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("不是有效 JSON：{e}"))?;
     if !value.is_object() {
         return Err("settings.json 顶层必须是对象".into());
     }
-    // 读出之后被后台 --sync 或另一个窗口改过 → 拒绝覆盖，让前端重新加载
-    if revision != 0 && settings_revision(&path) != revision {
-        return Err("该文件已被后台同步修改，请重新加载后再保存".into());
-    }
-    save_settings_value(&path, &value)?;
-    read_instance_settings(name)
+    save_settings_checked(&path, &value, &revision)?;
+    read_instance_settings_locked(name)
 }
 
 #[tauri::command]
 fn set_bypass_permissions(name: String, enabled: bool) -> Result<InstanceSettings, String> {
+    let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
     let path = instance_settings_path(&name)?;
     let mut value = load_settings_value(&path)?;
     apply_bypass(&mut value, enabled)?;
     save_settings_value(&path, &value)?;
-    read_instance_settings(name)
+    read_instance_settings_locked(name)
 }
 
 // ---------------- token（平台原生） ----------------
@@ -728,59 +749,11 @@ fn ps_command() -> std::process::Command {
 }
 
 fn store_token(name: &str, token: &str) -> Result<Option<String>, String> {
-    if cfg!(target_os = "macos") {
-        let svc = format!("{KEYCHAIN_PREFIX}:{name}");
-        let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-        let _ = std::process::Command::new("security")
-            .args(["delete-generic-password", "-s", &svc])
-            .output();
-        let out = std::process::Command::new("security")
-            .args([
-                "add-generic-password",
-                "-a",
-                &user,
-                "-s",
-                &svc,
-                "-w",
-                token,
-                "-U",
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
-        Ok(None)
-    } else if cfg!(target_os = "windows") {
-        // PowerShell 5.1 的 -Command 模式下 $args 不可靠，直接把 key 拼进脚本（单引号转义）
-        let escaped = token.replace('\'', "''");
-        let script = format!(
-            "ConvertTo-SecureString -String '{escaped}' -AsPlainText -Force | ConvertFrom-SecureString"
-        );
-        let out = ps_command()
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .map_err(|e| e.to_string())?;
-        let enc = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if enc.is_empty() {
-            return Err(format!(
-                "PowerShell 加密失败：{}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(Some(enc))
-    } else {
-        Err("当前平台不支持安全存储 token".into())
-    }
+    credentials::store(name, token)
 }
 
 fn clear_token(name: &str) {
-    if cfg!(target_os = "macos") {
-        let svc = format!("{KEYCHAIN_PREFIX}:{name}");
-        let _ = std::process::Command::new("security")
-            .args(["delete-generic-password", "-s", &svc])
-            .output();
-    }
+    credentials::clear(name);
 }
 
 // ---------------- 命令 ----------------
@@ -923,7 +896,13 @@ fn set_claude_executable(path: String) -> Result<claude_cli::ClaudeDetection, St
 }
 
 #[tauri::command]
-fn profile_runtime_info() -> Vec<ProfileRuntimeInfo> {
+async fn profile_runtime_info() -> Result<Vec<ProfileRuntimeInfo>, String> {
+    tauri::async_runtime::spawn_blocking(profile_runtime_info_blocking)
+        .await
+        .map_err(|e| format!("实例状态扫描失败：{e}"))
+}
+
+fn profile_runtime_info_blocking() -> Vec<ProfileRuntimeInfo> {
     load()
         .into_iter()
         .map(|profile| {
@@ -1064,7 +1043,13 @@ fn clear_certs() -> Result<String, String> {
 
 // 检测网关可用模型：请求 {base_url}/v1/models
 #[tauri::command]
-fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String> {
+async fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || detect_models_blocking(base_url, token))
+        .await
+        .map_err(|e| format!("模型检测任务失败：{e}"))?
+}
+
+fn detect_models_blocking(base_url: String, token: String) -> Result<Vec<String>, String> {
     let base = base_url.trim().trim_end_matches('/');
     if !valid_base_url(base) {
         return Err("网关地址必须是有效的 http:// 或 https:// 地址，且不能包含空格。".into());
@@ -1145,41 +1130,17 @@ fn detect_models(base_url: String, token: String) -> Result<Vec<String>, String>
 
 // ---------------- 解密已存 key / 按实例检测模型 ----------------
 fn decrypt_token(p: &Profile) -> Result<String, String> {
-    if cfg!(target_os = "macos") {
-        let svc = format!("{KEYCHAIN_PREFIX}:{}", p.name);
-        let out = std::process::Command::new("security")
-            .args(["find-generic-password", "-s", &svc, "-w"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err("未在钥匙串找到该实例的 Key".into());
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else if cfg!(target_os = "windows") {
-        let enc = match &p.token_enc {
-            Some(e) if !e.is_empty() => e.clone(),
-            _ => return Err("该实例没有保存 Key".into()),
-        };
-        let escaped = enc.replace('\'', "''");
-        let script = format!(
-            "$sec=ConvertTo-SecureString '{escaped}'; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec); [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)"
-        );
-        let out = ps_command()
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .map_err(|e| e.to_string())?;
-        let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if tok.is_empty() {
-            return Err("解密 Key 失败".into());
-        }
-        Ok(tok)
-    } else {
-        Err("当前平台不支持".into())
-    }
+    credentials::read(&p.name, p.token_enc.as_deref())
 }
 
 #[tauri::command]
-fn detect_models_for(name: String) -> Result<Vec<String>, String> {
+async fn detect_models_for(name: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || detect_models_for_blocking(name))
+        .await
+        .map_err(|e| format!("模型检测任务失败：{e}"))?
+}
+
+fn detect_models_for_blocking(name: String) -> Result<Vec<String>, String> {
     let list = load();
     let p = list
         .iter()
@@ -1192,7 +1153,7 @@ fn detect_models_for(name: String) -> Result<Vec<String>, String> {
         return Err("该实例未配置网关地址".into());
     }
     let token = decrypt_token(p)?;
-    detect_models(p.base_url.clone(), token)
+    detect_models_blocking(p.base_url.clone(), token)
 }
 
 // ---------------- 用量统计 ----------------
@@ -1555,6 +1516,11 @@ fn main() {
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/64x64.png"))?;
             if let Some(window) = app.get_webview_window("main") {
                 window.set_icon(icon)?;
+                // Windows 可能记住一个已经移出屏幕的旧位置；开发版启动必须保证窗口可见。
+                let _ = window.center();
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
             }
             // 同上：GUI 启动也做一次脚本自愈，两条路径谁先发生都能修好
             if let Some(msg) = refresh_scripts_if_stale(&load()) {
@@ -1629,6 +1595,44 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         (dir.join("config.json"), dir.join("config.backup.json"), dir)
+    }
+
+    #[test]
+    fn settings_save_rejects_file_created_after_missing_snapshot() {
+        let (path, _, dir) = temp_config_paths("settings-created");
+        let revision = settings_revision(None);
+        fs::write(&path, r#"{"enabledPlugins":{"new":true}}"#).unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(save_settings_checked(&path, &serde_json::json!({}), &revision).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_save_checks_content_and_keeps_backup() {
+        let (path, _, dir) = temp_config_paths("settings-content");
+        let original = r#"{"value":1}"#;
+        fs::write(&path, original).unwrap();
+        let revision = settings_revision(Some(original));
+        fs::write(&path, r#"{"value":2}"#).unwrap();
+        assert!(save_settings_checked(&path, &serde_json::json!({"value":3}), &revision).is_err());
+        let current = settings_revision(Some(r#"{"value":2}"#));
+        save_settings_checked(&path, &serde_json::json!({"value":3}), &current).unwrap();
+        assert_eq!(
+            fs::read_to_string(path.with_extension("json.bak")).unwrap(),
+            r#"{"value":2}"#
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_missing_and_empty_are_distinct_and_new_save_succeeds() {
+        assert_ne!(settings_revision(None), settings_revision(Some("")));
+        let (path, _, dir) = temp_config_paths("settings-new");
+        save_settings_checked(&path, &serde_json::json!({}), "missing").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        assert!(save_settings_checked(&path, &serde_json::json!({}), "missing").is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

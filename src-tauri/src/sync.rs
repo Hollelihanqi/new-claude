@@ -283,10 +283,32 @@ fn read_replica(key: &str, path: &Path, field: &str) -> ReplicaState {
 }
 
 pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_string_pretty(v).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("ccm-tmp");
-    fs::write(&tmp, text)?;
-    fs::rename(&tmp, path)
+    let tmp = path.with_extension(format!(
+        "ccm-{}-{}-{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
+    let result = (|| {
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 enum ChangeKind {
@@ -430,11 +452,15 @@ impl Drop for ConfigLockGuard {
 pub(crate) fn acquire_config_lock() -> Option<ConfigLockGuard> {
     let p = lock_path();
     let _ = fs::create_dir_all(crate::cfg_dir());
+    acquire_config_lock_at(&p)
+}
+
+fn acquire_config_lock_at(p: &Path) -> Option<ConfigLockGuard> {
     for _ in 0..2 {
         match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
             Ok(mut f) => {
                 let _ = write!(f, "{}", std::process::id());
-                return Some(ConfigLockGuard(p.clone()));
+                return Some(ConfigLockGuard(p.to_path_buf()));
             }
             Err(_) => {
                 // 超过 60s 视为上次崩溃遗留的陈旧锁,删掉重试一次
@@ -527,6 +553,39 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn config_lock_excludes_other_writers_and_releases_on_drop() {
+        let dir = TmpDir::new("lock");
+        let path = dir.0.join("sync.lock");
+        let first = acquire_config_lock_at(&path).unwrap();
+        assert!(acquire_config_lock_at(&path).is_none());
+        drop(first);
+        assert!(acquire_config_lock_at(&path).is_some());
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_use_distinct_temporary_files() {
+        let dir = TmpDir::new("atomic");
+        let path = dir.file("settings.json", "{}");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let writers = (0..8)
+            .map(|id| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_json_atomic(&path, &serde_json::json!({"writer":id})).unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let result: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(result["writer"].as_u64().unwrap() < 8);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
 
     // 每个测试用独立临时目录，避免并行跑测试时互相踩文件；Drop 时自动清理。
     struct TmpDir(PathBuf);

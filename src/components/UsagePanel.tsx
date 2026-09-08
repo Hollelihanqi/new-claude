@@ -1,3 +1,4 @@
+import { usePageActive } from "./PersistentPage";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Stack,
@@ -14,7 +15,13 @@ import { DatePicker } from "@mantine/dates";
 import type { DatesRangeValue } from "@mantine/dates";
 import "@mantine/dates/styles.css";
 import { IconChartLine, IconInfoCircle, IconCalendar } from "@tabler/icons-react";
-import * as echarts from "echarts";
+import * as echarts from "echarts/core";
+import { LineChart, PieChart } from "echarts/charts";
+import { GridComponent, TooltipComponent, LegendComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
+import { USAGE_AUTO_OPTIONS } from "./usageAutoOptions";
+
+echarts.use([LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 import type { EChartsOption } from "echarts";
 import type { UsageStats } from "../api";
 import StableRefreshButton from "./StableRefreshButton";
@@ -23,13 +30,22 @@ import { buildUsageProfileOptions } from "./usageProfileOptions";
 function EChart({ option, height = 340 }: { option: EChartsOption; height?: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const inst = useRef<echarts.ECharts | null>(null);
+  const latestOption = useRef(option);
+  latestOption.current = option;
   useEffect(() => {
     if (!ref.current) return;
-    inst.current = echarts.init(ref.current);
-    const onResize = () => inst.current && inst.current.resize();
-    window.addEventListener("resize", onResize);
+    const onResize = () => {
+      if (!ref.current?.clientWidth) return;
+      if (!inst.current) {
+        inst.current = echarts.init(ref.current);
+        inst.current.setOption(latestOption.current, true);
+      } else inst.current.resize();
+    };
+    const observer = new ResizeObserver(onResize);
+    observer.observe(ref.current);
+    onResize();
     return () => {
-      window.removeEventListener("resize", onResize);
+      observer.disconnect();
       inst.current && inst.current.dispose();
     };
   }, []);
@@ -128,15 +144,6 @@ const CARDS: {
   },
 ];
 
-// 自动刷新间隔选项（秒），0 = 关闭；App 持久化所选值并驱动定时器
-export const USAGE_AUTO_OPTIONS = [
-  { value: 30, label: "30 秒" },
-  { value: 60, label: "1 分钟" },
-  { value: 300, label: "5 分钟" },
-  { value: 600, label: "10 分钟" },
-  { value: 0, label: "关闭" },
-];
-
 const QUICK = [
   { value: "today", label: "当天" },
   { value: "7", label: "近 7 天" },
@@ -194,6 +201,7 @@ export default function UsagePanel({
 }) {
   const [range, setRange] = useState<{ kind: string }>({ kind: "today" });
   const [custom, setCustom] = useState<DatesRangeValue>([null, null]);
+  const pageActive = usePageActive();
   const [pop, setPop] = useState(false);
   const [model, setModel] = useState("__all__");
   const [profile, setProfile] = useState("__all__");
@@ -348,7 +356,7 @@ export default function UsagePanel({
         <Group gap="xl" align="center" wrap="wrap">
           <Group gap="xs" align="center">
             <Text size="sm" fw={500}>时间范围</Text>
-            <Popover opened={pop} onChange={setPop} position="bottom-start" shadow="md" withinPortal>
+            <Popover opened={pageActive && (pop)} onChange={setPop} position="bottom-start" shadow="md" withinPortal>
               <Popover.Target>
                 <Button variant="default" leftSection={<IconCalendar size={16} />} onClick={() => setPop((o) => !o)}>
                   {rangeLabel}

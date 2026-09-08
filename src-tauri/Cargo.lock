@@ -437,13 +437,16 @@ dependencies = [
 
 [[package]]
 name = "cc-switch"
-version = "2.3.6"
+version = "2.3.7"
 dependencies = [
  "dirs 5.0.1",
+ "hex",
  "reqwest",
  "rustls",
+ "security-framework",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -452,6 +455,7 @@ dependencies = [
  "tauri-plugin-updater",
  "toml_edit 0.25.12+spec-1.1.0",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

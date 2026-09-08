@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePageActivation } from "./PersistentPage";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Alert,
@@ -74,7 +75,7 @@ const migrateSelectedModels = (selected: string[], catalog: string[]) => {
   ).sort();
 };
 
-export default function WorkBuddyPanel() {
+export default function WorkBuddyPanel({ active = true }: { active?: boolean }) {
   const [state, setState] = useState<WorkBuddyState | null>(null);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const [organizationForm, setOrganizationForm] = useState<OrganizationForm>(emptyOrganization);
@@ -82,6 +83,18 @@ export default function WorkBuddyPanel() {
   const [catalog, setCatalog] = useState<string[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
+  const [modelsBusy, setModelsBusy] = useState(false);
+  const modelRequest = useRef(0);
+  const certificateRequest = useRef(0);
+  const invalidateRequests = () => {
+    modelRequest.current += 1;
+    certificateRequest.current += 1;
+    setModelsBusy(false);
+  };
+  useEffect(() => () => {
+    modelRequest.current += 1;
+    certificateRequest.current += 1;
+  }, []);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [certificatePath, setCertificatePath] = useState<string | null>(null);
   const [certificateStatus, setCertificateStatus] = useState<WorkBuddyCertificateStatus>({
@@ -94,21 +107,25 @@ export default function WorkBuddyPanel() {
     (organization) => organization.id === selectedOrganizationId
   );
 
-  const refreshCertificate = async (url: string) => {
-    setCertificateStatus({ state: "checking", detail: "正在检测网关证书…" });
+  const refreshCertificate = async (url: string, quiet = false) => {
+    const request = ++certificateRequest.current;
+    if (!quiet) setCertificateStatus({ state: "checking", detail: "正在检测网关证书…" });
     try {
-      setCertificateStatus(await api.checkWorkBuddyCertificate(url));
+      const result = await api.checkWorkBuddyCertificate(url);
+      if (request === certificateRequest.current) setCertificateStatus(result);
     } catch (error) {
-      setCertificateStatus({ state: "unreachable", detail: String(error) });
+      if (request === certificateRequest.current) setCertificateStatus({ state: "unreachable", detail: String(error) });
     }
   };
 
-  const fetchModels = async (organizationId: string, quiet = false) => {
-    setBusy("models");
+  const fetchModels = async (organizationId: string, quiet = false, background = false) => {
+    const request = ++modelRequest.current;
+    if (!background) setModelsBusy(true);
     try {
       const models = await api.listWorkBuddyOrganizationModels(organizationId);
+      if (request !== modelRequest.current) return;
       setCatalog(models);
-      setSelectedModels((current) => migrateSelectedModels(current, models));
+      if (!background) setSelectedModels((current) => migrateSelectedModels(current, models));
       if (!quiet) {
         setMessage({
           ok: true,
@@ -116,14 +133,16 @@ export default function WorkBuddyPanel() {
         });
       }
     } catch (error) {
-      setCatalog([]);
+      if (request !== modelRequest.current) return;
+      if (!background) setCatalog([]);
       setMessage({ ok: false, text: String(error) });
     } finally {
-      setBusy("");
+      if (request === modelRequest.current) setModelsBusy(false);
     }
   };
 
   const activateOrganization = (organization: WorkBuddyOrganization, fetch = true) => {
+    invalidateRequests();
     setSelectedOrganizationId(organization.id);
     setOrganizationForm(formFromOrganization(organization));
     setEditingOrganization(false);
@@ -165,7 +184,29 @@ export default function WorkBuddyPanel() {
     void load();
   }, []);
 
+  const backgroundInFlight = useRef(false);
+  usePageActivation(() => {
+    if (backgroundInFlight.current || busy || modelsBusy) return;
+    backgroundInFlight.current = true;
+    const generation = modelRequest.current;
+    void api.workBuddyState().then(async (next) => {
+      if (generation !== modelRequest.current) return;
+      setState(next);
+      const current = next.organizations.find((item) => item.id === selectedOrganizationId);
+      if (current && !editingOrganization) {
+        await Promise.all([
+          fetchModels(current.id, true, true),
+          refreshCertificate(current.url, true),
+        ]);
+      }
+    }).catch((error) => {
+      if (generation === modelRequest.current) setMessage({ ok: false, text: `后台更新失败，已保留当前内容：${String(error)}` });
+    }).finally(() => { backgroundInFlight.current = false; });
+  }, active);
+
   const startNewOrganization = () => {
+    invalidateRequests();
+    void refreshCertificate(DEFAULT_ENDPOINT);
     setSelectedOrganizationId(null);
     setOrganizationForm(emptyOrganization());
     setEditingOrganization(true);
@@ -188,6 +229,7 @@ export default function WorkBuddyPanel() {
       return;
     }
     setBusy("organization");
+    invalidateRequests();
     try {
       const next = await api.saveWorkBuddyOrganization(
         selectedOrganizationId || undefined,
@@ -220,6 +262,7 @@ export default function WorkBuddyPanel() {
   const applyModels = async () => {
     if (!selectedOrganizationId) return;
     setBusy("apply");
+    invalidateRequests();
     try {
       const next = await api.applyWorkBuddyOrganizationModels(
         selectedOrganizationId,
@@ -244,6 +287,7 @@ export default function WorkBuddyPanel() {
   const deleteOrganization = async () => {
     if (!selectedOrganizationId) return;
     setBusy("delete");
+    invalidateRequests();
     try {
       const next = await api.deleteWorkBuddyOrganization(selectedOrganizationId);
       setState(next);
@@ -335,7 +379,7 @@ export default function WorkBuddyPanel() {
   return (
     <div className="workbuddy-page">
       <Modal
-        opened={deleteOpen}
+        opened={active && deleteOpen}
         onClose={() => setDeleteOpen(false)}
         title="删除组织"
         centered
@@ -354,7 +398,7 @@ export default function WorkBuddyPanel() {
       </Modal>
 
       <Modal
-        opened={Boolean(certificatePath)}
+        opened={active && Boolean(certificatePath)}
         onClose={() => setCertificatePath(null)}
         title="确认导入网关证书"
         centered
@@ -442,7 +486,7 @@ export default function WorkBuddyPanel() {
                 <Title order={5}>组织与网关</Title>
                 <Text size="xs" c="dimmed">{state?.organizations.length || 0} 个组织</Text>
               </div>
-              <Button size="xs" variant="light" leftSection={<IconPlus size={14} />} onClick={startNewOrganization}>
+              <Button size="xs" variant="light" leftSection={<IconPlus size={14} />} disabled={busy !== ""} onClick={startNewOrganization}>
                 新增组织
               </Button>
             </Group>
@@ -455,6 +499,7 @@ export default function WorkBuddyPanel() {
                   description={`${organization.selectedModels.length} 个模型`}
                   leftSection={<IconBuilding size={16} />}
                   rightSection={<span className={`instance-health-dot ${organization.hasApiKey ? "ok" : "warn"}`} />}
+                  disabled={busy !== ""}
                   onClick={() => activateOrganization(organization)}
                 />
               ))}
@@ -514,6 +559,8 @@ export default function WorkBuddyPanel() {
                         value={organizationForm.url}
                         onChange={(event) => {
                           const url = event.currentTarget.value;
+                          certificateRequest.current += 1;
+                          setCertificateStatus({ state: "checking", detail: "地址已修改，离开输入框后重新检测。" });
                           setOrganizationForm((current) => ({ ...current, url }));
                         }}
                         onBlur={() => void refreshCertificate(organizationForm.url.trim() || DEFAULT_ENDPOINT)}
@@ -612,7 +659,7 @@ export default function WorkBuddyPanel() {
                         variant="light"
                         size="xs"
                         leftSection={<IconRefresh size={14} />}
-                        loading={busy === "models"}
+                        loading={modelsBusy}
                         onClick={() => void fetchModels(selectedOrganization.id)}
                       >
                         刷新模型

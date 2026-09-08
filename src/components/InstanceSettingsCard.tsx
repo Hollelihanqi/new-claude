@@ -77,7 +77,7 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
   const onSave = async () => {
     setBusy("save");
     try {
-      const s = await api.writeInstanceSettings(name, draft, data?.revision ?? 0);
+      const s = await api.writeInstanceSettings(name, draft, data?.revision ?? "missing");
       setData(s);
       setDraft(s.content.trim() ? s.content : EMPTY_DOC);
       setStatus({ type: "success", msg: "已保存，上一版留在同目录的 settings.json.bak。" });

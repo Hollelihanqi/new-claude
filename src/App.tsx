@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useRef, useState } from "react";
 import {
   Box,
   Text,
@@ -31,15 +31,24 @@ import { api } from "./api";
 import type { EnvInfo } from "./api";
 import type { UsageStats } from "./api";
 import ConfigPanel from "./components/ConfigPanel";
-import UsagePanel, { USAGE_AUTO_OPTIONS } from "./components/UsagePanel";
-import GuidePanel from "./components/GuidePanel";
-import ExtensionsPanel from "./components/ExtensionsPanel";
-import McpPanel from "./components/mcp/McpPanel";
-import DiagnosticsPanel from "./components/DiagnosticsPanel";
-import SettingsPanel from "./components/SettingsPanel";
+import PersistentPage from "./components/PersistentPage";
+import { USAGE_AUTO_OPTIONS } from "./components/usageAutoOptions";
 import StableRefreshButton from "./components/StableRefreshButton";
-import WorkBuddyPanel from "./components/WorkBuddyPanel";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
+
+const UsagePanel = lazy(() => import("./components/UsagePanel"));
+
+const GuidePanel = lazy(() => import("./components/GuidePanel"));
+
+const ExtensionsPanel = lazy(() => import("./components/ExtensionsPanel"));
+
+const McpPanel = lazy(() => import("./components/mcp/McpPanel"));
+
+const DiagnosticsPanel = lazy(() => import("./components/DiagnosticsPanel"));
+
+const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
+
+const WorkBuddyPanel = lazy(() => import("./components/WorkBuddyPanel"));
 
 type ViewId = "environment" | "workbuddy" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 type Scheme = "a" | "b";
@@ -223,6 +232,9 @@ export default function App({
     void refreshEnv();
     void refreshUsageProfiles();
   }, [refreshEnv, refreshUsageProfiles]);
+  useEffect(() => {
+    if (view === "settings") void refreshEnv();
+  }, [view, refreshEnv]);
 
   const chooseClaudeExecutable = async () => {
     try {
@@ -398,7 +410,7 @@ export default function App({
             </Alert>
           )}
           <Box className="view-stage">
-            {view === "environment" && (
+            <PersistentPage active={view === "environment"} warmupDelay={0}>
               <ConfigPanel
                 onChanged={() => {
                   void refreshEnv();
@@ -407,11 +419,11 @@ export default function App({
                 env={env}
                 usageData={usageData}
               />
-            )}
-            {view === "workbuddy" && <WorkBuddyPanel />}
-            {view === "mcp" && <McpPanel />}
-            {view === "extensions" && <ExtensionsPanel />}
-            {view === "insights" && (
+            </PersistentPage>
+            <PersistentPage active={view === "workbuddy"} warmupDelay={700}><WorkBuddyPanel active={view === "workbuddy"} /></PersistentPage>
+            <PersistentPage active={view === "mcp"} warmupDelay={1100}><McpPanel /></PersistentPage>
+            <PersistentPage active={view === "extensions"} warmupDelay={1500}><ExtensionsPanel /></PersistentPage>
+            <PersistentPage active={view === "insights"} warmupDelay={1900}>
               <div className="view-scroll">
                 <UsagePanel
                   data={usageData}
@@ -423,14 +435,14 @@ export default function App({
                   onRefresh={() => loadUsage()}
                 />
               </div>
-            )}
-            {view === "diagnostics" && <DiagnosticsPanel />}
-            {view === "settings" && <SettingsPanel env={env} scheme={scheme} setScheme={setScheme} appVersion={appVersion} onCheckUpdate={() => checkUpdate(true)} onEnvironmentChanged={refreshEnv} />}
-            {view === "guide" && (
+            </PersistentPage>
+            <PersistentPage active={view === "diagnostics"} warmupDelay={2300}><DiagnosticsPanel /></PersistentPage>
+            <PersistentPage active={view === "settings"} warmupDelay={2700}><SettingsPanel env={env} scheme={scheme} setScheme={setScheme} appVersion={appVersion} onCheckUpdate={() => checkUpdate(true)} onEnvironmentChanged={refreshEnv} /></PersistentPage>
+            <PersistentPage active={view === "guide"} warmupDelay={3100}>
               <div className="view-scroll">
                 <GuidePanel />
               </div>
-            )}
+            </PersistentPage>
           </Box>
         </section>
       </main>

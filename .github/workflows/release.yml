@@ -35,9 +35,29 @@ jobs:
       # 构建含 tsc 类型检查，并产出 cargo test 编译所需的 dist/
       - name: 前端类型检查并构建
         run: pnpm build
+      - name: 前端回归测试
+        run: pnpm test -- --run
+
+      - name: Rust 格式检查
+        working-directory: src-tauri
+        run: cargo fmt -- --check
+
       - name: Rust 单元测试
         working-directory: src-tauri
         run: cargo test
+
+      - name: macOS 原生钥匙串回归测试
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          test_keychain="$RUNNER_TEMP/cc-manager-test.keychain-db"
+          security create-keychain -p test-only-password "$test_keychain"
+          security unlock-keychain -p test-only-password "$test_keychain"
+          security default-keychain -s "$test_keychain"
+          security list-keychains -d user -s "$test_keychain"
+          trap 'security delete-keychain "$test_keychain"' EXIT
+          cargo test macos_keychain_roundtrip -- --ignored
 
   build:
     needs: test

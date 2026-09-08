@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { usePageActivation, usePageActive } from "./PersistentPage";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   Stack,
@@ -24,12 +25,12 @@ import {
   IconWorld,
   IconUser,
   IconInfoCircle,
-  IconListSearch,
   IconAlertTriangle,
 } from "@tabler/icons-react";
 import { api } from "../api";
 import type { EnvInfo, Profile, ModelPinWarning, ProfileRuntimeInfo, UsageStats } from "../api";
 import InstanceSettingsCard from "./InstanceSettingsCard";
+import StableRefreshButton from "./StableRefreshButton";
 import { buildModelOptions } from "./modelOptions";
 
 const empty: FormState = {
@@ -64,6 +65,7 @@ export default function ConfigPanel({
   env: EnvInfo | null;
   usageData: UsageStats | null;
 }) {
+  const pageActive = usePageActive();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(empty);
@@ -76,9 +78,21 @@ export default function ConfigPanel({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [runtime, setRuntime] = useState<ProfileRuntimeInfo[]>([]);
 
-  // 检测到的当前实例模型（合并进下方下拉）
+  // 当前连接的检测结果；切换连接后清空。
   const [detected, setDetected] = useState<string[]>([]);
   const [detectBusy, setDetectBusy] = useState(false);
+  const [detectStatus, setDetectStatus] = useState<{ type: StatusType; msg: string } | null>(null);
+  const detectRequest = useRef(0);
+  const detectInFlight = useRef(false);
+
+  // 连接或实例改变后，旧请求只能结束，不能更新当前表单。
+  useEffect(() => {
+    setDetected([]);
+    setDetectBusy(false);
+    setDetectStatus(null);
+    detectInFlight.current = false;
+    return () => { detectRequest.current += 1; };
+  }, [sel, form.baseUrl, form.type, token]);
 
   // /model 钉死具体型号的告警（含主账户 __main__）
   const [pins, setPins] = useState<ModelPinWarning[]>([]);
@@ -97,6 +111,7 @@ export default function ConfigPanel({
     api.profileRuntimeInfo().then(setRuntime).catch(() => {});
   };
   useEffect(load, []);
+  usePageActivation(load);
 
   const pinLabel = (profile: string) =>
     profile === "__main__" ? "主账户" : `实例 ${profile}`;
@@ -156,46 +171,52 @@ export default function ConfigPanel({
     return null;
   };
 
-  // 模型下拉候选:检测成功 → 只显示当前网关的可用模型(附带已保存取值);
+  // 检测候选只来自当前网关；已保存取值仍保留在输入框中。
   // 从未检测成功 → 预设兜底。见 modelOptions.ts
   const modelOpts = useMemo(
-    () =>
-      buildModelOptions(detected, [
-        form.opusModel,
-        form.sonnetModel,
-        form.haikuModel,
-      ]),
-    [detected, form.opusModel, form.sonnetModel, form.haikuModel]
+    () => buildModelOptions(detected),
+    [detected]
   );
 
   const onDetect = async () => {
+    if (detectInFlight.current) return;
+    const baseUrl = form.baseUrl.trim();
+    if (!baseUrl) {
+      setDetectStatus({ type: "error", msg: "请先填写网关地址再检测。" });
+      return;
+    }
+    const saved = profiles.find((p) => p.name === sel);
+    if (sel && !token.trim() && baseUrl !== saved?.baseUrl.trim()) {
+      setDetectStatus({ type: "error", msg: "网关地址已修改，请先保存更改，或填写 API Key 后检测当前地址。" });
+      return;
+    }
+    if (!sel && !token.trim()) {
+      setDetectStatus({ type: "error", msg: "新建实例需先填 API Key 才能检测模型。" });
+      return;
+    }
+    const request = ++detectRequest.current;
+    detectInFlight.current = true;
     setDetectBusy(true);
+    setDetectStatus({ type: "info", msg: "正在检测当前网关模型…" });
     try {
-      let list;
-      if (sel) {
-        // 编辑已存在实例：用后端存的 key
-        list = await api.detectModelsFor(sel);
-      } else {
-        // 新建未保存：用表单里填的 baseUrl + key
-        if (!form.baseUrl.trim()) {
-          setStatus({ type: "error", msg: "请先填写网关地址再检测。" });
-          return;
-        }
-        if (!token.trim()) {
-          setStatus({ type: "error", msg: "新建实例需先填 API Key 才能检测模型。" });
-          return;
-        }
-        list = await api.detectModels(form.baseUrl.trim(), token.trim());
-      }
-      setDetected(list || []);
-      setStatus({
+      const list = token.trim()
+        ? await api.detectModels(baseUrl, token.trim())
+        : await api.detectModelsFor(sel!);
+      if (request !== detectRequest.current) return;
+      const models = [...new Set(list.map((m) => m.trim()).filter(Boolean))];
+      if (!models.length) throw new Error("网关未返回可用模型，请检查地址与访问权限后重试。");
+      setDetected(models);
+      setDetectStatus({
         type: "success",
-        msg: `检测到 ${(list || []).length} 个可用模型，下拉已切换为该网关的模型。`,
+        msg: `检测到 ${models.length} 个可用模型。点击下方模型输入框查看候选；当前档位取值已保留。`,
       });
     } catch (e) {
-      setStatus({ type: "error", msg: String(e) });
+      if (request === detectRequest.current) setDetectStatus({ type: "error", msg: String(e) });
     } finally {
-      setDetectBusy(false);
+      if (request === detectRequest.current) {
+        detectInFlight.current = false;
+        setDetectBusy(false);
+      }
     }
   };
 
@@ -291,7 +312,7 @@ export default function ConfigPanel({
   return (
     <div className="config-panel">
       <Modal
-        opened={deleteOpen}
+        opened={pageActive && (deleteOpen)}
         onClose={() => setDeleteOpen(false)}
         title={`移除实例${sel ? `「${sel}」` : ""}`}
         centered
@@ -448,6 +469,16 @@ export default function ConfigPanel({
               </Group>
             </Group>
 
+            {status.msg && (
+              <Alert
+                variant="light"
+                color={status.type === "error" ? "red" : status.type === "success" ? "teal" : "blue"}
+                icon={<IconInfoCircle size={16} />}
+              >
+                {status.msg}
+              </Alert>
+            )}
+
             {sel && selProfile && (
               <div className="instance-overview">
                 <div><span>运行状态</span><strong className={profileHealthy(selProfile) ? "status-ok" : "status-warn"}>{profileHealthy(selProfile) ? "环境正常" : "配置待完善"}</strong></div>
@@ -522,18 +553,29 @@ export default function ConfigPanel({
                 <div className="form-section-label"><span>02</span><div><strong>模型映射</strong><small>将 Claude 档位匹配到网关模型</small></div></div>
                 <Group justify="space-between" align="center">
                   <Text size="xs" c="dimmed">
-                    点「检测模型」从当前网关拉取可用模型；检测成功后下拉只显示该网关的模型。
+                    点「检测模型」获取当前网关的可用模型；检测成功后下拉只显示检测结果。
                   </Text>
-                  <Button
+                  <StableRefreshButton
+                    key={sel ?? "new"}
                     size="xs"
-                    variant="light"
-                    leftSection={<IconListSearch size={14} />}
+                    iconSize={14}
+                    label="检测模型"
+                    busyLabel="检测中…"
                     onClick={onDetect}
-                    loading={detectBusy}
-                  >
-                    检测模型
-                  </Button>
+                    busy={detectBusy}
+                  />
                 </Group>
+                {detectStatus && (
+                  <Alert
+                    data-model-detection-status
+                    role={detectStatus.type === "error" ? "alert" : "status"}
+                    variant="light"
+                    color={detectStatus.type === "error" ? "red" : detectStatus.type === "success" ? "teal" : "blue"}
+                    icon={<IconInfoCircle size={16} />}
+                  >
+                    {detectStatus.msg}
+                  </Alert>
+                )}
 
                 <Autocomplete
                   label="Opus 档（复杂任务，最强）"
@@ -570,7 +612,7 @@ export default function ConfigPanel({
             {sel && (
               <>
                 <div className="form-section-label"><span>04</span><div><strong>权限与高级配置</strong><small>该空间的 settings.json</small></div></div>
-                <InstanceSettingsCard name={sel} />
+                <InstanceSettingsCard key={sel} name={sel} />
               </>
             )}
 
@@ -584,23 +626,6 @@ export default function ConfigPanel({
                 }     # 切到这个实例，跑完自动恢复`}
               </Code>
             </Box>
-
-            {status.msg && (
-              <Alert
-                mt="xs"
-                variant="light"
-                color={
-                  status.type === "error"
-                    ? "red"
-                    : status.type === "success"
-                    ? "teal"
-                    : "blue"
-                }
-                icon={<IconInfoCircle size={16} />}
-              >
-                {status.msg}
-              </Alert>
-            )}
 
             <Text size="xs" c="dimmed">
               提示：保存后<b>重开一个终端窗口</b>（或 mac 跑{" "}

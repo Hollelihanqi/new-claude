@@ -1,6 +1,7 @@
+import { usePageActivation, usePageActive } from "../PersistentPage";
 // MCP 服务管理页：状态摘要 + 筛选工具栏 + 服务定义列表 + 预览/确认/应用流程。
 // 不负责配置文件语义；所有写操作统一走 preview → confirm → apply。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -90,6 +91,7 @@ function rememberMcpState(nextState: McpState) {
 }
 
 export default function McpPanel() {
+  const pageActive = usePageActive();
   const [state, setState] = useState<McpState | null>(() => cachedMcpState);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -109,19 +111,23 @@ export default function McpPanel() {
   const [syncApplying, setSyncApplying] = useState(false);
   const [syncBusyKey, setSyncBusyKey] = useState("");
 
-  const load = useCallback(() => {
-    setBusy(true);
+  const inFlight = useRef(false);
+  const load = useCallback((quiet = false) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    if (!quiet) setBusy(true);
     setErr("");
     api
       .listMcpServices()
       .then((nextState) => setState(rememberMcpState(nextState)))
       .catch((e) => setErr(String(e)))
-      .finally(() => setBusy(false));
+      .finally(() => { inFlight.current = false; setBusy(false); });
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
+  usePageActivation(() => load(true));
 
   useEffect(() => {
     let disposed = false;
@@ -513,7 +519,7 @@ export default function McpPanel() {
 
       {state && drawerState && (
         <McpServiceDrawer
-          opened
+          opened={pageActive}
           mode={drawerState.mode}
           service={drawerState.mode === "create" ? undefined : drawerState.service}
           state={state}
@@ -525,7 +531,7 @@ export default function McpPanel() {
 
       {state && (
         <McpImportModal
-          opened={importOpened}
+          opened={pageActive && (importOpened)}
           state={state}
           onClose={() => setImportOpened(false)}
           onSave={prepareChange}
@@ -533,7 +539,7 @@ export default function McpPanel() {
       )}
 
       <Modal
-        opened={detailService !== null}
+        opened={pageActive && (detailService !== null)}
         onClose={() => setDetailService(null)}
         size="xl"
         title={detailService?.locator.name}
@@ -656,7 +662,7 @@ export default function McpPanel() {
       </Modal>
 
       <Modal
-        opened={previewState !== null}
+        opened={pageActive && (previewState !== null)}
         onClose={() => (applying ? undefined : setPreviewState(null))}
         size="lg"
         title={previewState?.preview.actionLabel}
@@ -748,7 +754,7 @@ export default function McpPanel() {
       </Modal>
 
       <Modal
-        opened={syncPreview !== null}
+        opened={pageActive && (syncPreview !== null)}
         onClose={() => {
           if (syncApplying) return;
           setSyncPreview(null);

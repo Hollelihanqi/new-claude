@@ -294,7 +294,7 @@ export interface InstanceSettings {
   exists: boolean;
   content: string;
   /** 文件 mtime（毫秒）。保存时原样回传，用于检测后台 --sync 的并发改写 */
-  revision: number;
+  revision: string;
   bypassEnabled: boolean;
   /** 有更高优先级的配置也设了 defaultMode 时，给出那个文件的路径 */
   overriddenBy?: string;
@@ -427,7 +427,7 @@ export const api = {
   writeInstanceSettings: (
     name: string,
     content: string,
-    revision: number
+    revision: string
   ): Promise<InstanceSettings> =>
     invoke("write_instance_settings", { name, content, revision }),
   setBypassPermissions: (

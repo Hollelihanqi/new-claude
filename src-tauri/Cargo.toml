@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch"
-version = "2.3.6"
+version = "2.3.7"
 description = "Claude Code 本地环境管理工具"
 edition = "2021"
 
@@ -20,3 +20,11 @@ tauri-plugin-dialog = "2"
 url = "2"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = "0.10"
+hex = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"

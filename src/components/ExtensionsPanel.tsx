@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePageActivation } from "./PersistentPage";
 import { Alert, Badge, Card, Group, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { IconBrain, IconCommand, IconPlugConnected, IconRobot, IconTool } from "@tabler/icons-react";
 import { api } from "../api";
@@ -16,12 +17,16 @@ export default function ExtensionsPanel() {
   const [groups, setGroups] = useState<ExtensionGroup[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const load = () => {
-    setBusy(true);
+  const inFlight = useRef(false);
+  const load = (quiet = false) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    if (!quiet) setBusy(true);
     setErr("");
-    api.extensionOverview().then(setGroups).catch((e) => setErr(String(e))).finally(() => setBusy(false));
+    api.extensionOverview().then(setGroups).catch((e) => setErr(String(e))).finally(() => { inFlight.current = false; setBusy(false); });
   };
   useEffect(load, []);
+  usePageActivation(() => load(true));
 
   return (
     <div className="view-scroll">
