@@ -547,12 +547,80 @@ pub fn sync_configs(names: &[String]) -> Result<String, String> {
     sync_configs_locked(names).map(|outcome| outcome.summary)
 }
 
+/// 空间被彻底删除后立即从同步快照中移除其副本标识，避免等到下一轮同步。
+/// 快照只保存共享字段的合并基线，不删除其他空间或主账户的状态。
+fn forget_profile_in_snapshot(snapshot: &mut Snapshot, name: &str) {
+    for domain in snapshot.domains.values_mut() {
+        domain.replicas.retain(|replica| replica != name);
+    }
+}
+
+pub fn forget_profile(name: &str) -> Result<(), String> {
+    let _guard = acquire_config_lock().ok_or("另一个同步正在进行，请稍后重试删除")?;
+    let path = snapshot_path();
+    if !path.is_file() {
+        return Ok(());
+    }
+    let mut snapshot: Snapshot = fs::read_to_string(&path)
+        .map_err(|e| format!("读取同步快照失败：{e}"))
+        .and_then(|text| {
+            serde_json::from_str(&text).map_err(|e| format!("解析同步快照失败：{e}"))
+        })?;
+    forget_profile_in_snapshot(&mut snapshot, name);
+    write_json_atomic(
+        &path,
+        &serde_json::to_value(snapshot).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("清理同步快照失败：{e}"))
+}
+
+pub fn snapshot_references_profile(name: &str) -> Result<bool, String> {
+    let path = snapshot_path();
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let snapshot: Snapshot = fs::read_to_string(&path)
+        .map_err(|e| format!("读取同步快照失败：{e}"))
+        .and_then(|text| {
+            serde_json::from_str(&text).map_err(|e| format!("解析同步快照失败：{e}"))
+        })?;
+    Ok(snapshot
+        .domains
+        .values()
+        .any(|domain| domain.replicas.iter().any(|replica| replica == name)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn deleted_profile_is_removed_from_every_snapshot_domain() {
+        let dir = TmpDir::new("forget-profile");
+        let path = dir.0.join("snapshot.json");
+        let mut snapshot = Snapshot::default();
+        for field in ["mcpServers", "enabledPlugins"] {
+            snapshot.domains.insert(
+                field.into(),
+                DomainSnap {
+                    state: Map::new(),
+                    replicas: vec!["__main__".into(), "remove-me".into(), "keep".into()],
+                },
+            );
+        }
+        let mut parsed: Snapshot =
+            serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap();
+        forget_profile_in_snapshot(&mut parsed, "remove-me");
+        write_json_atomic(&path, &serde_json::to_value(&parsed).unwrap()).unwrap();
+        let saved: Snapshot = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert!(saved
+            .domains
+            .values()
+            .all(|domain| { domain.replicas == ["__main__".to_string(), "keep".to_string()] }));
+    }
 
     #[test]
     fn config_lock_excludes_other_writers_and_releases_on_drop() {

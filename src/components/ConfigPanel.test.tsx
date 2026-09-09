@@ -2,7 +2,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ConfigPanel from "./ConfigPanel";
 import StableRefreshButton from "./StableRefreshButton";
-import { NavLink, Autocomplete, PasswordInput, TextInput, Alert } from "@mantine/core";
+import { NavLink, Autocomplete, PasswordInput, TextInput, Alert, Button } from "@mantine/core";
 import { api, type Profile } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
@@ -12,7 +12,7 @@ vi.mock("@mantine/core", () => Object.fromEntries([
 vi.mock("./InstanceSettingsCard", () => ({ default: () => null }));
 vi.mock("../api", () => ({ api: {
   listProfiles: vi.fn(), modelPinWarnings: vi.fn(), profileRuntimeInfo: vi.fn(),
-  detectModelsFor: vi.fn(), detectModels: vi.fn(),
+  detectModelsFor: vi.fn(), detectModels: vi.fn(), deleteProfile: vi.fn(),
 } }));
 
 const profile = (name: string): Profile => ({
@@ -34,6 +34,7 @@ describe("空间模型检测", () => {
     vi.mocked(api.listProfiles).mockResolvedValue([profile("a"), profile("b")]);
     vi.mocked(api.modelPinWarnings).mockResolvedValue([]);
     vi.mocked(api.profileRuntimeInfo).mockResolvedValue([]);
+    vi.mocked(api.deleteProfile).mockResolvedValue("已彻底删除");
     await act(async () => { renderer = create(<ConfigPanel env={null} usageData={null} />); });
     act(() => renderer.root.findAllByType(NavLink)[0].props.onClick());
   });
@@ -41,6 +42,16 @@ describe("空间模型检测", () => {
   const detect = () => renderer.root.findByType(StableRefreshButton);
   const options = () => renderer.root.findAllByType(Autocomplete)[0].props.data;
   const messages = () => renderer.root.findAllByType(Alert).flatMap((alert) => alert.children.filter((child) => typeof child === "string")).join(" ");
+
+  it("移除空间只有彻底删除选项，并调用不可降级的删除接口", async () => {
+    act(() => renderer.root.findAllByType(Button).find((button) => button.children.includes("移除"))!.props.onClick());
+    const buttons = renderer.root.findAllByType(Button);
+    expect(buttons.some((button) => button.children.includes("仅移除，保留历史数据"))).toBe(false);
+    const confirm = buttons.find((button) => button.children.includes("确认彻底删除"))!;
+    await act(async () => { await confirm.props.onClick(); });
+    expect(api.deleteProfile).toHaveBeenCalledWith("a");
+    expect(messages()).toContain("已彻底删除");
+  });
 
   it("检测候选去重且不混入旧模型，输入框保留原配置", async () => {
     vi.mocked(api.detectModelsFor).mockResolvedValue(["new", " new "]);

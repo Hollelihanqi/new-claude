@@ -26,11 +26,12 @@ pub fn read(name: &str, _encrypted: Option<&str>) -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn clear(name: &str) {
-    let _ = security_framework::passwords::delete_generic_password(
+pub fn clear(name: &str) -> Result<(), String> {
+    security_framework::passwords::delete_generic_password(
         &format!("{}:{name}", crate::KEYCHAIN_PREFIX),
         &account(),
-    );
+    )
+    .map_err(|e| format!("钥匙串清除失败：{e}"))
 }
 
 #[cfg(windows)]
@@ -142,7 +143,9 @@ pub fn read(_name: &str, encrypted: Option<&str>) -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn clear(_name: &str) {}
+pub fn clear(_name: &str) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn store(_name: &str, _token: &str) -> Result<Option<String>, String> {
@@ -209,7 +212,7 @@ mod tests {
         let name = format!("credential-test-{}", std::process::id());
         super::store(&name, "test-only-key").unwrap();
         let result = super::read(&name, None);
-        super::clear(&name);
+        super::clear(&name).unwrap();
         assert_eq!(result.unwrap(), "test-only-key");
     }
 }

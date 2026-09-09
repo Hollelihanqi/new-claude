@@ -258,14 +258,14 @@ export default function ConfigPanel({
     }
   };
 
-  const onDelete = async (purgeData: boolean) => {
+  const onDelete = async () => {
     if (!sel) {
       setStatus({ type: "error", msg: "请先在左侧选中一个实例。" });
       return;
     }
-    setBusyAction(purgeData ? "purge" : "remove");
+    setBusyAction("delete");
     try {
-      const msg = await api.deleteProfile(sel, purgeData);
+      const msg = await api.deleteProfile(sel);
       setDeleteOpen(false);
       onNew();
       load();
@@ -314,29 +314,20 @@ export default function ConfigPanel({
       <Modal
         opened={pageActive && (deleteOpen)}
         onClose={() => setDeleteOpen(false)}
-        title={`移除实例${sel ? `「${sel}」` : ""}`}
+        title={`彻底删除空间${sel ? `「${sel}」` : ""}`}
         centered
       >
         <Stack gap="md">
           <Alert color="orange" icon={<IconAlertTriangle size={16} />}>
-            请选择数据处理方式。彻底删除不可恢复，且会清除该实例的登录态、项目记录和历史用量数据。
+            此操作不可恢复，将清除该空间的配置、API Key、登录态、项目记录、历史用量数据、终端命令和同步记录。
           </Alert>
-          <Button
-            variant="light"
-            onClick={() => onDelete(false)}
-            loading={busyAction === "remove"}
-            disabled={busyAction === "purge"}
-          >
-            仅移除，保留历史数据
-          </Button>
           <Button
             color="red"
             leftSection={<IconTrash size={16} />}
-            onClick={() => onDelete(true)}
-            loading={busyAction === "purge"}
-            disabled={busyAction === "remove"}
+            onClick={onDelete}
+            loading={busyAction === "delete"}
           >
-            彻底删除实例与数据
+            确认彻底删除
           </Button>
           <Button variant="subtle" color="gray" onClick={() => setDeleteOpen(false)}>
             取消

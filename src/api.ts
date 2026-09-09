@@ -382,8 +382,8 @@ export const api = {
     token: string | null
   ): Promise<string> =>
     invoke("save_profile", { profile, token: token || null }),
-  deleteProfile: (name: string, purgeData = false): Promise<string> =>
-    invoke("delete_profile", { name, purgeData }),
+  deleteProfile: (name: string): Promise<string> =>
+    invoke("delete_profile", { name }),
   // 刷新集成脚本 + 建齐共享链接 + 合并同步 MCP/插件启用状态
   syncAll: (): Promise<string> => invoke("sync_all"),
   environment: (): Promise<EnvInfo> => invoke("environment"),

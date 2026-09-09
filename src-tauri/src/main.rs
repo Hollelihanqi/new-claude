@@ -752,8 +752,8 @@ fn store_token(name: &str, token: &str) -> Result<Option<String>, String> {
     credentials::store(name, token)
 }
 
-fn clear_token(name: &str) {
-    credentials::clear(name);
+fn clear_token(name: &str) -> Result<(), String> {
+    credentials::clear(name)
 }
 
 // ---------------- 命令 ----------------
@@ -813,35 +813,108 @@ fn save_profile(profile: Profile, token: Option<String>) -> Result<String, Strin
     install_integration(&list)
 }
 
-#[tauri::command]
-fn delete_profile(name: String, purge_data: bool) -> Result<String, String> {
-    let mut list = load();
-    if !list.iter().any(|x| x.name == name) {
-        return Err("未找到要删除的实例。".into());
-    }
-    if purge_data {
-        purge_instance_data(&name)?;
-    }
-    list.retain(|x| x.name != name);
-    clear_token(&name);
-    save(&list).map_err(|e| e.to_string())?;
-    install_integration(&list)?;
-    Ok(if purge_data {
-        "实例及其登录态、项目记录和历史用量数据已彻底删除。".into()
-    } else {
-        "实例已从列表移除，历史数据仍保留，可通过同名实例恢复。".into()
-    })
+#[derive(Clone)]
+struct DeletionFileSnapshot {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
 }
 
-fn purge_instance_data(name: &str) -> Result<(), String> {
+fn config_artifact_paths_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = vec![];
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with("config") && file_name.ends_with(".json") {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
+fn deletion_artifact_paths() -> Result<Vec<PathBuf>, String> {
+    let mut paths = vec![
+        cfg_path(),
+        cfg_backup_path(),
+        cfg_path().with_extension("json.tmp"),
+        cfg_path().with_extension("previous.json"),
+        cfg_backup_path().with_extension("next.json"),
+        cfg_backup_path().with_extension("previous.json"),
+        ps_path(),
+        sh_path(),
+        cfg_dir().join("sync-snapshot.json"),
+    ];
+    paths.extend(config_artifact_paths_in(&cfg_dir())?);
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn capture_deletion_files() -> Result<Vec<DeletionFileSnapshot>, String> {
+    deletion_artifact_paths()?
+        .into_iter()
+        .map(|path| {
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("读取 {} 失败：{error}", path.display())),
+            };
+            Ok(DeletionFileSnapshot { path, bytes })
+        })
+        .collect()
+}
+
+fn restore_deletion_files(snapshots: &[DeletionFileSnapshot]) -> Result<(), String> {
+    let mut errors = vec![];
+    for snapshot in snapshots {
+        let result = match &snapshot.bytes {
+            Some(bytes) => fs::write(&snapshot.path, bytes),
+            None => match fs::remove_file(&snapshot.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            },
+        };
+        if let Err(error) = result {
+            errors.push(format!("恢复 {} 失败：{error}", snapshot.path.display()));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+fn stage_instance_data(name: &str) -> Result<Option<(PathBuf, PathBuf)>, String> {
     // 名称来自配置文件，仍要防御被手工篡改后的路径穿越。
     if name == "." || name == ".." || !script_safe_name(name) {
         return Err("实例名称不安全，拒绝删除数据目录。请手动检查配置。".into());
     }
     let root = home().join(".claude-split").join(name);
-    if !root.exists() {
-        return Ok(());
+    match fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("检查实例数据 {} 失败：{error}", root.display())),
+        Ok(_) => {}
     }
+    let staging_dir = cfg_dir().join("delete-staging");
+    fs::create_dir_all(&staging_dir).map_err(|e| format!("创建删除暂存目录失败：{e}"))?;
+    let staged = staging_dir.join(format!(
+        "{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::rename(&root, &staged).map_err(|e| format!("暂存实例数据 {} 失败：{e}", root.display()))?;
+    Ok(Some((root, staged)))
+}
+
+fn purge_instance_root(root: &Path) -> Result<(), String> {
     // 先显式解除共享目录链接/Junction，确保递归删除永远不会触及主账户目录。
     let claude = root.join(".claude");
     for sub in sync::SHARED_SUBDIRS {
@@ -853,7 +926,241 @@ fn purge_instance_data(name: &str) -> Result<(), String> {
                 .map_err(|e| format!("解除共享链接 {} 失败：{e}", link.display()))?;
         }
     }
-    fs::remove_dir_all(&root).map_err(|e| format!("删除实例数据 {} 失败：{e}", root.display()))
+    fs::remove_dir_all(root).map_err(|e| format!("删除实例数据 {} 失败：{e}", root.display()))
+}
+
+fn restore_staged_instance(staged: &Option<(PathBuf, PathBuf)>) -> Result<(), String> {
+    let Some((root, staged)) = staged else {
+        return Ok(());
+    };
+    if !staged.exists() || root.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = root.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::rename(staged, root).map_err(|e| format!("恢复实例数据失败：{e}"))
+}
+
+fn scrub_profile_from_config_artifacts_at(
+    dir: &Path,
+    primary: &Path,
+    backup: &Path,
+    name: &str,
+    list: &[Profile],
+) -> Result<(), String> {
+    let clean = serde_json::to_string_pretty(&serde_json::json!({ "profiles": list }))
+        .map_err(|e| e.to_string())?;
+    // 主配置与恢复备份必须表达相同的删除后状态，不能从备份复活已删除空间。
+    fs::write(primary, &clean).map_err(|e| format!("更新主配置失败：{e}"))?;
+    fs::write(backup, &clean).map_err(|e| format!("清理配置备份失败：{e}"))?;
+
+    for path in config_artifact_paths_in(dir)? {
+        if path == primary || path == backup || !path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .map_err(|e| format!("读取配置残留 {} 失败：{e}", path.display()))?;
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(mut value) => {
+                let Some(profiles) = value
+                    .get_mut("profiles")
+                    .and_then(|value| value.as_array_mut())
+                else {
+                    continue;
+                };
+                let before = profiles.len();
+                profiles.retain(|profile| {
+                    profile.get("name").and_then(|value| value.as_str()) != Some(name)
+                });
+                if profiles.len() != before {
+                    fs::write(
+                        &path,
+                        serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| format!("清理配置残留 {} 失败：{e}", path.display()))?;
+                }
+            }
+            Err(_) if corrupt_config_references_profile(&text, name)? => {
+                fs::remove_file(&path)
+                    .map_err(|e| format!("删除损坏配置残留 {} 失败：{e}", path.display()))?;
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn corrupt_config_references_profile(text: &str, name: &str) -> Result<bool, String> {
+    let encoded_name = serde_json::to_string(name).map_err(|e| e.to_string())?;
+    let compact = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    Ok(compact.contains(&format!("\"name\":{encoded_name}")))
+}
+
+fn scrub_profile_from_config_artifacts(name: &str, list: &[Profile]) -> Result<(), String> {
+    scrub_profile_from_config_artifacts_at(&cfg_dir(), &cfg_path(), &cfg_backup_path(), name, list)
+}
+
+fn config_artifacts_reference_profile_at(dir: &Path, name: &str) -> Result<Vec<PathBuf>, String> {
+    let mut matches = vec![];
+    for path in config_artifact_paths_in(dir)? {
+        let text = fs::read_to_string(&path)
+            .map_err(|e| format!("核验配置 {} 失败：{e}", path.display()))?;
+        let referenced = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("profiles")
+                    .and_then(|value| value.as_array())
+                    .cloned()
+            })
+            .map(|profiles| {
+                profiles.iter().any(|profile| {
+                    profile.get("name").and_then(|value| value.as_str()) == Some(name)
+                })
+            })
+            .unwrap_or(corrupt_config_references_profile(&text, name)?);
+        if referenced {
+            matches.push(path);
+        }
+    }
+    Ok(matches)
+}
+
+fn config_artifacts_reference_profile(name: &str) -> Result<Vec<PathBuf>, String> {
+    config_artifacts_reference_profile_at(&cfg_dir(), name)
+}
+
+fn refresh_existing_integration_scripts(list: &[Profile]) -> Result<(), String> {
+    if ps_path().is_file() {
+        fs::write(ps_path(), generate_ps1(list)).map_err(|e| e.to_string())?;
+    }
+    if sh_path().is_file() {
+        fs::write(sh_path(), generate_sh(list)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn integration_scripts_reference_profile(name: &str) -> Result<bool, String> {
+    for (path, marker) in [
+        (ps_path(), format!("    {} {{", ps_q(name))),
+        (sh_path(), format!("    {name})")),
+    ] {
+        if path.is_file()
+            && fs::read_to_string(&path)
+                .map_err(|e| format!("核验终端脚本 {} 失败：{e}", path.display()))?
+                .contains(&marker)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn deletion_credential_backup(profile: &Profile) -> Result<Option<String>, String> {
+    if profile.has_token {
+        decrypt_token(profile).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn deletion_credential_backup(_profile: &Profile) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[tauri::command]
+fn delete_profile(name: String) -> Result<String, String> {
+    let list = load();
+    let profile = list
+        .iter()
+        .find(|profile| profile.name == name)
+        .cloned()
+        .ok_or("未找到要删除的实例。")?;
+    if name == "." || name == ".." || !script_safe_name(&name) {
+        return Err("实例名称不安全，拒绝删除。请手动检查配置。".into());
+    }
+    let credential_backup = deletion_credential_backup(&profile)?;
+    let snapshots = capture_deletion_files()?;
+    let staged = stage_instance_data(&name)?;
+    let mut next = list.clone();
+    next.retain(|item| item.name != name);
+    let mut credential_cleared = false;
+
+    let deletion = (|| -> Result<(), String> {
+        save(&next).map_err(|e| e.to_string())?;
+        install_integration(&next)?;
+        refresh_existing_integration_scripts(&next)?;
+        sync::forget_profile(&name)?;
+        scrub_profile_from_config_artifacts(&name, &next)?;
+        if profile.has_token {
+            clear_token(&name)?;
+            credential_cleared = true;
+        }
+        let residual_configs = config_artifacts_reference_profile(&name)?;
+        let snapshot_residual = sync::snapshot_references_profile(&name)?;
+        let script_residual = integration_scripts_reference_profile(&name)?;
+        if !residual_configs.is_empty() || snapshot_residual || script_residual {
+            return Err(format!(
+                "删除前核验发现残留：配置 {} 处，终端命令 {}，同步记录 {}",
+                residual_configs.len(),
+                if script_residual {
+                    "存在"
+                } else {
+                    "已清理"
+                },
+                if snapshot_residual {
+                    "存在"
+                } else {
+                    "已清理"
+                }
+            ));
+        }
+
+        if let Some((_, staged_path)) = &staged {
+            purge_instance_root(staged_path)?;
+        }
+        if staged
+            .as_ref()
+            .map(|(root, staged_path)| root.exists() || staged_path.exists())
+            .unwrap_or(false)
+        {
+            return Err("删除后核验发现实例数据目录仍然存在".into());
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = deletion {
+        let mut rollback_errors = vec![];
+        if let Err(rollback) = restore_deletion_files(&snapshots) {
+            rollback_errors.push(rollback);
+        }
+        if let Err(rollback) = restore_staged_instance(&staged) {
+            rollback_errors.push(rollback);
+        }
+        if credential_cleared {
+            if let Some(token) = credential_backup.as_deref() {
+                if let Err(rollback) = store_token(&name, token) {
+                    rollback_errors.push(format!("恢复 Key 失败：{rollback}"));
+                }
+            }
+        }
+        return Err(if rollback_errors.is_empty() {
+            format!("彻底删除未完成，原空间已恢复：{error}")
+        } else {
+            format!(
+                "彻底删除未完成：{error}；回滚异常：{}",
+                rollback_errors.join("；")
+            )
+        });
+    }
+
+    Ok("空间配置、凭证、终端命令、同步记录、登录态、项目记录和历史用量数据均已彻底删除。".into())
 }
 
 // GUI 启动时调用:刷新集成脚本(exe 路径可能变化)+ 建齐共享链接 + 跑一轮配置合并
@@ -1642,6 +1949,93 @@ mod tests {
         save_to(&primary, &backup, &[router_profile("second")]).unwrap();
         assert_eq!(parse_profiles(&primary).unwrap()[0].name, "second");
         assert_eq!(parse_profiles(&backup).unwrap()[0].name, "first");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn thorough_delete_scrubs_primary_backup_and_recovery_artifacts() {
+        let (primary, backup, dir) = temp_config_paths("delete-artifacts");
+        let mut removed = router_profile("remove-me");
+        removed.token_enc = Some("encrypted-test-value".into());
+        let kept = router_profile("keep");
+        let original = serde_json::json!({ "profiles": [removed.clone(), kept.clone()] });
+        for path in [
+            primary.clone(),
+            backup.clone(),
+            dir.join("config.previous.json"),
+        ] {
+            fs::write(path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+        }
+        let corrupt_with_profile = dir.join("config.corrupt.json");
+        fs::write(
+            &corrupt_with_profile,
+            "truncated { \"name\" : \"remove-me\"",
+        )
+        .unwrap();
+        let unrelated_corrupt = dir.join("config.corrupt.1.json");
+        fs::write(&unrelated_corrupt, "truncated { \"model\": \"remove-me\"").unwrap();
+
+        scrub_profile_from_config_artifacts_at(
+            &dir,
+            &primary,
+            &backup,
+            "remove-me",
+            std::slice::from_ref(&kept),
+        )
+        .unwrap();
+
+        assert!(config_artifacts_reference_profile_at(&dir, "remove-me")
+            .unwrap()
+            .is_empty());
+        assert_eq!(parse_profiles(&primary).unwrap()[0].name, "keep");
+        assert_eq!(parse_profiles(&backup).unwrap()[0].name, "keep");
+        assert!(!corrupt_with_profile.exists());
+        assert!(unrelated_corrupt.exists());
+        assert!(config_artifact_paths_in(&dir).unwrap().iter().all(|path| {
+            !fs::read_to_string(path)
+                .unwrap()
+                .contains("encrypted-test-value")
+        }));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_delete_can_restore_changed_and_new_files() {
+        let (_, _, dir) = temp_config_paths("delete-rollback");
+        let original = dir.join("original.json");
+        let created = dir.join("created.json");
+        fs::write(&original, "before").unwrap();
+        let snapshots = vec![
+            DeletionFileSnapshot {
+                path: original.clone(),
+                bytes: Some(b"before".to_vec()),
+            },
+            DeletionFileSnapshot {
+                path: created.clone(),
+                bytes: None,
+            },
+        ];
+        fs::write(&original, "after").unwrap();
+        fs::write(&created, "temporary").unwrap();
+        restore_deletion_files(&snapshots).unwrap();
+        assert_eq!(fs::read_to_string(original).unwrap(), "before");
+        assert!(!created.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn thorough_delete_removes_instance_files() {
+        let (_, _, dir) = temp_config_paths("delete-instance-root");
+        let root = dir.join("space");
+        fs::create_dir_all(root.join(".claude/projects/project-a")).unwrap();
+        fs::write(root.join(".claude/history.jsonl"), "test history").unwrap();
+        fs::write(
+            root.join(".claude/projects/project-a/session.jsonl"),
+            "test session",
+        )
+        .unwrap();
+        purge_instance_root(&root).unwrap();
+        assert!(!root.exists());
         fs::remove_dir_all(dir).unwrap();
     }
 
