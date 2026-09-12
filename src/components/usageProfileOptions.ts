@@ -16,10 +16,10 @@ export function buildUsageProfileOptions(
   ).sort();
 
   return [
-    { value: "__all__", label: "全部实例" },
+    { value: "__all__", label: "全部环境" },
     ...profiles.map((profile) => ({
       value: profile,
-      label: profile === "__main__" ? "主账户" : profile,
+      label: profile === "__main__" ? "默认 Claude" : profile,
     })),
   ];
 }

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,7 +68,7 @@ struct ConvertedConfig {
     warnings: Vec<String>,
 }
 
-fn write_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+pub(crate) fn write_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
     WRITE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -183,12 +182,17 @@ fn convert(service: &McpService) -> Result<ConvertedConfig, String> {
     })
 }
 
+/// 旧版（`DefaultHasher`）留下的哈希：值本身不可比，只能当"未知"处理。
+///
+/// 背景见 `crate::content_hash`：DefaultHasher 不保证跨编译稳定，
+/// 而这里的哈希会被持久化进 registry，值一变就会把所有条目误判成"两边都改了"。
+fn is_legacy_hash(stored: &str) -> bool {
+    !stored.starts_with("sha256:")
+}
+
 fn stable_hash(value: &Map<String, JsonValue>) -> String {
     let ordered: BTreeMap<&String, &JsonValue> = value.iter().collect();
-    let bytes = serde_json::to_vec(&ordered).unwrap_or_default();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    crate::content_hash(&serde_json::to_vec(&ordered).unwrap_or_default())
 }
 
 fn read_registry(paths: &McpPaths) -> Result<SyncRegistry, String> {
@@ -460,6 +464,13 @@ fn sync_status(
     let Some(entry) = entry else {
         return McpSyncStatus::NotSynced;
     };
+    // 旧哈希不可信（见 content_hash 的说明）。历史未知，就按"首次同步"处理：
+    // 对已有目标会给出"继续会覆盖同名 MCP…保留目标端专属设置"的警告 ——
+    // 那正是此刻的真实情况。绝不能拿不可比的旧值去判"改没改过"，
+    // 否则升级后每条都成 Conflict、同步静默停摆。
+    if is_legacy_hash(&entry.last_source_hash) || is_legacy_hash(&entry.last_target_hash) {
+        return McpSyncStatus::NotSynced;
+    }
     let source_changed = stable_hash(&source) != entry.last_source_hash;
     let target_changed = target
         .map(stable_hash)
@@ -594,7 +605,7 @@ pub(crate) fn preview_sync(
     }
     if locator.scope == McpScope::Local {
         warnings.push(
-            "Claude Local 作用域没有对应的实例概念，将同步到该项目的 .codex/config.toml".into(),
+            "Claude Local 作用域没有对应的环境概念，将同步到该项目的 .codex/config.toml".into(),
         );
     }
 
@@ -709,10 +720,17 @@ fn backup_target(paths: &McpPaths, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 目标路径 → 备份文件名的稳定哈希。同样不能用 `DefaultHasher`：
+/// 它是备份轮转的标识，值一变旧备份就再也找不到（只多占点磁盘，不影响正确性，
+/// 但同属"跨编译不稳定"这一类，一并修掉）。
+///
+/// 注意：改成稳定算法后，**升级时旧备份会一次性变成"孤儿"**（不再被轮转清理）。
 fn target_hash(path: &Path) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.display().to_string().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    // 这个值要当**文件名**用，必须去掉 `sha256:` 前缀 ——
+    // `:` 在 Windows 文件名里非法，带上去会让 rename 直接报 os error 87。
+    crate::content_hash(path.display().to_string().as_bytes())
+        .trim_start_matches("sha256:")
+        .to_string()
 }
 
 fn registry_text(registry: &SyncRegistry) -> Result<String, String> {
@@ -1062,6 +1080,49 @@ default_tools_approval_mode = "prompt"
     }
 
     #[test]
+    fn legacy_hashes_rebaseline_instead_of_reporting_conflict() {
+        // 旧版用 DefaultHasher（Rust 不保证跨编译稳定）：升级后所有存量哈希都会对不上。
+        // 若拿它们去判"改没改过"，每条都会成 Conflict ⇒ 自动同步静默停摆。
+        let root = std::env::temp_dir().join(format!("ccm-openai-legacy-{}", unique_suffix()));
+        let original = service(&root, json!({"command": "node", "args": ["a"]}));
+        let source = convert(&original).unwrap().normalized;
+        let entry = SyncEntry {
+            source: original.locator.clone(),
+            target_path: "x".into(),
+            selected: true,
+            // DefaultHasher 时代的形态：16 位十六进制、无算法前缀
+            last_source_hash: "deadbeefdeadbeef".into(),
+            last_target_hash: "deadbeefdeadbeef".into(),
+        };
+        // 历史未知 ⇒ 按"首次同步"处理（会给出"继续会覆盖同名 MCP"的警告），而不是报冲突
+        assert_eq!(
+            sync_status(&original, Some(&source), Some(&entry)),
+            McpSyncStatus::NotSynced
+        );
+
+        // 但新格式必须照常比较，否则就是"修了迁移、废了功能"
+        let fresh = SyncEntry {
+            last_source_hash: stable_hash(&source),
+            last_target_hash: stable_hash(&source),
+            ..entry.clone()
+        };
+        assert_eq!(
+            sync_status(&original, Some(&source), Some(&fresh)),
+            McpSyncStatus::Synced
+        );
+        // 一边旧一边新也算旧（两个值都可能来自旧版）
+        let half = SyncEntry {
+            last_source_hash: stable_hash(&source),
+            last_target_hash: "deadbeefdeadbeef".into(),
+            ..entry.clone()
+        };
+        assert_eq!(
+            sync_status(&original, Some(&source), Some(&half)),
+            McpSyncStatus::NotSynced
+        );
+    }
+
+    #[test]
     fn status_distinguishes_source_target_and_conflict_changes() {
         let root = std::env::temp_dir().join(format!("ccm-openai-status-{}", unique_suffix()));
         let original = service(&root, json!({"command": "node", "args": ["a"]}));
@@ -1125,6 +1186,7 @@ default_tools_approval_mode = "prompt"
             operation_warnings: vec![],
             sync_targets: vec![],
             sync_target_revisions: BTreeMap::new(),
+            shared_overrides: Vec::new(),
         };
         let preview = preview_sync(&paths, &state, &item.locator).unwrap();
         apply_manual_sync(
@@ -1182,6 +1244,7 @@ default_tools_approval_mode = "prompt"
             operation_warnings: vec![],
             sync_targets: vec![],
             sync_target_revisions: BTreeMap::new(),
+            shared_overrides: Vec::new(),
         };
         let preview = preview_sync(&paths, &state, &item.locator).unwrap();
         apply_manual_sync(
@@ -1261,6 +1324,7 @@ default_tools_approval_mode = "prompt"
             operation_warnings: vec![],
             sync_targets: vec![],
             sync_target_revisions: BTreeMap::new(),
+            shared_overrides: Vec::new(),
         };
         let preview = preview_sync(&paths, &state, &item.locator).unwrap();
         apply_manual_sync(
@@ -1361,6 +1425,7 @@ default_tools_approval_mode = "prompt"
             operation_warnings: vec![],
             sync_targets: vec![],
             sync_target_revisions: BTreeMap::new(),
+            shared_overrides: Vec::new(),
         };
         let preview = preview_sync(&paths, &state, &original.locator).unwrap();
         apply_manual_sync(

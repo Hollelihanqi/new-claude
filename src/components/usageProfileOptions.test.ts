@@ -4,7 +4,7 @@ import { buildUsageProfileOptions } from "./usageProfileOptions";
 describe("buildUsageProfileOptions", () => {
   it("includes newly created profiles even before they have usage rows", () => {
     expect(buildUsageProfileOptions([], ["new-space"])).toEqual([
-      { value: "__all__", label: "全部实例" },
+      { value: "__all__", label: "全部环境" },
       { value: "new-space", label: "new-space" },
     ]);
   });
@@ -16,8 +16,8 @@ describe("buildUsageProfileOptions", () => {
         ["new-space"],
       ),
     ).toEqual([
-      { value: "__all__", label: "全部实例" },
-      { value: "__main__", label: "主账户" },
+      { value: "__all__", label: "全部环境" },
+      { value: "__main__", label: "默认 Claude" },
       { value: "new-space", label: "new-space" },
       { value: "old-space", label: "old-space" },
     ]);

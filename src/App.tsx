@@ -57,7 +57,7 @@ const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
 const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
 const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
-  { id: "environment", label: "空间", desc: "实例、网关与模型", icon: IconLayoutDashboard },
+  { id: "environment", label: "环境", desc: "环境、网关与模型", icon: IconLayoutDashboard },
   { id: "workbuddy", label: "WorkBuddy", desc: "公司网关模型", icon: IconBrandOpenai },
   { id: "mcp", label: "MCP 服务", desc: "配置、作用域与测试", icon: IconServerCog },
   { id: "extensions", label: "扩展", desc: "Skills、Plugins 与 Agents", icon: IconStack2 },
@@ -67,7 +67,7 @@ const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDas
 ];
 
 const VIEW_TITLES: Record<ViewId, string> = {
-  environment: "空间管理",
+  environment: "环境管理",
   workbuddy: "WorkBuddy 模型",
   mcp: "MCP 服务管理",
   extensions: "扩展中心",
@@ -329,7 +329,7 @@ export default function App({
       <aside className="app-sidebar">
         <div className="brand-block">
           <div className="brand-mark"><BrandGlyph /></div>
-          <div className="brand-copy"><strong>Claude 管理中心</strong><span>Claude 本地工作空间</span></div>
+          <div className="brand-copy"><strong>并路 PathMux</strong><span>每个终端，一条独立模型通道</span></div>
         </div>
         <Text className="nav-eyebrow">工作台</Text>
         <SideNav value={view} onChange={setView} />
@@ -338,7 +338,9 @@ export default function App({
           <IconHelpCircle size={17} /><span>使用帮助</span>
         </button>
         <div className="sidebar-footer">
-          <span>Claude Center</span>
+          {/* 与上方品牌区同名。界面文案统一用中文名；`PathMux` 是 tauri.conf.json
+              的 productName（装机产物 / 安装目录 / 窗口名），属于技术标识，不在界面里混用。 */}
+          <span>并路 PathMux</span>
           <Badge variant="light" color="gray">v{appVersion || "--"}</Badge>
         </div>
       </aside>

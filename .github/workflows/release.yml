@@ -1,22 +1,141 @@
 name: release
 
 # 推送形如 v1.0.0 的 tag 时触发；也可在 Actions 页面手动运行
+#
+# 发布通道（P0-C#17）：Internal Preview / Public Preview / Stable 三条。
+# **tag 推送默认只产出 Internal Preview（draft + prerelease）**，不会自动公开 ——
+# 原先这里固定 releaseDraft:false + prerelease:false，打一次 tag 就直接对全量用户发稳定版。
+# 要发 public-preview 或 stable，必须手动运行并在 channel 里显式选择，
+# 且 .github/release-channel.json 的 p0Cleared 必须为 true（P0 全清 + 双平台验证通过）。
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的版本 Tag（形如 v2.4.0，且必须是尚未存在的新 Tag）"
+        required: true
+        type: string
+      channel:
+        description: "发布通道（public-preview / stable 需 p0Cleared=true）"
+        type: choice
+        default: internal-preview
+        options:
+          - internal-preview
+          - public-preview
+          - stable
 
 jobs:
+  # 通道门禁：先解析通道并判定能否发布，构建依赖它的结论
+  channel:
+    # 纯 Node 逻辑，不涉及 Tauri 的 GTK/WebKit 系统依赖，用 ubuntu 最快
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.resolve.outputs.name }}
+      tag: ${{ steps.target.outputs.tag }}
+      # build = 新 Tag（测试并构建）；promote = 已存在的 draft（**只复用已有产物**）
+      mode: ${{ steps.target.outputs.mode }}
+      draft: ${{ steps.resolve.outputs.draft }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解析发布目标
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # 默认是新 Tag 构建；只有下面"已存在的 draft"分支会改成 promote
+          mode=build
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # 手动运行**必须**填新 tag。从默认分支运行时 github.ref_name 是 "main"，
+            # 拿它去做版本一致性检查必然失败、当 tagName 更是错的 —— 原先把手动入口
+            # 写成可用是错的（审查指出）。
+            ref="$INPUT_TAG"
+            if [ -z "$ref" ]; then
+              echo "::error::手动发布必须填写 tag（形如 v2.4.0）。"
+              exit 1
+            fi
+            if [[ ! "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+              echo "::error::tag 必须形如 v2.4.0"; exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$ref" >/dev/null 2>&1; then
+              # Tag 已存在：区分「晋级」与「覆盖」。
+              #   draft 还没公开 ⇒ 允许重跑并晋级（同一 Tag 的同一批产物）；
+              #   已公开 ⇒ 拒绝，禁止覆盖已推送的公开 Tag。
+              state=$(gh release view "$ref" --json isDraft --jq '.isDraft' 2>/dev/null || echo "no-release")
+              if [ "$state" = "true" ]; then
+                # **晋级**：只能复用该 Tag 已有的产物，绝不重建。
+                # 原先这里只打印一句 notice，后面的 test/build 却照常从
+                # 「运行时的分支」检出并重建，最后用 tagName 把新产物挂到旧 Tag 上 ——
+                # 于是同一个 Tag 的代码与安装包会变，发布不可变性被破坏。
+                echo "::notice::Tag $ref 已存在且仍是 draft —— 按「晋级已有 Release」处理（复用已有产物，不重建）。"
+                mode=promote
+              else
+                echo "::error::Tag $ref 已存在且已公开（或不是 draft）。禁止覆盖已推送的公开 Tag。"
+                exit 1
+              fi
+            fi
+          else
+            # tag 推送：ref_name 就是那个 tag，无需再查存在性
+            ref="$REF_NAME"
+          fi
+          if [[ ! "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::无效的版本 tag"; exit 1
+          fi
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: 解析发布通道并执行门禁
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel='${{ github.event.inputs.channel }}'
+          if [ -z "$channel" ]; then channel="internal-preview"; fi
+          echo "请求通道：$channel"
+          node -e '
+            const cfg = require("./.github/release-channel.json");
+            const channel = process.argv[1];
+            const spec = cfg.channels[channel];
+            if (!spec) { console.error("未知通道：" + channel); process.exit(1); }
+            if (spec.requiresP0Clear && cfg.p0Cleared !== true) {
+              console.error(
+                "拒绝发布到 " + channel + "：P0 尚未清零（.github/release-channel.json 的 p0Cleared=false）。\n" +
+                "策略见 docs/对外开放产品战略与产品化路线-2026-09-11.md §10 P0-C#17：\n" +
+                "P0 未清零前不得产生 Public Preview 或 Stable，手动运行也不得冒充 Preview。"
+              );
+              process.exit(1);
+            }
+            console.log("name=" + channel);
+            console.log("draft=" + spec.draft);
+            console.log("prerelease=" + spec.prerelease);
+          ' "$channel" >> "$GITHUB_OUTPUT"
+
   # 发版前先跑测试：不通过就不构建、不发布，避免 auto-updater 把未测试的包推给全体用户
+  #
+  # 晋级（mode=promote）时**完全不跑**：那个 Tag 的测试在它自己那次构建里已经跑过，
+  # 再跑一遍测的是"当时的某个分支"，与那个 Tag 的产物毫无关系 —— 只会给人
+  # "这个 Tag 通过测试"的错觉。
   test:
+    needs: [channel]
+    if: needs.channel.outputs.mode == 'build'
     strategy:
       fail-fast: false
       matrix:
         platform: [windows-latest, macos-latest]
     runs-on: ${{ matrix.platform }}
     steps:
+      # 固定到**这个 Tag 指向的提交**，而不是运行时的分支。
+      # 推送 Tag 时 github.ref 就是该 Tag；workflow_dispatch 建新 Tag 时用 when 消解到
+      # 触发时的提交（tauri-action 会把 Tag 建在那个提交上）。
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || github.sha }}
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
       - name: 安装 Node
@@ -60,7 +179,9 @@ jobs:
           cargo test macos_keychain_roundtrip -- --ignored
 
   build:
-    needs: test
+    needs: [test, channel]
+    # 晋级时不重建 —— 见 channel job 里 mode 的说明
+    if: needs.channel.outputs.mode == 'build'
     permissions:
       contents: write
     strategy:
@@ -75,7 +196,10 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
+      # 与 test 同样固定到该 Tag（推送时是 Tag 本身，手动建新 Tag 时是触发提交）
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || github.sha }}
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
@@ -99,7 +223,7 @@ jobs:
         run: |
           node -e "const fs=require('fs');const tag=process.env.TAG.replace(/^v/,'');const p=require('./package.json').version;const t=require('./src-tauri/tauri.conf.json').version;const c=fs.readFileSync('src-tauri/Cargo.toml','utf8').match(/^version = \"([^\"]+)\"/m)?.[1];if(tag!==p||p!==t||p!==c){console.error({tag,package:p,tauri:t,cargo:c});process.exit(1)}"
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.channel.outputs.tag }}
 
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
@@ -108,9 +232,71 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Claude 管理中心 ${{ github.ref_name }}"
-          releaseBody: "下载对应你系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。首次打开若有安全提示，见仓库 README 的『同事如何安装』。"
-          releaseDraft: false
-          prerelease: false
+          tagName: ${{ needs.channel.outputs.tag }}
+          releaseName: "并路 PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
+          releaseBody: "下载对应你系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。本应用未做代码签名，首次打开时系统会提示无法验证开发者，手动放行一次即可——具体步骤见仓库 README 的『安装说明』。"
+          # **一律先建成 draft**：先完成的平台立刻公开的话，第二个平台失败时
+          # 用户会看到一个缺一半安装包的公开版本。是否公开交给下面的 publish job 统一决定。
+          releaseDraft: true
+          prerelease: true
           args: ${{ matrix.args }}
+
+  # 晋级：只有**所有平台都构建成功**之后，才决定是否把 draft 公开
+  publish:
+    needs: [channel, build]
+    # build 在 promote 路径上是 skipped（不重建），所以不能沿用"依赖 job 被跳过就跳过"的默认行为。
+    # 只放行两种情形：build 成功，或 build 被跳过（晋级）；build 失败一律不放行。
+    if: ${{ !cancelled() && needs.channel.result == 'success' && (needs.build.result == 'success' || (needs.channel.outputs.mode == 'promote' && needs.build.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.repository }}
+    permissions:
+      contents: write
+    steps:
+      - name: 核验该 Tag 的产物齐全
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ needs.channel.outputs.tag }}'
+          mode='${{ needs.channel.outputs.mode }}'
+          echo "tag=$tag mode=$mode"
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name' || true)
+          echo "已有产物："; echo "$assets"
+          fail=0
+          if ! echo "$assets" | grep -qE '\.dmg$'; then
+            echo "::error::缺少 macOS 安装包（.dmg）"; fail=1
+          fi
+          if ! echo "$assets" | grep -qE '\.(msi|exe)$'; then
+            echo "::error::缺少 Windows 安装包（.msi / .exe）"; fail=1
+          fi
+          if ! echo "$assets" | grep -q '^latest\.json$'; then
+            echo "::error::缺少 updater 清单 latest.json"; fail=1
+          fi
+          if [ "$fail" = "1" ]; then
+            echo "::error::产物不齐，拒绝公开。晋级只复用已有产物；确实需要重建请换一个新 Tag。"
+            exit 1
+          fi
+          echo "::notice::产物核验通过（$tag）"
+      - name: 按通道决定是否晋级
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ needs.channel.outputs.tag }}'
+          channel='${{ needs.channel.outputs.name }}'
+          mode='${{ needs.channel.outputs.mode }}'
+          draft='${{ needs.channel.outputs.draft }}'
+          pre='${{ needs.channel.outputs.prerelease }}'
+          echo "通道=$channel tag=$tag mode=$mode"
+          if [ "$draft" = "true" ]; then
+            # 这里不再说"全部平台构建已成功"：promote 路径根本没构建，
+            # 只是复用了该 Tag 原有的产物（上一步已核验过它们齐全）。
+            echo "::notice::$channel 保持 draft（不公开）。该 Tag 的产物已核验齐全（$mode）。"
+            exit 0
+          fi
+          # public-preview / stable：把 draft 公开
+          gh release edit "$tag" --draft=false --prerelease=$([ "$pre" = "true" ] && echo true || echo false)
+          echo "::notice::已晋级 $tag 到 $channel"

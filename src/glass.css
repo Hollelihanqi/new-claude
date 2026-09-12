@@ -30,7 +30,12 @@ body {
 *::-webkit-scrollbar-thumb { background: #cbd5da; border-radius: 999px; }
 
 .app-shell {
-  height: 100vh;
+  /* 用 100% 而不是 100vh。
+     父级链路是完整的（html → body → #root 都是 height:100%），百分比会随窗口更新；
+     而 **vh 在 WebKit（macOS 的 WKWebView）上窗口变化后可能保持旧值** ——
+     表现就是"窗口最大化后界面只占半截，缩回小窗再放大才正常"（用户 2026-09-12 在 Mac 上实测）。
+     这里不依赖 vh，两个平台都跟随父元素高度。 */
+  height: 100%;
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
   overflow: hidden;

@@ -34,6 +34,7 @@ const emptyState: McpState = {
   operationWarnings: [],
   syncTargets: [],
   syncTargetRevisions: {},
+  sharedOverrides: [],
 };
 
 function renderModal(opened: boolean) {

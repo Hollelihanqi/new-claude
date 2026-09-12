@@ -32,13 +32,17 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { api } from "../api";
+import RiskConfirm from "./RiskConfirm";
 import type {
   WorkBuddyCertificateStatus,
   WorkBuddyOrganization,
   WorkBuddyState,
 } from "../api";
 
-const DEFAULT_ENDPOINT = "https://10.0.147.128:8080";
+// 只作输入框的 placeholder 示例用。**不再作为表单预填值** ——
+// 原先预填的是一个公司内网地址，公开用户打开页面时地址栏已被填好，
+// 不动它直接保存就会指向不可达内网（既是信息泄漏，也是功能问题）。
+const EXAMPLE_ENDPOINT = "https://gateway.example.com:8080";
 
 interface OrganizationForm {
   name: string;
@@ -50,7 +54,7 @@ interface OrganizationForm {
 const emptyOrganization = (): OrganizationForm => ({
   name: "",
   modelPrefix: "",
-  url: DEFAULT_ENDPOINT,
+  url: "",
   apiKey: "",
 });
 
@@ -118,6 +122,24 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
     }
   };
 
+  // 没有地址就不探测证书：否则会立刻报一个假的「证书检测失败」。
+  // 换成中性的灰徽章，提示用户填完地址会自动检测。
+  //
+  // 必须返回 Promise<void>：调用方有 `await probeCertificate(...)` 与
+  // `Promise.all([...])` 两种用法，返回 void 时 await 会被当成"立刻完成"，
+  // 导致后台 in-flight 提前释放、证书检测结果晚于后续文案出现。
+  const probeCertificate = async (url: string, quiet = false): Promise<void> => {
+    const target = url.trim();
+    if (!target) {
+      setCertificateStatus({
+        state: "notRequired",
+        detail: "填写网关地址后将自动检测证书。",
+      });
+      return;
+    }
+    await refreshCertificate(target, quiet);
+  };
+
   const fetchModels = async (organizationId: string, quiet = false, background = false) => {
     const request = ++modelRequest.current;
     if (!background) setModelsBusy(true);
@@ -149,7 +171,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
     setCatalog([]);
     setSelectedModels(organization.selectedModels);
     setMessage({ ok: true, text: "" });
-    void refreshCertificate(organization.url);
+    void probeCertificate(organization.url);
     if (fetch) void fetchModels(organization.id, true);
   };
 
@@ -170,7 +192,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         setEditingOrganization(true);
         setCatalog([]);
         setSelectedModels([]);
-        void refreshCertificate(DEFAULT_ENDPOINT);
+        void probeCertificate("");
       }
       setMessage({ ok: true, text: "" });
     } catch (error) {
@@ -196,7 +218,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
       if (current && !editingOrganization) {
         await Promise.all([
           fetchModels(current.id, true, true),
-          refreshCertificate(current.url, true),
+          probeCertificate(current.url, true),
         ]);
       }
     }).catch((error) => {
@@ -206,7 +228,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
 
   const startNewOrganization = () => {
     invalidateRequests();
-    void refreshCertificate(DEFAULT_ENDPOINT);
+    probeCertificate("");
     setSelectedOrganizationId(null);
     setOrganizationForm(emptyOrganization());
     setEditingOrganization(true);
@@ -236,7 +258,9 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         organizationForm.name.trim(),
         organizationForm.modelPrefix.trim(),
         organizationForm.url.trim(),
-        organizationForm.apiKey.trim() || undefined
+        organizationForm.apiKey.trim() || undefined,
+        // 与 model 写入同级：文件被别的程序改过时后端会拒绝覆盖
+        state?.organizationsRevision ?? ""
       );
       setState(next);
       const organization = selectedOrganizationId
@@ -331,7 +355,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
       setBusy("executable");
       const next = await api.setWorkBuddyExecutable(selected);
       setState(next);
-      await refreshCertificate(selectedOrganization?.url || DEFAULT_ENDPOINT);
+      await probeCertificate(selectedOrganization?.url || "");
       setMessage({ ok: true, text: "已保存 WorkBuddy 安装位置；后续启动和证书同步都会使用该路径。" });
     } catch (error) {
       setMessage({ ok: false, text: String(error) });
@@ -341,16 +365,19 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
     }
   };
 
-  const importCertificate = async () => {
-    if (!certificatePath) return;
+  // 返回**是否成功**。原先把错误吞进 message 后正常 resolve，外层无从判断，
+  // 于是导入失败也照样关窗、清掉已选文件 —— 用户要重新挑一次文件才能重试。
+  const importCertificate = async (): Promise<boolean> => {
+    if (!certificatePath) return false;
     setBusy("certificate");
     try {
       const result = await api.importWorkBuddyCa(certificatePath);
-      setCertificatePath(null);
-      await refreshCertificate(selectedOrganization?.url || DEFAULT_ENDPOINT);
+      await probeCertificate(selectedOrganization?.url || "");
       setMessage({ ok: true, text: result });
+      return true;
     } catch (error) {
       setMessage({ ok: false, text: String(error) });
+      return false;
     } finally {
       setBusy("");
     }
@@ -358,7 +385,8 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
 
   const openWorkBuddy = async () => {
     try {
-      await api.launchWorkBuddy();
+      // 后端可能带回"CA 未能写进安装目录，已改用环境变量注入"这类提示，要显示出来
+      setMessage({ ok: true, text: await api.launchWorkBuddy() });
     } catch (error) {
       setMessage({ ok: false, text: String(error) });
     }
@@ -397,27 +425,42 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         </Stack>
       </Modal>
 
-      <Modal
+      <RiskConfirm
         opened={active && Boolean(certificatePath)}
-        onClose={() => setCertificatePath(null)}
-        title="确认导入网关证书"
-        centered
-      >
-        <Stack>
-          <Alert color="orange" icon={<IconCertificate size={16} />}>
-            {isMacos
-              ? "将所选 CA 同步到 WorkBuddy.app 的内置 CLI 证书文件。不会修改 macOS 系统钥匙串；WorkBuddy 更新后，管理中心会在启动时自动补写。请仅导入公司网关管理员提供的证书。"
-              : "将所选 CA 加入当前 Windows 用户的“受信任根证书”存储，并同步到本机共享的 WorkBuddy 安装目录。此后，这台电脑上使用该 WorkBuddy 安装的所有用户都会在自定义模型请求中信任该 CA。请仅导入公司网关管理员提供的证书；WorkBuddy 更新后，管理中心会在启动时自动补写。"}
-          </Alert>
-          <Text size="sm" c="dimmed" lineClamp={2}>{certificatePath}</Text>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setCertificatePath(null)}>取消</Button>
-            <Button loading={busy === "certificate"} onClick={() => void importCertificate()}>
-              确认并信任
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        // 两个平台都会**改变信任边界**，所以都定 critical：
+        //   - 该 CA 会经 import_cert 进入应用信任库 ⇒ 全部托管 Claude 环境都信任它；
+        //   - Windows 还会写当前用户 Root 库 + WorkBuddy 共享 ca.pem。
+        // macOS 只动 WorkBuddy 内置 CLI 的证书文件（不碰系统钥匙串），但"所有环境"那一条同样成立。
+        level="critical"
+        title="导入网关 CA 证书"
+        consequences={
+          isMacos
+            ? [
+                "该 CA 会同时加入应用信任库 —— 此后全部托管 Claude 环境都会信任它签发的任意证书。",
+                "同时同步到 WorkBuddy.app 内置 CLI 的证书文件。",
+                "不会修改 macOS 系统钥匙串，也不影响系统层面的信任设置。",
+                "WorkBuddy 更新后，管理中心会在下次启动时自动补写。",
+                "请只导入公司网关管理员提供的证书。",
+              ]
+            : [
+                // 后端用的是 certutil -user，作用域是当前登录用户，不是全机。
+                // 另有共享面（WorkBuddy 安装目录里的 ca.pem）与"所有托管 Claude 环境"，三者要分开说。
+                "该 CA 会同时加入应用信任库 —— 此后所有托管 Claude 环境都会信任它签发的任意证书。",
+                "还会加入「当前 Windows 用户」的受信任根证书库：只对你自己生效，不改动其他用户账户。",
+                "并写入 WorkBuddy 安装目录下的共享 ca.pem，那个文件是该安装的所有用户共用的。",
+                "WorkBuddy 更新后，管理中心会在下次启动时自动补写。",
+                "请只导入公司网关管理员提供的证书。",
+              ]
+        }
+        detail={certificatePath}
+        confirmLabel="确认并信任"
+        busy={busy === "certificate"}
+        onCancel={() => setCertificatePath(null)}
+        onConfirm={async () => {
+          // 只有成功才关窗并清掉路径；失败保留上下文供直接重试
+          if (await importCertificate()) setCertificatePath(null);
+        }}
+      />
 
       <Card withBorder padding="md" radius="lg" className="workbuddy-environment-card">
         <Group justify="space-between" align="flex-start">
@@ -470,7 +513,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
       </Card>
 
       <Alert color="orange" variant="light" icon={<IconAlertTriangle size={16} />}>
-        MaaS Gateway 会收集与模型交互的请求和响应用于公司审计，请勿提交个人隐私或非公司事务信息。组织 Key 仅保存在本机 WorkBuddy 配置中，不会写入 Claude Code。
+        MaaS Gateway 会收集与模型交互的请求和响应用于公司审计，请勿提交个人隐私或非公司事务信息。组织 Key 仅保存在本机 WorkBuddy 配置中（未加密的明文文件；macOS 显式限本人可读，Windows 依赖用户目录的继承权限），不会写入 Claude Code。
       </Alert>
 
       {(state?.warnings.length || 0) > 0 && (
@@ -555,7 +598,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
                     </SimpleGrid>
                     <TextInput
                         label="网关地址"
-                        placeholder={DEFAULT_ENDPOINT}
+                        placeholder={EXAMPLE_ENDPOINT}
                         value={organizationForm.url}
                         onChange={(event) => {
                           const url = event.currentTarget.value;
@@ -563,7 +606,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
                           setCertificateStatus({ state: "checking", detail: "地址已修改，离开输入框后重新检测。" });
                           setOrganizationForm((current) => ({ ...current, url }));
                         }}
-                        onBlur={() => void refreshCertificate(organizationForm.url.trim() || DEFAULT_ENDPOINT)}
+                        onBlur={() => void probeCertificate(organizationForm.url)}
                     />
                     <PasswordInput
                       label="系统 Key"

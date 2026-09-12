@@ -1,5 +1,5 @@
 [package]
-name = "cc-switch"
+name = "pathmux"
 version = "2.3.8"
 description = "Claude Code 本地环境管理工具"
 edition = "2021"

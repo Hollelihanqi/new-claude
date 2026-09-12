@@ -14,7 +14,7 @@
 
 ### 1.2 已确认的设计选择
 
-1. 「MCP 服务」是独立一级菜单，位于「空间」与「扩展」之间，不作为扩展中心的子页。
+1. 「MCP 服务」是独立一级菜单，位于「环境」与「扩展」之间，不作为扩展中心的子页。
 2. 管理三个 Claude Code 官方可编辑作用域，并在列表中明确显示作用域标记：
    - `user`：用户级；所有项目可用；存储在每个 Claude 实例的 `.claude.json` 顶层 `mcpServers`。
    - `local`：项目本地级；仅指定 Claude 实例、指定项目可用；存储在该实例 `.claude.json` 的 `projects[projectPath].mcpServers`。
@@ -61,7 +61,7 @@
 | 步骤 | 位置 | 当前行为 | 新功能介入点 |
 | --- | --- | --- | --- |
 | 1. 一级页面类型 | `src/App.tsx:35` | `ViewId` 没有 MCP | 增加 `mcp` |
-| 2. 侧边栏菜单 | `src/App.tsx:41-47` | 只有空间、扩展、洞察、诊断、设置 | 在空间后插入「MCP 服务」 |
+| 2. 侧边栏菜单 | `src/App.tsx:41-47` | 只有环境、扩展、洞察、诊断、设置 | 在环境后插入「MCP 服务」 |
 | 3. 页面标题 | `src/App.tsx:49-56` | 没有 MCP 标题 | 增加「MCP 服务管理」 |
 | 4. 页面渲染 | `src/App.tsx:304-325` | 根据本地 `view` 状态渲染五个业务页 | 渲染新增 `McpPanel` |
 | 5. 扩展概览请求 | `src/components/ExtensionsPanel.tsx:19-24` | 调 `extensionOverview()` | 调用保持；返回值不再包含 MCP |
@@ -260,7 +260,7 @@ Before：
 type ViewId = "environment" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 
 const NAV = [
-  { id: "environment", label: "空间", desc: "实例、网关与模型", icon: IconLayoutDashboard },
+  { id: "environment", label: "环境", desc: "实例、网关与模型", icon: IconLayoutDashboard },
   { id: "extensions", label: "扩展", desc: "Skills、MCP 与 Agents", icon: IconStack2 },
 ];
 ```
@@ -271,7 +271,7 @@ After：
 type ViewId = "environment" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 
 const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
-  { id: "environment", label: "空间", desc: "实例、网关与模型", icon: IconLayoutDashboard },
+  { id: "environment", label: "环境", desc: "实例、网关与模型", icon: IconLayoutDashboard },
   { id: "mcp", label: "MCP 服务", desc: "配置、作用域与测试", icon: IconServerCog },
   { id: "extensions", label: "扩展", desc: "Skills、Plugins 与 Agents", icon: IconStack2 },
   { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
@@ -280,7 +280,7 @@ const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDas
 ];
 
 const VIEW_TITLES: Record<ViewId, string> = {
-  environment: "空间管理",
+  environment: "环境管理",
   mcp: "MCP 服务管理",
   extensions: "扩展中心",
   insights: "用量洞察",
@@ -1720,7 +1720,7 @@ mcp::test_mcp_server,
 
 ### 8.1 前端主场景
 
-- [ ] 侧边栏出现独立「MCP 服务」，位于空间和扩展之间。
+- [ ] 侧边栏出现独立「MCP 服务」，位于环境和扩展之间。
 - [ ] 扩展中心不再展示 MCP 卡片或 MCP 数量。
 - [ ] 页面显示 User、Local、Project 三种明确 Badge。
 - [ ] Local 行同时显示实例和项目。

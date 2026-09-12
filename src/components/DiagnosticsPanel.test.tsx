@@ -5,11 +5,29 @@ import DiagnosticsPanel from "./DiagnosticsPanel";
 import { api } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
-  "Alert", "Badge", "Button", "Card", "Code", "Group", "Loader", "Stack", "Text", "ThemeIcon", "Title",
+  "Alert", "Badge", "Button", "Card", "Code", "Divider", "Group", "Loader", "Stack", "Text", "ThemeIcon", "Title",
 ].map((name) => [name, name.toLowerCase()])));
-vi.mock("../api", () => ({ api: { healthCheck: vi.fn(), recentSyncLog: vi.fn() } }));
+// 环境证明卡会调这三个；mock 必须覆盖组件真正用到的全部 API，
+// 否则它们 undefined，组件里的 useEffect 会同步抛错。
+vi.mock("../api", () => ({
+  api: {
+    healthCheck: vi.fn(),
+    recentSyncLog: vi.fn(),
+    listProfiles: vi.fn().mockResolvedValue([]),
+    profileRuntimeInfo: vi.fn().mockResolvedValue([]),
+    lastVerification: vi.fn().mockResolvedValue(null),
+  },
+}));
 let renderer: ReactTestRenderer;
-beforeEach(() => { vi.resetAllMocks(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); });
+beforeEach(() => {
+  vi.resetAllMocks();
+  // resetAllMocks 会把工厂里的 mockResolvedValue 一起清掉 —— 必须在这里重设，
+  // 否则环境证明卡拿到的会是 undefined，.then 直接抛。
+  vi.mocked(api.listProfiles).mockResolvedValue([]);
+  vi.mocked(api.profileRuntimeInfo).mockResolvedValue([]);
+  vi.mocked(api.lastVerification).mockResolvedValue(null);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+});
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.unstubAllGlobals(); });
 const text = () => renderer.root.findAllByType(Text).flatMap((item) => item.children).filter((item) => typeof item === "string").join(" ");
 const mount = async () => { await act(async () => { renderer = create(<DiagnosticsPanel />); }); };

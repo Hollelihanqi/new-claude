@@ -209,7 +209,7 @@ export default function McpImportModal({ opened, state, onClose, onSave }: Props
       return;
     }
     if (!targetLocatorFieldsValid || !projectValid) {
-      setErr("请补全目标作用域所需的实例/项目");
+      setErr("请补全目标作用域所需的环境/项目");
       return;
     }
     setBusy(true);
@@ -275,7 +275,7 @@ export default function McpImportModal({ opened, state, onClose, onSave }: Props
               />
               {scope === "local" && (
                 <Select
-                  label="实例"
+                  label="环境"
                   value={instanceId}
                   onChange={(v) => setInstanceId(v ?? "")}
                   data={state.instances.map((i) => ({ value: i.id, label: i.label }))}

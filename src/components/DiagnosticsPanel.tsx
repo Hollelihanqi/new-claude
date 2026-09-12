@@ -4,6 +4,7 @@ import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconFileDownload, Icon
 import { api } from "../api";
 import type { HealthItem } from "../api";
 import StableRefreshButton from "./StableRefreshButton";
+import EnvironmentProof from "./EnvironmentProof";
 import { usePageActivation } from "./PersistentPage";
 
 const STATUS = {
@@ -84,7 +85,16 @@ export default function DiagnosticsPanel() {
             {busy ? <Loader /> : <Badge size="xl" variant="light" color={healthState !== "success" ? "gray" : problems ? "orange" : "teal"}>{healthState !== "success" ? "暂无结论" : problems ? "需要关注" : "健康"}</Badge>}
           </Group>
         </Card>
-        {message.text && <Alert color={message.ok ? "teal" : "red"}>{message.text}</Alert>}
+        {/* 环境证明卡：把散落各页的结论汇成一处，同事报障时先看这里 */}
+        {healthState === "success" && <EnvironmentProof items={items} />}
+        {message.text && (
+          <Alert color={message.ok ? "teal" : "red"}>
+            {/* 「同步并修复」的结果是逐行汇报（做了什么 / 影响范围 / 每条警告），必须保留换行 */}
+            <Text size="sm" style={{ whiteSpace: "pre-line" }}>
+              {message.text}
+            </Text>
+          </Alert>
+        )}
         {healthError && <Alert color="red">{healthError}</Alert>}
         <div className="diagnostic-list">
           {items.map((item) => {
@@ -94,7 +104,7 @@ export default function DiagnosticsPanel() {
         </div>
         <Card withBorder padding="lg" radius="lg">
           {logError && <Alert color="orange">日志读取失败：{logError}</Alert>}
-          <Group justify="space-between" mb="sm"><div><Text fw={700}>最近同步日志</Text><Text size="xs" c="dimmed">最多显示最近 80 行，用于追踪跨实例配置传播。</Text></div><Badge variant="light" color="gray">{logs.length} 行</Badge></Group>
+          <Group justify="space-between" mb="sm"><div><Text fw={700}>最近同步日志</Text><Text size="xs" c="dimmed">最多显示最近 80 行，用于追踪跨环境配置传播。</Text></div><Badge variant="light" color="gray">{logs.length} 行</Badge></Group>
           <Code block className="sync-log-block">{logs.length ? logs.join("\n") : "暂无同步日志"}</Code>
         </Card>
       </Stack>

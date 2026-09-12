@@ -451,7 +451,7 @@ export default function McpServiceDrawer({
                     />
                     {scope === "local" && (
                       <Select
-                        label="实例"
+                        label="环境"
                         value={instanceId}
                         onChange={(v) => {
                           setInstanceId(v ?? "");
@@ -459,7 +459,7 @@ export default function McpServiceDrawer({
                         }}
                         data={state.instances.map((i) => ({ value: i.id, label: i.label }))}
                         error={locatorErrs().instanceId}
-                        placeholder="选择 Claude 实例"
+                        placeholder="选择 Claude 环境"
                       />
                     )}
                     {(scope === "local" || scope === "project") && (

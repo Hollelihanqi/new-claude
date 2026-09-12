@@ -108,7 +108,7 @@ describe("validateLocatorForScope", () => {
 });
 
 describe("serviceSearchText", () => {
-  it("聚合名称、command、url、实例、项目（小写）", () => {
+  it("聚合名称、command、url、环境、项目（小写）", () => {
     const s = {
       locator: {
         scope: "local",
@@ -151,7 +151,7 @@ describe("MCP 列表展示模型", () => {
     expect(syncTargetDisplayLabel("codex", "Codex")).toBe("ChatGPT");
   });
 
-  it("用户级范围不重复显示“全局”", () => {
+  it("「所有环境」范围不重复显示“全局”", () => {
     const service = {
       locator: { scope: "user", name: "demo" },
     } as McpService;

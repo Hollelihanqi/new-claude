@@ -2,7 +2,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ConfigPanel from "./ConfigPanel";
 import StableRefreshButton from "./StableRefreshButton";
-import { NavLink, Autocomplete, PasswordInput, TextInput, Alert, Button } from "@mantine/core";
+import { NavLink, Autocomplete, PasswordInput, TextInput, Alert, Button, Text } from "@mantine/core";
 import { api, type Profile } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
@@ -26,7 +26,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-describe("空间模型检测", () => {
+describe("环境模型检测", () => {
   let renderer: ReactTestRenderer;
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -43,7 +43,7 @@ describe("空间模型检测", () => {
   const options = () => renderer.root.findAllByType(Autocomplete)[0].props.data;
   const messages = () => renderer.root.findAllByType(Alert).flatMap((alert) => alert.children.filter((child) => typeof child === "string")).join(" ");
 
-  it("移除空间只有彻底删除选项，并调用不可降级的删除接口", async () => {
+  it("移除环境只有彻底删除选项，并调用不可降级的删除接口", async () => {
     act(() => renderer.root.findAllByType(Button).find((button) => button.children.includes("移除"))!.props.onClick());
     const buttons = renderer.root.findAllByType(Button);
     expect(buttons.some((button) => button.children.includes("仅移除，保留历史数据"))).toBe(false);
@@ -67,7 +67,7 @@ describe("空间模型检测", () => {
     expect(messages()).not.toContain("检测到");
   });
 
-  it.each(["resolve", "reject"] as const)("切换实例后忽略旧请求的 %s，不能结束新请求", async (outcome) => {
+  it.each(["resolve", "reject"] as const)("换选环境后忽略旧请求的 %s，不能结束新请求", async (outcome) => {
     const first = deferred();
     const second = deferred();
     vi.mocked(api.detectModelsFor).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
@@ -89,11 +89,11 @@ describe("空间模型检测", () => {
     expect(detect().props.busy).toBe(false);
   });
 
-  it("已有实例填写新 Key 后检测表单中的连接", async () => {
+  it("已有环境填写新 Key 后检测表单中的连接", async () => {
     act(() => renderer.root.findByType(PasswordInput).props.onChange({ currentTarget: { value: "new-key" } }));
     vi.mocked(api.detectModels).mockResolvedValue(["new-model"]);
     await act(async () => { await detect().props.onClick(); });
-    expect(api.detectModels).toHaveBeenCalledWith(profile("a").baseUrl, "new-key");
+    expect(api.detectModels).toHaveBeenCalledWith(profile("a").baseUrl, "new-key", "a");
     expect(api.detectModelsFor).not.toHaveBeenCalled();
   });
 
@@ -133,5 +133,52 @@ describe("空间模型检测", () => {
     expect(renderer.root.findAllByType(Autocomplete)[0].props.value).toBe("old-model");
     await act(async () => { await detect().props.onClick(); });
     expect(options()).toContain("recovered");
+  });
+});
+
+// 决策 7.4：默认 Claude 的配置应用**只读**。
+// 「只读」不等于"不能检查"——可以发现风险并说明原因，但不能替用户改写。
+describe("默认 Claude 的模型钉死只告警、不提供一键修复", () => {
+  let renderer: ReactTestRenderer;
+  // 必须递归进 React 元素（`<b>`、`<Code>` 都是元素，不是字符串），
+  // 否则嵌套文案会被丢掉，断言看着通过、其实什么都没查。
+  const textOf = (node: unknown): string => {
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join("");
+    if (node && typeof node === "object" && "props" in node) {
+      return textOf((node as { props: { children?: unknown } }).props.children);
+    }
+    return "";
+  };
+  const allText = () => renderer.root.findAllByType(Text).map((t) => textOf(t.children)).join(" ");
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.mocked(api.listProfiles).mockResolvedValue([profile("a")]);
+    vi.mocked(api.profileRuntimeInfo).mockResolvedValue([]);
+    vi.mocked(api.modelPinWarnings).mockResolvedValue([
+      { profile: "__main__", model: "glm-5.2", settingsPath: "/home/u/.claude/settings.json" },
+      { profile: "a", model: "glm-4", settingsPath: "/home/u/.claude-split/a/.claude/settings.json" },
+    ] as never);
+    await act(async () => { renderer = create(<ConfigPanel env={null} usageData={null} />); });
+  });
+  afterEach(() => { act(() => renderer.unmount()); vi.unstubAllGlobals(); });
+
+  it("默认 Claude 那条没有恢复按钮，并给出配置文件路径供用户自行处理", () => {
+    const labels = renderer.root
+      .findAllByType(Button)
+      .map((b) => b.children.map(textOf).join(""));
+    // 只有环境 a 能一键恢复；默认 Claude 那条绝不能有这个入口
+    expect(labels.filter((t) => t.includes("恢复档位选择"))).toHaveLength(1);
+    expect(allText()).toContain("应用不会修改此配置");
+    expect(allText()).toContain("/home/u/.claude/settings.json");
+    // 影响范围要写准：只在"从用户主目录启动"时才会被这份配置覆盖
+    expect(allText()).toContain("从用户主目录启动");
+  });
+
+  it("两条告警并存时，环境的修复说明仍在（不能为了默认 Claude 把这条删掉）", () => {
+    expect(allText()).toContain("恢复后会清除固定型号");
+    expect(allText()).toContain("环境 a");
   });
 });

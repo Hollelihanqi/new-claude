@@ -115,7 +115,7 @@ pub fn read(_name: &str, encrypted: Option<&str>) -> Result<String, String> {
     let mut encrypted = hex::decode(
         encrypted
             .filter(|s| !s.is_empty())
-            .ok_or("该实例没有保存 Key")?,
+            .ok_or("该环境没有保存 Key")?,
     )
     .map_err(|_| "已保存 Key 的格式无效")?;
     let mut bytes = dpapi(&mut encrypted, false)?;

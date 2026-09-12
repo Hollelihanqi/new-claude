@@ -1,6 +1,9 @@
-# Claude 管理中心（Tauri 桌面应用）
+# 并路 PathMux（Tauri 桌面应用）
 
-一个跨平台（macOS / Windows）桌面 App：在一台电脑上管理多个 Claude Code 实例
+> **每个终端，一条独立模型通道。** 同一项目里多个终端可同时连不同网关，互不干扰；
+> 没有全局"当前环境"这回事 —— 每次启动命令自己决定用哪个环境。
+
+一个跨平台（macOS / Windows）桌面 App：在一台电脑上管理多个 Claude Code 环境
 （你的主账户 + 公司路由），日常在任意项目目录直接 `claude` / `claude corp`，
 切换不掉线、不串配置。
 
@@ -10,6 +13,8 @@
 
 > **它只做配置。** 配好后退到幕后；日常使用是你自己的终端，跟平时一样。
 > 应用内的「使用指南」标签页有面向新手的完整说明。
+
+**许可**：[MIT](LICENSE) —— 可自由使用、修改、再分发，允许商业用途。欢迎二次开发。
 
 ---
 
@@ -77,30 +82,47 @@ pnpm tauri build
 
 ---
 
-## 四、同事如何安装（重要：未签名的安全提示）
+## 四、安装说明（重要：本应用未做代码签名）
 
-这个 App 没有买证书签名，所以同事首次打开会看到系统拦截，**这是正常的**，绕过即可：
+本应用未购买代码签名证书，因此首次打开时系统会提示「无法验证开发者」或类似信息，**这是正常的**，手动放行一次即可：
 
-- **macOS**：双击 `.dmg`，把 App 拖进「应用程序」。首次打开如果提示"无法验证开发者"，
-  **右键点 App →「打开」→ 再点「打开」**。（或系统设置→隐私与安全性→仍要打开）
+- **macOS（Sequoia 15 及以上）**：双击 `.dmg`，把 App 拖进「应用程序」。首次打开会提示无法验证开发者——
+  **右键打开的方式自 Sequoia 15 起已被 Apple 移除，不再有效**。请到
+  **系统设置 → 隐私与安全性**，在下方找到该应用的提示，点 **「仍要打开」**，再输入密码确认。
+- **macOS（Sonoma 14 及更早）**：可在 Finder 中右键点 App →「打开」→ 再点「打开」；
+  若无效，同样走上面的「系统设置 → 隐私与安全性 → 仍要打开」。
 - **Windows**：双击 `.msi`/`.exe`。若弹出"Windows 已保护你的电脑"，
   点「更多信息」→「仍要运行」。
-
-要彻底消除这些提示，需要购买开发者证书签名（mac 99 美元/年、Windows 证书若干），
-内部小范围使用可以不签名，教同事点一下绕过即可。
 
 ---
 
 ## 五、装好之后怎么用
 
-> **公司路由用户先做一次（重要）**：公司网关是自签名证书，必须先导入 CA 根证书，
-> 否则 `claude corp` 连不上。向管理员要 `ca-cert.pem`，然后执行一次：
-> - macOS：`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca-cert.pem`
-> - Windows（管理员 PowerShell）：`certutil -addstore Root ca-cert.pem`
+> **在脚本里判断 `claude` 是否成功 —— PowerShell 用户必读**
+>
+> 包装器承诺的是**参数与原生退出码**透传，**不是 PowerShell 的全部状态语义**。
+> PowerShell 的函数包装模式下，请在命令结束后**立即**使用 `$LASTEXITCODE` 判断执行结果；
+> **`$?` 不保证反映 Claude 的退出状态** —— 这是 PowerShell 的机制限制：
+> 能改变调用方 `$?` 的只有 `$PSCmdlet.WriteError`，而它要求 advanced function，
+> 那会破坏参数透传（实测 `claude corp` 直接报绑定错误、`claude -p hi` 两个参数被吞）。
+> 该行为由回归测试 `generated_ps1_propagates_exit_code_and_restores_environment` 覆盖。
+>
+> 自动化脚本需要向外传递退出码时，请显式执行 `exit $LASTEXITCODE`。
+>
+> bash / zsh 不受此限制：`$?` 与退出码都按常规语义透传。
 
-1. 打开 App，切到「实例配置」。
-2. 「新建」一个实例：名称填命令词（如 `corp`），类型选「自定义路由」，
-   网关地址按公司说明填（通常带 `/anthropic` 后缀，例如 `https://10.0.7.83:8080/anthropic`），
+> **公司路由用户先做一次（重要）**：公司网关用自签名证书时，`claude corp` 会因证书校验失败连不上。
+> 向管理员要 `ca-cert.pem`，然后在 App 顶栏点「CA 证书」导入即可。
+>
+> **不需要管理员权限，也不需要改系统信任库。** 导入只作用于**网关环境**：
+> 只有 `claude <环境名>` 这一次启动会带上它（`NODE_EXTRA_CA_CERTS`），
+> 直接敲的 `claude` 与独立登录环境都不受影响。它不会改动 macOS 钥匙串或 Windows 系统根证书库 ——
+> 因此也不必为了这一步去执行 `sudo security add-trusted-cert` 或管理员 `certutil -addstore Root`。
+> 各处作用的信任范围见下方「WorkBuddy 公司网关模型」一节。
+
+1. 打开 App，切到「环境配置」。
+2. 「新建」一个环境：名称填命令词（如 `corp`），类型选「路由环境」，
+   网关地址按公司说明填（通常带 `/anthropic` 后缀，例如 `https://gateway.example.com:8080/anthropic`），
    API Key 填公司发给你的 `gw-sk-...`。
 3. 点「保存并接入终端」。
 4. **重开一个终端窗口**（mac 用任意终端 / Windows 用 **PowerShell**）。
@@ -115,19 +137,20 @@ App 内「使用指南」标签页有更详细的图文说明。
 
 ### WorkBuddy 公司网关模型
 
-WorkBuddy 配置与 Claude Code 实例完全独立。打开左侧「WorkBuddy」，填写模型 ID、
+WorkBuddy 配置与 Claude Code 环境完全独立。打开左侧「WorkBuddy」，填写模型 ID、
 MaaS Gateway 的 WorkBuddy 网关根地址和员工 Key，点击「保存并接入」。
 应用会安全合并写入 WorkBuddy 实际读取的 `~/.workbuddy/models.json`，保留已有模型和
 未知字段；WorkBuddy 通常会在 1 秒内热加载，随后可在它的自定义模型列表中直接选择。
 
-北京网关推荐地址：
+网关地址请向你的管理员索取。**本应用不预置任何网关地址**，输入框只给一个示例格式。
 
-```
-https://10.0.147.128:8080
-```
-
-- HTTPS 8080 使用自签名证书时，需要先导入管理员提供的 CA 根证书。
-- HTTPS 8080 必须先将管理员提供的 CA 根证书导入系统信任库。
+- 网关用自签名证书时，先向管理员要 CA 根证书。**信任生效在哪一层，取决于你从哪儿导入**：
+  - 顶栏「CA 证书」→ 只影响**网关环境**：仅在 `claude <环境名>` 那一次启动时注入
+    （`NODE_EXTRA_CA_CERTS`），直接敲的 `claude` 与独立登录环境不受影响。
+    **不改动系统信任库**；macOS 上也不会碰系统钥匙串。
+  - 「WorkBuddy → 导入 CA」→ 写入 WorkBuddy 安装目录下的共享 `ca.pem`；
+    在 Windows 上还会加入**当前登录用户**的「受信任根证书」库（不改动其他用户账户）。
+- 是否需要自签名 CA 取决于网关怎么签的证书，与端口号无关。
 - 「测试调用」会真实请求一次模型，可能产生少量用量并进入公司审计。
 - 员工 Key 按 WorkBuddy 官方配置格式保存在其本地 `models.json`，不会写入 Claude Code 配置。
 - 保存采用 revision 校验、备份和原子替换；检测到配置损坏或被其他程序并发修改时拒绝覆盖。
@@ -152,7 +175,7 @@ cc-switch/
 │   ├── App.tsx                五大工作区导航 + 环境状态 + 自动更新
 │   ├── api.ts                 调用 Rust 命令（类型与后端一一对应）
 │   └── components/
-│       ├── ConfigPanel.tsx    实例配置（含模型钉死告警 + 一键还原）
+│       ├── ConfigPanel.tsx    环境配置（含模型钉死告警 + 一键还原）
 │       ├── ExtensionsPanel.tsx Skills / Plugins / MCP / Agents 扩展总览
 │       ├── UsagePanel.tsx     用量统计
 │       ├── DiagnosticsPanel.tsx 健康检查、同步修复与诊断导出
@@ -160,7 +183,7 @@ cc-switch/
 │       ├── GuidePanel.tsx     使用指南
 │       └── CaCertButton.tsx   CA 证书管理
 ├── src-tauri/                 Rust 后端（系统操作）
-│   ├── src/main.rs            实例/集成/证书/用量等命令
+│   ├── src/main.rs            环境/集成/证书/用量等命令
 │   ├── src/health.rs          健康检查、模型钉死检测、诊断导出
 │   ├── src/sync.rs            共享链接与 MCP/插件启用状态合并同步
 │   ├── src/claude_cli.rs      Claude CLI 定位与环境探测

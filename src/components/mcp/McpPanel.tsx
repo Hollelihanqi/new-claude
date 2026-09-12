@@ -8,6 +8,7 @@ import {
   Box,
   Button,
   Card,
+  Code,
   Group,
   Loader,
   Menu,
@@ -93,6 +94,8 @@ function rememberMcpState(nextState: McpState) {
 export default function McpPanel() {
   const pageActive = usePageActive();
   const [state, setState] = useState<McpState | null>(() => cachedMcpState);
+  // 正在恢复哪一行（"环境:条目名"）—— 逐行 loading，不用整页的 busy
+  const [restoringRow, setRestoringRow] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [query, setQuery] = useState("");
@@ -124,6 +127,21 @@ export default function McpPanel() {
       .finally(() => { inFlight.current = false; setBusy(false); });
   }, []);
 
+  // 「恢复使用共享配置」：**只有用户显式点它**才会撤销覆盖（决策 7.2）。
+  const onRestoreSharedEntry = async (env: string, name: string) => {
+    // 单独一个状态：`busy` 是整页的布尔量，用它做逐行 loading 会把整页卡住
+    setRestoringRow(`${env}:${name}`);
+    try {
+      const message = await api.restoreSharedMcpEntry(env, name);
+      notifications.show({ message, color: "teal" });
+      load(true);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setRestoringRow("");
+    }
+  };
+
   useEffect(() => {
     load();
   }, [load]);
@@ -150,7 +168,7 @@ export default function McpPanel() {
     const q = query.trim().toLowerCase();
     return state.services.filter((s) => {
       if (scopeFilter !== "all" && s.locator.scope !== scopeFilter) return false;
-      // User/Project 无实例，不因实例筛选被隐藏；仅 Local 按实例筛
+      // User/Project 无环境，不因环境筛选被隐藏；仅 Local 按环境筛
       if (s.locator.scope === "local" && instanceFilter !== "all" && s.locator.instanceId !== instanceFilter)
         return false;
       // User 不因项目筛选被隐藏
@@ -208,7 +226,7 @@ export default function McpPanel() {
       if (next.operationWarnings.length > 0) {
         notifications.show({
           color: "orange",
-          title: "主配置已保存，部分实例待同步",
+          title: "主配置已保存，部分环境待同步",
           message: next.operationWarnings.join("；"),
         });
       } else {
@@ -364,12 +382,67 @@ export default function McpPanel() {
       <Group justify="space-between" align="flex-start">
         <div>
           <Title order={3}>MCP 服务</Title>
-          <Text size="sm" c="dimmed">管理用户级、项目本地和项目共享的 MCP 配置。</Text>
+          <Text size="sm" c="dimmed">
+            管理「所有环境」、「指定环境」和「当前项目」三种作用范围的 MCP 配置：
+            写入共享库的会「自动分发」到每个环境，各环境也可单独覆盖。
+          </Text>
         </div>
         <StableRefreshButton busy={busy} label="刷新" onClick={load} />
       </Group>
 
       <McpSummaryGrid summary={summary} />
+
+      {/* 决策 7.2：同名时环境配置优先，但**必须显示冲突**。
+          静默保留会让用户以为共享值已经生效，等到发现不一致时无从判断是哪一步的问题。 */}
+      {state && (state.sharedOverrides?.length ?? 0) > 0 && (
+        <Alert
+          color="orange"
+          variant="light"
+          icon={<IconAlertTriangle size={16} />}
+          title={`有 ${state.sharedOverrides.length} 条环境配置覆盖了共享配置`}
+        >
+          <Stack gap={6}>
+            {state.sharedOverrides.map((o) => (
+              <Group
+                key={`${o.env}:${o.name}`}
+                gap="xs"
+                justify="space-between"
+                wrap="nowrap"
+                align="flex-start"
+              >
+                <Text size="sm">
+                  环境 <Code>{o.env}</Code> 的 <Code>{o.name}</Code>：{o.reason}。
+                  {o.sharedValue ? (
+                    <> 共享值为 <Code>{JSON.stringify(o.sharedValue)}</Code>；</>
+                  ) : (
+                    <> 共享库里已经没有这一条；</>
+                  )}
+                  {o.envValue ? (
+                    <> 该环境当前是 <Code>{JSON.stringify(o.envValue)}</Code>。</>
+                  ) : (
+                    <> 该环境已把它删除。</>
+                  )}
+                </Text>
+                {o.sharedValue ? (
+                  <Button
+                    size="xs"
+                    variant="light"
+                    style={{ flexShrink: 0 }}
+                    loading={restoringRow === `${o.env}:${o.name}`}
+                    onClick={() => onRestoreSharedEntry(o.env, o.name)}
+                  >
+                    恢复使用共享配置
+                  </Button>
+                ) : null}
+              </Group>
+            ))}
+            <Text size="xs" c="dimmed">
+              覆盖不会被自动改写 —— 只有你点「恢复使用共享配置」才会改回共享值，
+              共享库后续的更新也会一直绕过这些条目。
+            </Text>
+          </Stack>
+        </Alert>
+      )}
 
       {err && (
         <Alert color="red" icon={<IconAlertTriangle size={16} />} title="加载失败">{err}</Alert>
@@ -419,7 +492,7 @@ export default function McpPanel() {
           value={instanceFilter}
           onChange={(v) => setInstanceFilter(v ?? "all")}
           data={[
-            { value: "all", label: "全部实例" },
+            { value: "all", label: "全部环境" },
             ...(state?.instances ?? []).map((i) => ({ value: i.id, label: i.label })),
           ]}
           style={{ flex: "0 0 140px" }}
@@ -586,7 +659,7 @@ export default function McpPanel() {
                       value={SCOPE_LABELS[detailService.locator.scope]}
                     />
                     {detailService.locator.instanceId && (
-                      <DetailField label="实例" value={detailService.locator.instanceId} />
+                      <DetailField label="环境" value={detailService.locator.instanceId} />
                     )}
                     {detailService.locator.projectPath && (
                       <DetailField label="项目路径" value={detailService.locator.projectPath} mono />
@@ -682,7 +755,7 @@ export default function McpPanel() {
               ))}
               {previewState.preview.affectedInstances.length > 0 && (
                 <Text size="xs" c="dimmed" mt={4}>
-                  受影响实例：{previewState.preview.affectedInstances.join("、")}
+                  受影响环境：{previewState.preview.affectedInstances.join("、")}
                 </Text>
               )}
             </Box>

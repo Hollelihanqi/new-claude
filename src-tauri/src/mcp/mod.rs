@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-use storage::McpPaths;
+pub(crate) use codex_sync::write_guard as target_write_guard;
+pub(crate) use storage::{environment_cleanup_files, forget_environment_records, McpPaths};
 
 // ---------------- 领域类型 ----------------
 
@@ -222,6 +223,22 @@ pub struct McpState {
     pub operation_warnings: Vec<String>,
     pub sync_targets: Vec<McpSyncTargetInfo>,
     pub sync_target_revisions: BTreeMap<String, String>,
+    /// 哪些环境的哪些条目**覆盖了共享配置**（决策 7.2 要求界面必须显示，
+    /// 而不是静默以环境为准 —— 静默会让用户以为共享值已经生效）。
+    pub shared_overrides: Vec<SharedOverride>,
+}
+
+/// 一条"环境覆盖了共享配置"的记录。`shared_value` 与 `env_value` 一起给出来，
+/// 界面才能展示"两边差异"。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedOverride {
+    pub env: String,
+    pub name: String,
+    /// 人类可读的原因（见 `shared_config::OverrideReason::label`）
+    pub reason: String,
+    pub shared_value: Option<Value>,
+    pub env_value: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -402,16 +419,16 @@ pub fn apply_mcp_change(request: McpChangeRequest) -> Result<McpState, String> {
     check_revisions(&paths, &instances, &affected, &request.expected_revisions)?;
 
     // 所有作用域统一走 workbench 事务；Project 启停由 disable_locator/enable_locator
-    // 内部分发到 settings.local.json，无需特殊分支（避免空实例数组漏校验次级实例发现的项目）。
+    // 内部分发到 settings.local.json，无需特殊分支（避免空环境数组漏校验次级环境发现的项目）。
     apply_action_files_checked(&paths, &instances, action, &request.expected_revisions)?;
 
-    // User 变更后跨实例同步：主账户写成功即为目标态，部分实例失败保留并明确返回 warning。
+    // User 变更后跨环境同步：默认 Claude写成功即为目标态，部分环境失败保留并明确返回 warning。
     let mut operation_warnings = Vec::new();
     if touches_user(action) {
         match crate::sync::sync_configs_locked(&current_instances()) {
             Ok(outcome) => operation_warnings.extend(outcome.warnings),
             Err(e) => {
-                let warning = format!("MCP 变更后的跨实例同步失败：{e}");
+                let warning = format!("MCP 变更后的跨环境同步失败：{e}");
                 crate::sync::log_line(&warning);
                 operation_warnings.push(warning);
             }
@@ -513,10 +530,13 @@ fn build_preview(
         _ => Vec::new(),
     };
 
-    // User 变更：区分直接写入主账户与随后同步实例（非原子）。
+    // 「所有环境」的变更：写的是**应用共享库**，随后**单向分发**到各环境。
+    // 旧文案说的是"直接修改默认 Claude ~/.claude.json，随后同步到全部环境"——
+    // 决策 7.2 之后默认 Claude 已退出这条链，那句话不再成立。
     let user_sync_note = if touches_user(action) {
         Some(
-            "直接修改主账户 ~/.claude.json，随后同步到全部实例（非原子：部分实例失败将在下次同步收敛）"
+            "写入应用共享库 ~/.cc-manager/shared/mcp.json，随后单向分发到全部环境\
+             （非原子：个别环境失败会在下次分发时收敛；环境里同名的自有配置优先，不会被覆盖）"
                 .to_string(),
         )
     } else {
@@ -609,7 +629,7 @@ fn validate_action(
 
 type ActionDescription = (String, Vec<String>, Option<Value>, Option<Value>);
 
-/// 生成动作文案、受影响实例、及脱敏前的前后配置。来源读取失败时返回错误阻断预览。
+/// 生成动作文案、受影响环境、及脱敏前的前后配置。来源读取失败时返回错误阻断预览。
 fn describe_action(
     paths: &McpPaths,
     instances: &[String],
@@ -721,7 +741,7 @@ mod tests {
     }
 
     fn write_main(paths: &McpPaths, v: Value) {
-        storage::write_json_transactional(paths, &paths.main_claude_json(), &v).unwrap();
+        storage::write_json_transactional(paths, &paths.shared_mcp_json(), &v).unwrap();
     }
     fn map_of(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
@@ -757,8 +777,8 @@ mod tests {
         fs::create_dir_all(&proj).unwrap();
         storage::register_project(&paths, &proj.display().to_string()).unwrap();
         // original = user old，其来源 main .claude.json 损坏
-        fs::write(paths.main_claude_json(), "{ broken json").unwrap();
-        let main_bytes = fs::read(paths.main_claude_json()).unwrap();
+        fs::write(paths.shared_mcp_json(), "{ broken json").unwrap();
+        let main_bytes = fs::read(paths.shared_mcp_json()).unwrap();
         // 预填 expected_revisions，确保失败来自 original 来源读取而非 revision 缺失
         let project_sid = format!("project:{}", proj.display());
         let mut expected = BTreeMap::new();
@@ -786,7 +806,7 @@ mod tests {
         let res = build_preview(&paths, &[], &request);
         assert!(res.is_err(), "original 来源损坏时 preview 必须拒绝");
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             main_bytes,
             "原始 bytes 不变"
         );
@@ -831,7 +851,7 @@ mod tests {
     fn preview_allows_create_when_source_missing() {
         // 明确 "missing" revision 且文件确实不存在时允许创建
         let (paths, _t) = setup();
-        assert!(!paths.main_claude_json().exists());
+        assert!(!paths.shared_mcp_json().exists());
         let mut expected = BTreeMap::new();
         expected.insert("user:__main__".to_string(), "missing".to_string());
         let request = McpChangeRequest {
@@ -850,8 +870,8 @@ mod tests {
     fn preview_rejects_corrupt_enabled_source() {
         // 损坏 enabled 来源：describe_action 读取 target 来源失败 → preview 拒绝
         let (paths, _t) = setup();
-        fs::write(paths.main_claude_json(), "{ not json").unwrap();
-        let bytes = fs::read(paths.main_claude_json()).unwrap();
+        fs::write(paths.shared_mcp_json(), "{ not json").unwrap();
+        let bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let mut expected = BTreeMap::new();
         expected.insert("user:__main__".to_string(), rev_of(&paths, "user:__main__"));
         let request = McpChangeRequest {
@@ -863,7 +883,7 @@ mod tests {
             "损坏 enabled 来源应拒绝 preview"
         );
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             bytes,
             "原始 bytes 不变"
         );

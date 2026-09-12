@@ -6,9 +6,14 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_ENDPOINT: &str = "https://10.0.147.128:8080";
+// 注意：这里**不再**有任何默认网关地址。
+// 原先是一个公司内网地址，后果有两层：
+//   1) 泄漏组织内网地址（本仓要公开）；
+//   2) 它同时是前端表单的**预填值** —— 公开用户打开页面时地址栏已被填好，
+//      不动它直接保存就会指向一个不可达的内网地址。
+// 因此所有回退值改为空串，由界面用 placeholder 提示用户填写自己的网关。
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ORGANIZATION_OWNER_FIELD: &str = "_ccManagerOrganizationId";
@@ -83,7 +88,12 @@ pub struct WorkBuddyState {
     gateway: WorkBuddyGatewayConfig,
     organizations: Vec<WorkBuddyOrganizationState>,
     models: Vec<WorkBuddyModel>,
+    /// `models.json` 的修订号
     revision: String,
+    /// `cc-manager-gateway.json` 的修订号
+    gateway_revision: String,
+    /// `cc-manager-organizations.json` 的修订号
+    organizations_revision: String,
     warnings: Vec<String>,
 }
 
@@ -91,6 +101,9 @@ pub struct WorkBuddyState {
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkBuddyOrganizationRequest {
     id: Option<String>,
+    /// 前端拿到的 `organizationsRevision`。与 model 写入同级保护：
+    /// 不一致说明文件被别的程序改过，拒绝覆盖而不是静默 last-writer-wins。
+    expected_revision: String,
     name: String,
     #[serde(default)]
     model_prefix: String,
@@ -128,6 +141,8 @@ pub struct WorkBuddyModelInput {
 pub struct SaveWorkBuddyGatewayRequest {
     url: String,
     api_key: Option<String>,
+    /// 同 organization：防静默覆盖别的程序写的内容
+    expected_revision: String,
 }
 
 #[derive(Deserialize)]
@@ -178,6 +193,15 @@ pub struct ListWorkBuddyModelsRequest {
     api_key: Option<String>,
 }
 
+/// 安装目录写入失败时给出说明，成功时给出正常文案。
+fn bundle_note_or(note: &str, target: &Path) -> String {
+    if note.is_empty() {
+        format!("CA 已同步到 WorkBuddy CLI（{}）。", target.display())
+    } else {
+        note.to_string()
+    }
+}
+
 fn config_dir() -> PathBuf {
     std::env::var_os("WORKBUDDY_CONFIG_DIR")
         .filter(|value| !value.is_empty())
@@ -200,6 +224,379 @@ fn organizations_path() -> PathBuf {
 
 fn installation_path() -> PathBuf {
     config_dir().join("cc-manager-installation.json")
+}
+
+/// 原子替换文本文件：同目录临时文件 → rename。
+///
+/// WorkBuddy 的 `ca.pem` 是**多方共用**的（本应用合并进去、用户可能也手工放过证书、
+/// 其它工具也可能维护它）。`fs::write` 会先截断再写，断电 / 磁盘满 / 写入失败
+/// 会把别人的证书一起毁掉。rename 在同一文件系统内是原子的，要么旧内容要么新内容。
+fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
+    // 临时名必须唯一：固定的 .ccm-ca.tmp 会让并发的导入/清理互相覆盖
+    let tmp = path.with_extension(format!("ccm-ca-{}.tmp", crate::sync::unique_token()));
+    fs::write(&tmp, text).map_err(|error| format!("写入临时证书失败：{error}"))?;
+    fs::rename(&tmp, path).map_err(|error| {
+        // rename 失败时清理临时文件；**不要**去动目标文件
+        let _ = fs::remove_file(&tmp);
+        format!("替换证书文件失败：{error}")
+    })
+}
+
+/// 把 PEM 文本切成证书块，去掉空白后规范化 —— 便于跨来源比对同一张证书。
+fn pem_blocks(text: &str) -> Vec<String> {
+    let normalized = text.replace(['\r', '\n'], "");
+    let mut blocks = vec![];
+    let mut rest = normalized.as_str();
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    while let Some(start) = rest.find(BEGIN) {
+        let Some(end) = rest[start..].find(END) else {
+            break;
+        };
+        let stop = start + end + END.len();
+        blocks.push(rest[start..stop].to_string());
+        rest = &rest[stop..];
+    }
+    blocks
+}
+
+/// 从 WorkBuddy CLI 的 `ca.pem` 里**只移除本应用添加的证书**，保留其它来源的条目。
+///
+/// 清理 CA 时必须走这里：`sync_workbuddy_ca_bundle` 是**合并**写入的，
+/// 直接删文件会把用户/其它工具放的证书一起删掉。
+fn remove_managed_pem_blocks(existing: &str, managed: &str) -> String {
+    let managed_blocks = pem_blocks(managed);
+    if managed_blocks.is_empty() {
+        return existing.to_string();
+    }
+    let mut out = existing.to_string();
+    for certificate in pem_certificates(existing) {
+        if managed_blocks.contains(&normalize_pem(&certificate)) {
+            out = out.replacen(&certificate, "", 1);
+        }
+    }
+    if out.trim().is_empty() {
+        String::new()
+    } else {
+        out
+    }
+}
+
+// ---------------- CA 所有权清单（审查 F3） ----------------
+//
+// 撤销必须只撤销**本应用建立的**信任。原先只按 PEM 内容比对：
+// 如果同一张证书在导入前就已经存在于 WorkBuddy 的 ca.pem（用户手工放的）
+// 或 Windows 当前用户 Root 库（IT 推送的），清理时会把它一并撤掉 ——
+// 那是**撤销了不属于我们的信任**，可能直接打断机器原有的信任链。
+//
+// 所以导入时留下凭据：指纹 + **每个目标在导入前是否已存在**。撤销只处理确由本应用新增的。
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedCert {
+    /// 规范化 PEM 块的 sha256（用 content_hash，带算法前缀）
+    pub fingerprint: String,
+    /// 该证书的 PEM 块，撤销时按它匹配
+    pub pem: String,
+    /// 导入前 WorkBuddy 的 ca.pem 里**没有**它 ⇒ 是本应用加进去的
+    pub added_to_workbuddy: bool,
+    /// 导入前 Windows 当前用户 Root 库里**没有**它 ⇒ 是本应用加进去的。
+    /// `None` = **无法判定**（查询失败）。无法判定一律按"不是我们加的"处理：
+    /// 漏撤销只是留下信任，误撤销会破坏别人的信任链 —— 两者不对称。
+    pub added_to_root_store: Option<bool>,
+    /// epoch 秒
+    pub at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct ManagedCerts {
+    certificates: Vec<ManagedCert>,
+}
+
+/// "导入前是否已存在" → "是否由本应用新增"。
+///
+/// 抽出来是因为这两个语义**方向相反**，极易写反：上一版直接把 `root_store_contains`
+/// 的结果（"已存在"）赋给了 `added_to_root_store`（"新增"）——
+/// 于是别人装的证书被记成我们装的（清理时误删），我们装的被记成 false（清理时反而留下）。
+fn ownership_from_presence(exists: Option<bool>) -> Option<bool> {
+    // None = 查询失败 ⇒ 保持"无法判定"，不能猜
+    exists.map(|already_there| !already_there)
+}
+
+/// 那张证书是否**已在**当前 Windows 用户的根证书库里。
+/// `None` = 查询失败/无法判定 —— 调用方按"不是我们加的"处理（保守）。
+#[cfg(target_os = "windows")]
+fn root_store_contains(pem: &str) -> Option<bool> {
+    access_root_certificate(pem, false).ok()
+}
+
+/// 按证书指纹精确查询/删除。certutil 的 CertId 参数不接受 PEM 文件路径。
+/// 证书经标准输入传递；查询故障与“证书不存在”严格区分。
+#[cfg(target_os = "windows")]
+fn access_root_certificate(pem: &str, remove: bool) -> Result<bool, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let operation = if remove {
+        "$store.RemoveRange($matches)"
+    } else {
+        ""
+    };
+    let mode = if remove { "ReadWrite" } else { "ReadOnly" };
+    let script = format!(
+        r#"
+$ErrorActionPreference='Stop'
+$pem=[Console]::In.ReadToEnd()
+$body=$pem -replace '-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s',''
+$cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String($body))
+$store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+try {{
+  $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::{mode})
+  $matches=$store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$cert.Thumbprint,$false)
+  if ($matches.Count -gt 0) {{ {operation}; [Console]::Out.Write('present') }} else {{ [Console]::Out.Write('absent') }}
+}} finally {{ $store.Close(); $cert.Dispose() }}
+"#
+    );
+    let mut child = crate::ps_command()
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or("无法打开证书输入")?
+        .write_all(pem.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("Windows 用户证书库操作失败，未确认结果".into());
+    }
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "present" => Ok(true),
+        "absent" => Ok(false),
+        _ => Err("证书库返回不可识别的结果".into()),
+    }
+}
+
+fn managed_certs_path() -> PathBuf {
+    crate::cfg_dir().join("managed-certs.json")
+}
+
+fn read_managed_certs() -> Result<ManagedCerts, String> {
+    let text = crate::read_optional_text(&managed_certs_path())?;
+    if text.is_empty() && !managed_certs_path().exists() {
+        return Ok(ManagedCerts::default());
+    }
+    serde_json::from_str(&text).map_err(|e| format!("CA 所有权记录损坏，已停止修改：{e}"))
+}
+
+/// 清理成功后**移除已处理条目**。
+/// 不缩减的话，清完仍留着旧记录；下次再导入同一张证书时，
+/// `record_managed_certs` 会保留「最早那次」的所有权判定 —— 而那个判定可能已经过时。
+pub(crate) fn prune_managed_certs(cleared_pem: &str) -> Result<(), String> {
+    let cleared = pem_blocks(cleared_pem);
+    if cleared.is_empty() {
+        return Ok(());
+    }
+    let mut manifest = read_managed_certs()?;
+    let before = manifest.certificates.len();
+    manifest
+        .certificates
+        .retain(|cert| !cleared.contains(&cert.pem));
+    if manifest.certificates.len() == before {
+        return Ok(());
+    }
+    fs::create_dir_all(crate::cfg_dir()).map_err(|e| e.to_string())?;
+    crate::sync::write_json_atomic(
+        &managed_certs_path(),
+        &serde_json::to_value(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 按指纹合并写入（同一张证书重复导入不产生重复条目）
+fn record_managed_certs(new_entries: Vec<ManagedCert>) -> Result<(), String> {
+    if new_entries.is_empty() {
+        return Ok(());
+    }
+    let mut manifest = read_managed_certs()?;
+    for entry in new_entries {
+        match manifest
+            .certificates
+            .iter_mut()
+            .find(|existing| existing.fingerprint == entry.fingerprint)
+        {
+            // 重复导入：保留"最早那次"的所有权判定（以第一次为准）
+            Some(existing) => {
+                existing.at = existing.at.min(entry.at);
+                // 启动时只合并 WorkBuddy bundle，尚未操作 Root 库；导入时补齐归属。
+                if existing.added_to_root_store.is_none() {
+                    existing.added_to_root_store = entry.added_to_root_store;
+                }
+            }
+            None => manifest.certificates.push(entry),
+        }
+    }
+    fs::create_dir_all(crate::cfg_dir()).map_err(|e| e.to_string())?;
+    crate::sync::write_json_atomic(
+        &managed_certs_path(),
+        &serde_json::to_value(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 撤销本应用建立的 CA 信任。
+///
+/// `managed_pem` 是清空前 `~/.cc-manager/ca-cert.pem` 的内容 —— 即本应用曾
+/// **合并进 WorkBuddy CLI**、并在 Windows 上**加入当前用户 Root 库**的那批证书。
+///
+/// 返回逐条结果（成功与失败都列出）。调用方必须据此**如实**汇报，
+/// **不得**在部分失败时宣称"已清空所有 CA 证书" —— 那正是本条要修的缺陷。
+pub(crate) fn revoke_managed_ca(managed_pem: &str) -> Vec<String> {
+    let mut notes = vec![];
+    let mut manifest = match read_managed_certs() {
+        Ok(manifest) => manifest,
+        Err(e) => return vec![format!("❌ {e}")],
+    };
+    manifest.certificates = selected_managed_certs(&manifest, managed_pem);
+
+    if manifest.certificates.is_empty() {
+        // **没有所有权记录就不撤销。**
+        // 撤销不成只是"没做成"；而误撤销会打断机器原有的信任链 —— 两者不对称。
+        // 这条路径主要出现在"用旧版本导入过证书"的存量用户上，给出可操作的补救说明。
+        // 注意这里用 **⚠️ 而不是 ❌**：没有记录只是"外部撤销这一步做不了"，
+        // 本地 bundle 是应用独占管理的，必须照常清掉。
+        // 上一版标成 ❌ ⇒ 只用顶栏导入过的用户**永远清不掉**（功能回归，见审查）。
+        if !pem_blocks(managed_pem).is_empty() {
+            notes.push(
+                "⚠️ 没有这些证书的所有权记录（多半是旧版本导入的），因此「未撤销外部信任」（WorkBuddy ca.pem / Windows 用户根证书库）。
+                 本地信任库已照常清空。如需撤销外部信任：先重新导入一次这些证书（会建立所有权记录），再执行清空；
+                 或手工检查 WorkBuddy 的 ca.pem 与 Windows 用户「受信任根证书」库。"
+                    .into(),
+            );
+        }
+        return notes;
+    }
+
+    // ① WorkBuddy 的合并 bundle：只摘掉**确认由本应用加入**的那些
+    let owned_in_bundle: String = manifest
+        .certificates
+        .iter()
+        .filter(|cert| cert.added_to_workbuddy)
+        .map(|cert| {
+            format!(
+                "{}
+",
+                cert.pem
+            )
+        })
+        .collect();
+    if owned_in_bundle.is_empty() {
+        notes.push("所有权记录中没有本应用加入 WorkBuddy bundle 的证书。".into());
+    } else {
+        match find_executable() {
+            Some(executable) => {
+                match workbuddy_ca_path_for(executable.as_path()).filter(|path| path.is_file()) {
+                    Some(target) => match fs::read_to_string(&target) {
+                        Ok(existing) => {
+                            let left = remove_managed_pem_blocks(&existing, &owned_in_bundle);
+                            if left == existing {
+                                notes
+                                    .push(format!("{} 里没有本应用添加的证书。", target.display()));
+                            } else if let Err(error) = write_text_atomic(&target, &left) {
+                                notes.push(format!(
+                                    "❌ 未能从 {} 移除证书：{error}",
+                                    target.display()
+                                ));
+                            } else {
+                                notes.push(format!(
+                                    "已从 {} 移除本应用添加的证书。",
+                                    target.display()
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            notes.push(format!("❌ 读取 {} 失败：{error}", target.display()))
+                        }
+                    },
+                    None => notes.push("未找到 WorkBuddy CLI 目录，跳过 CLI 证书清理。".into()),
+                }
+            }
+            None => notes.push("未检测到 WorkBuddy 安装，跳过 CLI 证书清理。".into()),
+        }
+    }
+
+    // ② Windows 用户 Root 库：只删**确认由本应用加入**的
+    #[cfg(target_os = "windows")]
+    {
+        let owned: Vec<&ManagedCert> = manifest
+            .certificates
+            .iter()
+            .filter(|cert| cert.added_to_root_store == Some(true))
+            .collect();
+        let skipped = manifest
+            .certificates
+            .iter()
+            .filter(|cert| cert.added_to_root_store.is_none())
+            .count();
+        if skipped > 0 {
+            notes.push(format!(
+                "有 {skipped} 张证书在导入时无法判定是否已在根证书库中，「未撤销」（保守处理：漏撤销只留下信任，误撤销会打断别人的信任链）。"
+            ));
+        }
+        if owned.is_empty() {
+            notes.push("没有确认由本应用加入 Windows 用户根证书库的证书。".into());
+        } else {
+            let mut removed = 0usize;
+            let mut failures = vec![];
+            for cert in owned {
+                match access_root_certificate(&cert.pem, true) {
+                    Ok(true) => removed += 1,
+                    Ok(false) => {} // 已被移除，重复清理成功。
+                    Err(error) => failures.push(error),
+                }
+            }
+            if removed > 0 {
+                notes.push(format!(
+                    "已从当前 Windows 用户的受信任根证书库移除 {removed} 张证书。"
+                ));
+            }
+            for failure in failures {
+                notes.push(format!("❌ 未能从 Windows 用户根证书库移除：{failure}"));
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        notes.push(format!(
+            "macOS 未向系统钥匙串写入证书（所有权记录 {} 条），无需撤销系统信任。",
+            manifest.certificates.len()
+        ));
+    }
+
+    notes
+}
+
+/// 含**明文密钥**的 WorkBuddy 配置文件，供权限检查使用。
+/// 注意：这些文件在 Windows 与 macOS 上都是未加密的 JSON（`workbuddy.rs` 内
+/// 全部 write 路径都走 `write_document`），所以它们才是权限检查的主要对象，
+/// 而不是 macOS 钥匙串 / Windows DPAPI 所覆盖的网关 Key。
+///
+/// **必须连带写入 `write_document` 派生出的所有产物**：backup / previous 里存的
+/// 同样是含明文 apiKey 的旧内容，而且是历史版本（可能在本轮收紧权限之前生成）
+/// 留下的，权限很可能比主文件松。只查主文件会谎报"均仅限本人读取"。
+pub(crate) fn credential_file_paths() -> Vec<PathBuf> {
+    let mut paths = vec![];
+    for base in [gateway_path(), organizations_path(), models_path()] {
+        paths.push(base.clone());
+        paths.push(base.with_extension("cc-manager.backup.json"));
+        paths.push(base.with_extension("cc-manager.previous.json"));
+        paths.push(base.with_extension("cc-manager.tmp"));
+    }
+    paths
 }
 
 fn read_organizations() -> Result<Vec<WorkBuddyOrganization>, String> {
@@ -273,6 +670,10 @@ fn validate_organization(
     let parsed = url::Url::parse(url).map_err(|_| "网关地址不是有效 URL。")?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("网关地址必须以 http:// 或 https:// 开头。".into());
+    }
+    // 员工 Key 走 Bearer，远程 http 下就是明文过网 —— 只放行 loopback
+    if !crate::transport_is_loopback_or_secure(url) {
+        return Err(crate::PLAINTEXT_TRANSPORT_REJECTED.into());
     }
     Ok(())
 }
@@ -381,7 +782,7 @@ fn read_gateway_config() -> Result<StoredGatewayConfig, String> {
     let path = gateway_path();
     if !path.exists() {
         return Ok(StoredGatewayConfig {
-            url: DEFAULT_ENDPOINT.into(),
+            url: String::new(),
             api_key: String::new(),
         });
     }
@@ -394,7 +795,7 @@ fn read_gateway_config() -> Result<StoredGatewayConfig, String> {
         url: value
             .get("url")
             .and_then(Value::as_str)
-            .unwrap_or(DEFAULT_ENDPOINT)
+            .unwrap_or_default()
             .to_string(),
         api_key: value
             .get("apiKey")
@@ -533,6 +934,10 @@ fn clean_executable_path(value: &str) -> Option<PathBuf> {
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
+/// 生产路径上只有 macOS 会调用它（进程命令行解析出 .app 路径）；
+/// 其它平台只有测试用到，所以在那里显式允许 dead_code，
+/// 而不是删掉它 —— 删了 macOS 就编译不过。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn macos_app_from_process_command(command: &str) -> Option<PathBuf> {
     let marker = "WorkBuddy.app/Contents/MacOS/";
     let marker_start = command.find(marker)?;
@@ -648,6 +1053,10 @@ fn is_workbuddy_executable(path: &Path) -> bool {
 }
 
 fn find_executable() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("CC_MANAGER_TEST_HOME").is_some() {
+        return saved_executable().filter(|path| is_workbuddy_executable(path));
+    }
     saved_executable()
         .filter(|path| is_workbuddy_executable(path))
         .or_else(|| running_executable().filter(|path| is_workbuddy_executable(path)))
@@ -710,6 +1119,9 @@ fn workbuddy_ca_path_for(executable: &Path) -> Option<PathBuf> {
     workbuddy_cli_dir_for(executable).map(|dir| dir.join("ca.pem"))
 }
 
+/// 目前**只有测试**在用（生产走 `workbuddy_ca_path_for`）。
+/// 保留是因为它把"平台 → 路径"的映射单独钉住，测试价值独立于调用点。
+#[cfg(test)]
 fn workbuddy_ca_path_for_platform(
     executable: &Path,
     platform: WorkBuddyPlatform,
@@ -767,16 +1179,31 @@ fn sync_workbuddy_ca_bundle(executable: &Path, bundle: &Path) -> Result<PathBuf,
         .ok_or_else(|| "未找到 WorkBuddy CLI 目录；请重新检测安装位置。".to_string())?;
     let managed =
         fs::read_to_string(bundle).map_err(|error| format!("读取 CA bundle 失败：{error}"))?;
-    let existing = fs::read_to_string(&target).unwrap_or_default();
+    let existing = crate::read_optional_text(&target)?;
     let merged = merge_ca_bundle(&existing, &managed);
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let ownership = pem_blocks(&managed)
+        .into_iter()
+        .map(|pem| ManagedCert {
+            fingerprint: crate::content_hash(pem.as_bytes()),
+            added_to_workbuddy: !pem_blocks(&existing).contains(&pem),
+            pem,
+            added_to_root_store: None,
+            at,
+        })
+        .collect();
     if merged != existing {
-        fs::write(&target, merged).map_err(|error| {
+        write_text_atomic(&target, &merged).map_err(|error| {
             format!(
                 "写入 WorkBuddy CA 文件失败（{}）：{error}",
                 parent.display()
             )
         })?;
     }
+    record_managed_certs(ownership)?;
     Ok(target)
 }
 
@@ -845,7 +1272,7 @@ fn build_state() -> WorkBuddyState {
     let repair_warning = repair_managed_models().err();
     let document = read_document(&path);
     let gateway = read_gateway_config().unwrap_or_else(|_| StoredGatewayConfig {
-        url: DEFAULT_ENDPOINT.into(),
+        url: String::new(),
         api_key: String::new(),
     });
     let mut warnings = Vec::new();
@@ -886,6 +1313,8 @@ fn build_state() -> WorkBuddyState {
         },
         organizations,
         models,
+        gateway_revision: revision(&gateway_path()),
+        organizations_revision: revision(&organizations_path()),
         revision: revision(&path),
         warnings,
     }
@@ -910,6 +1339,10 @@ fn validate_model(model: &mut WorkBuddyModelInput, require_key: bool) -> Result<
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("API 地址必须以 http:// 或 https:// 开头。".into());
     }
+    // 模型请求同样带 Bearer Key，远程 http 一并拒绝
+    if !crate::transport_is_loopback_or_secure(&model.url) {
+        return Err(crate::PLAINTEXT_TRANSPORT_REJECTED.into());
+    }
     if model.use_custom_protocol && !parsed.path().ends_with("/chat/completions") {
         return Err("启用完整地址直连时，API 地址必须以 /chat/completions 结尾。".into());
     }
@@ -932,13 +1365,20 @@ fn write_document(path: &Path, document: &Value) -> Result<(), String> {
     let previous = path.with_extension("cc-manager.previous.json");
     fs::write(&tmp, format!("{text}\n"))
         .map_err(|error| format!("写入 WorkBuddy 临时配置失败：{error}"))?;
+    // 每个产物生成后**立刻**收紧权限，不能只收拾最终文件：
+    //   - `fs::copy` 会连同源文件的权限位一起复制，源可能是 0644；
+    //   - `previous` 来自改名，继承的正是原文件（可能 0644）的权限；
+    //   - 这些产物里都含**明文 apiKey**（见 docs/凭证分域清单），漏一个就前功尽弃。
+    restrict_credential_file(&tmp)?;
     if path.exists() {
         fs::copy(path, &backup).map_err(|error| format!("备份 WorkBuddy 配置失败：{error}"))?;
+        restrict_credential_file(&backup)?;
         if previous.exists() {
             fs::remove_file(&previous).map_err(|error| format!("清理旧临时文件失败：{error}"))?;
         }
         fs::rename(path, &previous)
             .map_err(|error| format!("准备替换 WorkBuddy 配置失败：{error}"))?;
+        restrict_credential_file(&previous)?;
     }
     if let Err(error) = fs::rename(&tmp, path) {
         if previous.exists() && !path.exists() {
@@ -948,11 +1388,25 @@ fn write_document(path: &Path, document: &Value) -> Result<(), String> {
         return Err(format!("替换 WorkBuddy 配置失败：{error}"));
     }
     let _ = fs::remove_file(previous);
+    restrict_credential_file(path)?;
+    Ok(())
+}
+
+/// 收紧凭证文件权限：unix 下设 0600（仅本人可读写）。
+///
+/// Windows 分支不做事：威胁边界只到"同机其他普通用户"，而用户目录的继承 ACL
+/// 已经覆盖了这一点（实见 docs/凭证分域清单-2026-09-12.md）。管理员/SYSTEM 不属于
+/// 文件权限能可靠防御的范围，所以不做显式 DACL —— 见该文档的威胁边界定义。
+fn restrict_credential_file(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("限制 WorkBuddy 配置文件权限失败：{error}"))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
     Ok(())
 }
@@ -1011,13 +1465,26 @@ pub fn set_workbuddy_executable(path: String) -> Result<WorkBuddyState, String> 
         ));
     }
     let executable = candidate.canonicalize().unwrap_or(candidate);
+    // 检测结果**先持久化**：那正是本命令的职责，不该因为后面的 CA 同步失败而回退。
     save_executable(&executable)?;
 
-    let certificate = crate::cert_path();
+    // CA 同步写成**可报告的非阻断步骤**：装到 Program Files / /Applications 时非管理员
+    // 写不进去，原先把整条命令判失败 —— 但安装位置其实已经保存了（部分提交 + 误导性报错）。
+    let mut note = None;
+    let certificate = crate::union_ca_bundle_path();
     if certificate.exists() {
-        sync_workbuddy_ca_bundle(&executable, &certificate)?;
+        if let Err(error) = sync_workbuddy_ca_bundle(&executable, &certificate) {
+            note = Some(format!(
+                "已记住 WorkBuddy 安装位置，但未能写入其安装目录的 CA（{error}）。\\
+                 这通常是权限不足；本应用与系统层面的信任不受影响，启动 WorkBuddy 时仍会通过环境变量注入 CA。"
+            ));
+        }
     }
-    Ok(build_state())
+    let mut state = build_state();
+    if let Some(note) = note {
+        state.warnings.push(note);
+    }
+    Ok(state)
 }
 
 #[tauri::command]
@@ -1029,6 +1496,13 @@ pub fn save_workbuddy_gateway(
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("网关地址必须以 http:// 或 https:// 开头。".into());
     }
+    // 与 organization / model 同一条规则。**不能因为"前端暂时没有调用点"就省掉**：
+    // IPC 命令是可以被直接调用的，后端不能靠前端不可达来维持安全边界。
+    if !crate::transport_is_loopback_or_secure(&request.url) {
+        return Err(crate::PLAINTEXT_TRANSPORT_REJECTED.into());
+    }
+    // 与 model 写入同级的并发保护：文件被别的程序改过就拒绝覆盖
+    ensure_expected_revision(&gateway_path(), &request.expected_revision)?;
     let previous = read_gateway_config()?;
     let api_key = request
         .api_key
@@ -1080,6 +1554,8 @@ pub fn save_workbuddy_organization(
         &mut request.model_prefix,
         &mut request.url,
     )?;
+    // 与 model 写入同级的并发保护：文件被别的程序改过就拒绝覆盖
+    ensure_expected_revision(&organizations_path(), &request.expected_revision)?;
     let mut organizations = read_organizations()?;
     let index = request.id.as_deref().and_then(|id| {
         organizations
@@ -1362,17 +1838,74 @@ pub fn import_workbuddy_ca(path: String) -> Result<String, String> {
 
     crate::import_cert(path)?;
     let executable = find_executable().ok_or("未检测到 WorkBuddy 安装，无法同步 CLI CA。")?;
-    let target = sync_workbuddy_ca_bundle(&executable, &crate::cert_path())?;
+
+    // **所有权预检必须在写入之前做**：写进去之后就再也分不清
+    // "是本应用加的" 与 "本来就在那里"（审查 F3）。
+    let source_pems = pem_blocks(&fs::read_to_string(&certificate).unwrap_or_default());
+    let workbuddy_before = workbuddy_ca_path_for(executable.as_path())
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let workbuddy_blocks_before = pem_blocks(&workbuddy_before);
+    let recorded_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut owned: Vec<ManagedCert> = source_pems
+        .iter()
+        .map(|block| ManagedCert {
+            fingerprint: crate::content_hash(block.as_bytes()),
+            pem: block.clone(),
+            added_to_workbuddy: !workbuddy_blocks_before.contains(block),
+            added_to_root_store: None,
+            at: recorded_at,
+        })
+        .collect();
+
+    // 写 WorkBuddy 安装目录**可能因权限失败**（装在 Program Files / /Applications 且非管理员）。
+    // 它只是 CLI 侧的补充路径，真正生效的是应用信任库与 Windows 用户根证书库 ——
+    // 原先这里用 `?`，会让整个导入报错，但**应用信任库其实已经改了**（部分提交 + 误导性报错）。
+    // 现在降级为可报告的非阻断步骤，并在失败时如实标注。
+    let (target, bundle_note) = match sync_workbuddy_ca_bundle(
+        &executable,
+        &crate::union_ca_bundle_path(),
+    ) {
+        Ok(target) => (target, String::new()),
+        Err(error) => {
+            // 没写进去就不能声称 bundle 里有本应用加的证书
+            for entry in &mut owned {
+                entry.added_to_workbuddy = false;
+            }
+            (
+                PathBuf::new(),
+                format!(
+                    "⚠️ 未能写入 WorkBuddy 安装目录的 CA（{error}）。这通常是权限不足，不影响本应用与系统层面的信任。WorkBuddy 若仍报证书错误：请以管理员身份重试，或用普通方式启动 WorkBuddy（启动时会通过环境变量注入 CA）。"
+                ),
+            )
+        }
+    };
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // 加库**之前**逐个查是否已在根证书库里 —— 已在的不算本应用建立，将来不撤销
+        // root_store_contains 返回的是"**已经存在**"；而字段语义是"**由本应用新增**"。
+        // 上一版漏了取反 ⇒ 别人装的证书被记成我们装的（清理时误删），
+        // 我们装的被记成 false（清理时反而留下）。见审查。
+        for entry in &mut owned {
+            entry.added_to_root_store = ownership_from_presence(root_store_contains(&entry.pem));
+        }
         let output = Command::new("certutil.exe")
             .args(["-user", "-addstore", "-f", "Root"])
             .arg(&certificate)
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|error| format!("无法启动 Windows 证书导入：{error}"))?;
+        // 加库没成功就不算"本应用新增"——否则清理时会去删一张根本没加进去的证书
+        if !output.status.success() {
+            for entry in &mut owned {
+                entry.added_to_root_store = Some(false);
+            }
+        }
         let windows_note = if output.status.success() {
             "同时已加入当前 Windows 用户的受信任根证书库。".to_string()
         } else {
@@ -1386,18 +1919,36 @@ pub fn import_workbuddy_ca(path: String) -> Result<String, String> {
                 format!("Windows 用户证书库导入未成功，但不影响 WorkBuddy 自定义模型：{detail}")
             }
         };
+        // **所有权记录属于导入事务的一部分**：写不进去就没有可撤销依据，
+        // 以后清理会因缺少依据而拒绝撤销。不能静默吞掉。
+        if let Err(error) = record_managed_certs(owned) {
+            return Err(format!(
+                "证书已写入应用信任库与系统，但「所有权记录」写入失败：{error}。
+\n                 没有这份记录，将来「清空 CA」无法确认哪些是本应用添加的，会拒绝撤销。
+\n                 请修复配置目录写入权限后重新导入一次。"
+            ));
+        }
+        // 这里的 `return` 在 **Windows 上**是多余的（下面的 macOS 块被 cfg 掉、
+        // 它就是最后一句），但在 macOS 上**不是** —— 后面还有 macOS 专属分支要跑。
+        // 两个平台各自的 clippy 会得出相反结论，故显式允许并在此说明。
+        #[allow(clippy::needless_return)]
         return Ok(format!(
-            "CA 已同步到 WorkBuddy CLI（{}）。{} 请完全退出 WorkBuddy（包括系统托盘）后重新打开。",
-            target.display(),
+            "{}{} 请完全退出 WorkBuddy（包括系统托盘）后重新打开。",
+            bundle_note_or(&bundle_note, &target),
             windows_note
         ));
     }
 
     #[cfg(target_os = "macos")]
     {
+        if let Err(error) = record_managed_certs(owned) {
+            return Err(format!(
+                "证书已写入，但「所有权记录写入失败」：{error}。没有这份记录，将来「清空 CA」无法确认哪些是本应用添加的。请修复配置目录写入权限后重新导入一次。"
+            ));
+        }
         Ok(format!(
-            "CA 已同步到 WorkBuddy CLI（{}）。请完全退出 WorkBuddy 后重新打开。",
-            target.display()
+            "{}请完全退出 WorkBuddy 后重新打开。",
+            bundle_note_or(&bundle_note, &target)
         ))
     }
 }
@@ -1419,7 +1970,7 @@ pub async fn list_workbuddy_models(
         let endpoint = openai_models_endpoint(&request.url)?;
         let response = gateway_client()?
             .get(endpoint)
-            .bearer_auth(key)
+            .bearer_auth(&key)
             .send()
             .map_err(request_error)?;
         let status = response.status().as_u16();
@@ -1433,9 +1984,13 @@ pub async fn list_workbuddy_models(
             );
         }
         if !(200..300).contains(&status) {
+            // 先脱敏再截断：反过来会把密钥截成半截留在正文里
             return Err(format!(
                 "网关模型列表接口返回 HTTP {status}：{}",
-                body.chars().take(240).collect::<String>()
+                crate::redact_gateway_text(&body, Some(&key))
+                    .chars()
+                    .take(240)
+                    .collect::<String>()
             ));
         }
         let value: Value = serde_json::from_str(&body)
@@ -1499,9 +2054,10 @@ pub async fn check_workbuddy_certificate(
     tauri::async_runtime::spawn_blocking(move || {
         let parsed = url::Url::parse(url.trim()).map_err(|_| "网关地址不是有效 URL。")?;
         if parsed.scheme() == "http" {
+            // 远程 http 已在保存时被拒，能走到这里的只可能是本机回环
             return Ok(WorkBuddyCertificateStatus {
                 state: "notRequired".into(),
-                detail: "当前网关使用 HTTP，不需要 TLS 证书。".into(),
+                detail: "网关使用本机回环 HTTP，不需要 TLS 证书，流量不出本机。".into(),
             });
         }
         if parsed.scheme() != "https" {
@@ -1509,7 +2065,7 @@ pub async fn check_workbuddy_certificate(
         }
         match gateway_client()?.get(parsed).send() {
             Ok(_) => {
-                let bundle = crate::cert_path();
+                let bundle = crate::union_ca_bundle_path();
                 if bundle.is_file() {
                     if let Some(executable) = find_executable() {
                         if !workbuddy_ca_bundle_is_synced(&executable, &bundle) {
@@ -1735,11 +2291,39 @@ fn execute_json_request(
     Ok((status, response_body))
 }
 
+/// 读应用导入的 CA bundle，拆成逐张证书。
+/// 读不到 / 为空 = 用户没导入过，返回空表（不是错误）。
+fn app_ca_certificates() -> Result<Vec<reqwest::Certificate>, String> {
+    let Ok(text) = fs::read_to_string(crate::union_ca_bundle_path()) else {
+        return Ok(vec![]);
+    };
+    if text.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    reqwest::Certificate::from_pem_bundle(text.as_bytes())
+        .map_err(|error| format!("读取已导入的 CA 证书失败：{error}"))
+}
+
+/// 管理中心的网关客户端。
+///
+/// 信任集必须是**平台信任根 ∪ 应用导入的 CA**，与 claude 一致
+/// （Node 的 `NODE_EXTRA_CA_CERTS` 也是**追加**语义）。原先只用平台信任库，
+/// 于是 macOS 上出现"WorkBuddy 靠 NODE_EXTRA_CA_CERTS 连得上，管理中心却报证书失败"。
 fn gateway_client() -> Result<reqwest::blocking::Client, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    reqwest::blocking::Client::builder()
+    let mut builder = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(30));
+    // **已核实** reqwest 0.13.4 的语义（读的是本机实际编译的那份源码，
+    // `client.rs:756-772`）：`root_certs` 非空时走
+    // `rustls_platform_verifier::Verifier::new_with_extra_roots(..)`，
+    // 即**平台根 + 额外根**，不会把公有 CA 替换掉 —— 与 curl 的 `--cacert`（替换）**相反**。
+    // 所以这里加根是安全的；下面的测试会持续钉住这个语义，防止 reqwest 升级后翻转。
+    for certificate in app_ca_certificates()? {
+        builder = builder.add_root_certificate(certificate);
+    }
+    builder
         .build()
         .map_err(|error| format!("创建网关连接失败：{error}"))
 }
@@ -1761,6 +2345,7 @@ fn request_error(error: reqwest::Error) -> String {
 }
 
 fn anthropic_endpoint(openai_endpoint: &str) -> Result<String, String> {
+    validate_request_url(openai_endpoint)?;
     let mut parsed = url::Url::parse(openai_endpoint).map_err(|_| "API 地址不是有效 URL。")?;
     parsed.set_path("/anthropic/v1/messages");
     parsed.set_query(None);
@@ -1769,6 +2354,7 @@ fn anthropic_endpoint(openai_endpoint: &str) -> Result<String, String> {
 }
 
 fn openai_chat_endpoint(gateway_url: &str) -> Result<String, String> {
+    validate_request_url(gateway_url)?;
     let mut parsed = url::Url::parse(gateway_url).map_err(|_| "API 地址不是有效 URL。")?;
     let path = parsed.path().trim_end_matches('/');
     let endpoint_path = if path.ends_with("/v1/chat/completions") {
@@ -1798,6 +2384,7 @@ fn openai_api_base_url(gateway_url: &str) -> Result<String, String> {
 }
 
 fn openai_models_endpoint(gateway_url: &str) -> Result<String, String> {
+    validate_request_url(gateway_url)?;
     let mut parsed = url::Url::parse(gateway_url).map_err(|_| "网关地址不是有效 URL。")?;
     let path = parsed.path().trim_end_matches('/');
     let base = path.strip_suffix("/chat/completions").unwrap_or(path);
@@ -1812,8 +2399,29 @@ fn openai_models_endpoint(gateway_url: &str) -> Result<String, String> {
     Ok(parsed.to_string())
 }
 
-fn classify_response(status: u16, body: &str) -> WorkBuddyTestResult {
-    let short = body.chars().take(280).collect::<String>();
+fn selected_managed_certs(manifest: &ManagedCerts, requested_pem: &str) -> Vec<ManagedCert> {
+    let requested = pem_blocks(requested_pem);
+    manifest
+        .certificates
+        .iter()
+        .filter(|cert| requested.contains(&cert.pem))
+        .cloned()
+        .collect()
+}
+
+fn validate_request_url(value: &str) -> Result<(), String> {
+    if !crate::valid_base_url(value) {
+        return Err("网关地址必须使用 HTTPS；HTTP 仅允许本机回环地址。已中止请求。".into());
+    }
+    Ok(())
+}
+
+fn classify_response(status: u16, body: &str, api_key: Option<&str>) -> WorkBuddyTestResult {
+    // 网关/代理可能在错误正文里回显 Authorization 头，必须后端脱敏（React 只防 XSS）
+    let short = crate::redact_gateway_text(body, api_key)
+        .chars()
+        .take(280)
+        .collect::<String>();
     let detail = match status {
         200..=299 => "连接成功，WorkBuddy 可以通过该模型调用 MaaS Gateway。".into(),
         400 => format!("网关返回 400，请检查模型 ID 和请求兼容性：{short}"),
@@ -1907,7 +2515,7 @@ pub async fn test_workbuddy_model(
                 detail,
             });
         }
-        Ok(classify_response(status, &response_body))
+        Ok(classify_response(status, &response_body, Some(&key)))
     })
     .await
     .map_err(|error| format!("WorkBuddy 测试任务异常：{error}"))?
@@ -1917,14 +2525,151 @@ fn configure_workbuddy_command(command: &mut Command, certificate: &Path) {
     command.env("NODE_EXTRA_CA_CERTS", certificate);
 }
 
-#[tauri::command]
-pub fn launch_workbuddy() -> Result<(), String> {
-    let executable = find_executable().ok_or("未检测到 WorkBuddy 安装。")?;
-    let certificate = crate::cert_path();
-    if certificate.is_file() && cfg!(any(target_os = "windows", target_os = "macos")) {
-        sync_workbuddy_ca_bundle(&executable, &certificate)?;
+// ---------------- macOS 启动：open --env ----------------
+//
+// 用 `/usr/bin/open --env` 而**不是**直接执行 `.app/Contents/MacOS/` 内的二进制：
+// 后者会绕过 LaunchServices，影响应用激活、单实例、工作目录与生命周期。
+//
+// `open --env` 自 **macOS 13 (Ventura)** 起才支持。低于该版本时**必须明确报错**，
+// 不得静默按普通方式启动并显示成功 —— 那会让用户以为自定义 CA 已生效，
+// 实际连不上自签网关却毫无提示。
+//
+// 下面几个是**纯逻辑**，刻意不加 `#[cfg(target_os = "macos")]`，
+// 这样在 Windows 上也能跑测试（CLAUDE.md：平台逻辑应在任一开发平台可测）。
+
+/// macOS 13 起 `open` 才支持 `--env`
+const MACOS_OPEN_ENV_MIN_MAJOR: u32 = 13;
+
+/// 解析 `sw_vers -productVersion` 的主版本号（"15.6" → 15）
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_macos_major(version: &str) -> Option<u32> {
+    version.trim().split('.').next()?.trim().parse().ok()
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_open_supports_env(major: u32) -> bool {
+    major >= MACOS_OPEN_ENV_MIN_MAJOR
+}
+
+/// 构造 `open` 的参数。**只有需要自定义 CA 时才带 `--env`**；
+/// 不需要时保持普通启动，因此不受 macOS 版本限制。
+///
+/// 路径不做事先转义：这里经 `Command::arg` 走 argv，不经过 shell，
+/// 所以含空格 / 引号 / 中文的路径天然是一个完整参数。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_open_args(executable: &Path, ca: Option<&Path>) -> Vec<String> {
+    let mut args = vec![];
+    if let Some(ca) = ca {
+        args.push("--env".to_string());
+        args.push(format!("NODE_EXTRA_CA_CERTS={}", ca.display()));
     }
+    args.push(executable.display().to_string());
+    args
+}
+
+/// `open --env` 是否可用。`None` = 查不到版本（此时按"不可用"处理，宁可报错也不静默降级）。
+///
+/// 不按 `target_os` 条件编译：调用点是运行期 `cfg!(target_os = "macos")`，
+/// 两个分支在任一平台都要能通过编译，这样 CI 在 Windows 上也能类型检查到它。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_open_env_support() -> Option<bool> {
+    let output = Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_macos_major(&String::from_utf8_lossy(&output.stdout)).map(macos_open_supports_env)
+}
+
+/// macOS 能否按预期启动（纯逻辑，任一平台可测）。
+///
+/// **已在运行是一条独立的失败路径**：`open --env` 只能给**新启动**的进程注入环境变量；
+/// WorkBuddy 已经在跑时 LaunchServices 只是把它激活，变量进不去。
+/// 此时若返回成功，用户会以为 CA 已生效 —— 实际没有，然后来报"导入了证书还是连不上"。
+fn launch_decision(
+    ca_required: bool,
+    already_running: bool,
+    env_support: Option<bool>,
+) -> Result<(), String> {
+    if !ca_required {
+        // 不需要自定义 CA：普通启动既不受版本限制，也不怕已在运行
+        return Ok(());
+    }
+    if already_running {
+        return Err(
+            "WorkBuddy 正在运行，无法为它补上自定义 CA（已启动的进程改不了环境变量）。\
+             请完全退出 WorkBuddy（包括系统托盘）后，再点一次「打开 WorkBuddy」。"
+                .into(),
+        );
+    }
+    match env_support {
+        Some(true) => Ok(()),
+        Some(false) => Err(format!(
+            "当前 macOS 版本不支持带自定义 CA 启动 WorkBuddy（open --env 需要 macOS {MACOS_OPEN_ENV_MIN_MAJOR} 及以上）。请直接启动 WorkBuddy，或把网关 CA 导入系统信任库。"
+        )),
+        None => Err(
+            "无法确定当前 macOS 版本，因此不能确认 open 是否支持 --env 注入自定义 CA。请直接启动 WorkBuddy，或把网关 CA 导入系统信任库。".into(),
+        ),
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn launch_workbuddy_macos(executable: &Path, ca: Option<&Path>) -> Result<(), String> {
+    let ca_required = ca.is_some();
+    // 已在运行时不必再去问版本（结论已经是失败），省一次 sw_vers
+    let already_running = ca_required && running_executable().is_some();
+    let env_support = if ca_required && !already_running {
+        macos_open_env_support()
+    } else {
+        None
+    };
+    launch_decision(ca_required, already_running, env_support)?;
+
+    let mut command = Command::new("/usr/bin/open");
+    for arg in macos_open_args(executable, ca) {
+        command.arg(arg);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("启动 WorkBuddy 失败：{error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("启动 WorkBuddy 失败：{stderr}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn launch_workbuddy() -> Result<String, String> {
+    let executable = find_executable().ok_or("未检测到 WorkBuddy 安装。")?;
+    let certificate = crate::union_ca_bundle_path();
+    // **写 WorkBuddy 安装目录里的 ca.pem 不能作为启动的前提。**
+    // WorkBuddy 常装在 Program Files / /Applications，普通用户写不进去；
+    // 原先带 `?` 会让"打开 WorkBuddy"整个失败，而真正有效的机制是**进程环境注入**
+    // （Windows 的 NODE_EXTRA_CA_CERTS / macOS 的 open --env），那条路本来就能走通。
+    // 所以改成尽力而为，失败只作为提示返回，不阻断启动。
+    let ca_sync_warning = if certificate.is_file()
+        && cfg!(any(target_os = "windows", target_os = "macos"))
+    {
+        sync_workbuddy_ca_bundle(&executable, &certificate)
+            .err()
+            .map(|error| {
+                format!("未能写入 WorkBuddy 安装目录的 CA（{error}），已改用启动时注入环境变量。")
+            })
+    } else {
+        None
+    };
     if cfg!(target_os = "windows") {
+        // **Windows 也要做这条判定**：WorkBuddy 同样是单实例应用，
+        // 已在运行时新进程只会唤醒旧进程，NODE_EXTRA_CA_CERTS 进不去 ——
+        // 不加检查就会在安装目录写入也失败的情况下，**谎报"CA 已生效"**。
+        // Windows 用 Command::env 直接注入，没有 macOS 的 open --env 版本门槛，故 env_support = Some(true)。
+        let ca = certificate.is_file().then_some(certificate.as_path());
+        let running = ca.is_some() && running_executable().is_some();
+        launch_decision(ca.is_some(), running, Some(true))?;
+
         let mut command = Command::new(&executable);
         if certificate.is_file() {
             configure_workbuddy_command(&mut command, &certificate);
@@ -1938,19 +2683,24 @@ pub fn launch_workbuddy() -> Result<(), String> {
             .spawn()
             .map_err(|error| format!("启动 WorkBuddy 失败：{error}"))?;
     } else if cfg!(target_os = "macos") {
-        Command::new("open")
-            .arg(executable)
-            .spawn()
-            .map_err(|error| format!("启动 WorkBuddy 失败：{error}"))?;
+        // 只有确实需要自定义 CA 时才注入环境变量；不需要时保持普通启动。
+        // 注意用的是 output() 而非 spawn()：要拿到退出码，才能在不支持 --env
+        // 或启动失败时报错，而不是静默显示成功。
+        let ca = certificate.is_file().then_some(certificate.as_path());
+        launch_workbuddy_macos(&executable, ca)?;
     } else {
         return Err("当前平台暂不支持自动打开 WorkBuddy。".into());
     }
-    Ok(())
+    Ok(ca_sync_warning.unwrap_or_else(|| "已启动 WorkBuddy。".into()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试用示例网关。刻意**不用**真实内网地址：本仓库要公开，
+    /// 测试夹具里也不该留组织内网地址。用 IANA 保留的 example.com。
+    const TEST_ENDPOINT: &str = "https://gateway.example.com:8080";
 
     #[test]
     fn parses_models_without_exposing_api_key() {
@@ -1959,7 +2709,7 @@ mod tests {
                 "id": "glm-5.2",
                 "name": "GLM 5.2",
                 "apiKey": "gw-sk-secret",
-                "url": DEFAULT_ENDPOINT,
+                "url": TEST_ENDPOINT,
                 "unknown": "kept"
             }],
             "availableModels": ["glm-5.2"]
@@ -1967,7 +2717,7 @@ mod tests {
         let models = parse_models(
             &document,
             &StoredGatewayConfig {
-                url: DEFAULT_ENDPOINT.into(),
+                url: TEST_ENDPOINT.into(),
                 api_key: "gw-sk-secret".into(),
             },
         );
@@ -1982,7 +2732,7 @@ mod tests {
             "models": [{
                 "id": "glm-5.2",
                 "apiKey": "gw-sk-secret",
-                "url": DEFAULT_ENDPOINT
+                "url": TEST_ENDPOINT
             }],
             "availableModels": []
         });
@@ -1991,12 +2741,56 @@ mod tests {
     }
 
     #[test]
+    fn request_endpoints_reject_remote_plaintext_and_allow_loopback() {
+        for endpoint in [
+            openai_models_endpoint,
+            openai_chat_endpoint,
+            anthropic_endpoint,
+        ] {
+            assert!(endpoint("http://gateway.example.com").is_err());
+            assert!(endpoint("http://127.0.0.1:18765").is_ok());
+            assert!(endpoint("https://gateway.example.com").is_ok());
+            assert!(endpoint("file:///tmp/config").is_err());
+        }
+    }
+
+    #[test]
+    fn revocation_selection_does_not_include_other_gateways_certificates() {
+        let cert = |tag: &str| ManagedCert {
+            fingerprint: tag.into(),
+            pem: pem_blocks(&format!(
+                "-----BEGIN CERTIFICATE-----\n{tag}\n-----END CERTIFICATE-----"
+            ))[0]
+                .clone(),
+            added_to_workbuddy: true,
+            added_to_root_store: Some(true),
+            at: 0,
+        };
+        let a = cert("AAAA");
+        let b = cert("BBBB");
+        let manifest = ManagedCerts {
+            certificates: vec![a.clone(), b],
+        };
+        let selected = selected_managed_certs(&manifest, &a.pem);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].fingerprint, "AAAA");
+        assert!(selected_managed_certs(&manifest, "").is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn root_store_query_distinguishes_valid_certificate_from_parse_failure() {
+        assert!(access_root_certificate(TEST_CA_PEM, false).is_ok());
+        assert!(access_root_certificate("invalid", false).is_err());
+    }
+
+    #[test]
     fn validates_gateway_root_url() {
         let mut model = WorkBuddyModelInput {
             id: "glm-5.2".into(),
             name: String::new(),
             vendor: String::new(),
-            url: DEFAULT_ENDPOINT.into(),
+            url: TEST_ENDPOINT.into(),
             api_key: Some("gw-sk-test".into()),
             max_input_tokens: 128_000,
             max_output_tokens: 8_192,
@@ -2010,31 +2804,31 @@ mod tests {
         validate_model(&mut model, true).unwrap();
         assert_eq!(model.name, "glm-5.2");
         assert_eq!(model.vendor, "MaaS Gateway");
-        model.url = "ftp://10.0.147.128".into();
+        model.url = "ftp://gateway.example.com".into();
         assert!(validate_model(&mut model, true).is_err());
     }
 
     #[test]
     fn derives_anthropic_probe_from_openai_endpoint() {
         assert_eq!(
-            anthropic_endpoint(DEFAULT_ENDPOINT).unwrap(),
-            "https://10.0.147.128:8080/anthropic/v1/messages"
+            anthropic_endpoint(TEST_ENDPOINT).unwrap(),
+            "https://gateway.example.com:8080/anthropic/v1/messages"
         );
     }
 
     #[test]
     fn derives_openai_chat_endpoint_from_gateway_root() {
         assert_eq!(
-            openai_chat_endpoint(DEFAULT_ENDPOINT).unwrap(),
-            "https://10.0.147.128:8080/v1/chat/completions"
+            openai_chat_endpoint(TEST_ENDPOINT).unwrap(),
+            "https://gateway.example.com:8080/v1/chat/completions"
         );
     }
 
     #[test]
     fn derives_workbuddy_openai_api_base_from_gateway_root() {
         assert_eq!(
-            openai_api_base_url("https://10.0.147.128:8080").unwrap(),
-            "https://10.0.147.128:8080/v1"
+            openai_api_base_url("https://gateway.example.com:8080").unwrap(),
+            "https://gateway.example.com:8080/v1"
         );
         assert_eq!(
             openai_api_base_url("https://gateway.example.com/v1/chat/completions").unwrap(),
@@ -2072,11 +2866,11 @@ mod tests {
     #[test]
     fn detects_organization_configs_missing_model_prefix() {
         assert!(organization_config_needs_model_prefix(&serde_json::json!([
-            {"id": "old", "name": "旧网关", "url": DEFAULT_ENDPOINT}
+            {"id": "old", "name": "旧网关", "url": TEST_ENDPOINT}
         ])));
         assert!(!organization_config_needs_model_prefix(
             &serde_json::json!([
-                {"id": "new", "name": "新网关", "modelPrefix": "", "url": DEFAULT_ENDPOINT}
+                {"id": "new", "name": "新网关", "modelPrefix": "", "url": TEST_ENDPOINT}
             ])
         ));
     }
@@ -2084,21 +2878,98 @@ mod tests {
     #[test]
     fn derives_openai_models_endpoint_from_gateway_root() {
         assert_eq!(
-            openai_models_endpoint(DEFAULT_ENDPOINT).unwrap(),
-            "https://10.0.147.128:8080/v1/models"
+            openai_models_endpoint(TEST_ENDPOINT).unwrap(),
+            "https://gateway.example.com:8080/v1/models"
         );
     }
 
     #[test]
     fn known_gateway_errors_have_actionable_messages() {
-        assert!(classify_response(401, "").detail.contains("Key"));
+        assert!(classify_response(401, "", None).detail.contains("Key"));
         assert!(
-            classify_response(403, r#"{"error":{"code":"model_access_denied"}}"#)
+            classify_response(403, r#"{"error":{"code":"model_access_denied"}}"#, None)
                 .detail
                 .contains("模型的调用权限")
         );
-        assert!(classify_response(429, "").detail.contains("额度"));
-        assert!(classify_response(503, "").detail.contains("上游"));
+        assert!(classify_response(429, "", None).detail.contains("额度"));
+        assert!(classify_response(503, "", None).detail.contains("上游"));
+    }
+
+    /// 测试专用自签 CA —— 只用于钉住「额外根不会替换平台信任根」这一语义，无任何真实用途
+    const TEST_CA_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDGzCCAgOgAwIBAgIUPeeHnV6GKf6BMtXfJ1xdmJIG398wDQYJKoZIhvcNAQEL
+BQAwHTEbMBkGA1UEAwwSQ0MgTWFuYWdlciBUZXN0IENBMB4XDTI2MDkxMjA0MTUx
+MFoXDTM2MDkwOTA0MTUxMFowHTEbMBkGA1UEAwwSQ0MgTWFuYWdlciBUZXN0IENB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxHH6sGW/LeWm55eholZd
+uzupyk2w2WoCZcKrUnOpXEedRCYKrRrBBSw2LWX54gS72sUIXONqAo1dvLWgpO10
+ooOY4xoDWPnKxLwW3pUR12NHr03r4ceM8X+OP8NI21EAI8giITr1J45YQM8rf55A
+dBN0tCf5/bh3V3R9OdNsDa+ron+9Csk2OQZRZ/3KMgLR9Etk6hC7lzUFb7vkic73
+/3QGA98ywTXmFhUZGUQ3msN0W4hPGutLWLKxgnvHiARqSe/xlJaQ3udAOTzu3Y3D
+WlnSqiFDrLeey5pLo+6qs9PvFZzw369wxChXbFoFGezoWPSVBVRxjVpHdKNH/VF/
+HwIDAQABo1MwUTAdBgNVHQ4EFgQU9Tu5H9RGqv9DtZ4Az0jmgsAlCRQwHwYDVR0j
+BBgwFoAU9Tu5H9RGqv9DtZ4Az0jmgsAlCRQwDwYDVR0TAQH/BAUwAwEB/zANBgkq
+hkiG9w0BAQsFAAOCAQEAB6J5AbeCCsgz5NRlvQBxhbhClssU866DZ8gAN+2I1Hbu
+jUcOIbnN93/tMSgnEgXx7MPxHsTs7lLA1SiE98yM20lIrMAXMYczviKOiimjhe13
+pPzxxfrDMmBEJ5ZwON+l8RtAjsF+/51rMjcn6Bb/Pbt1/LERKftQLFczM/GoyeFf
+QNwhLO2hzfGrrk7qLc3U7gwRIFB0FrBpOyrUxrEMcSsuARgMYrWeqoQ9beicB2hW
+4V8CveqDKpfe2ik47i89rUIGM4B8iZsjyPDndT1g7rJvs6Ocz3JJcNyMtKYb6vOF
+jlM7HEs96XujSVLwEU310EvCiXpwSj/ZloPLVtVd0g==
+-----END CERTIFICATE-----"#;
+
+    #[test]
+    fn adding_app_ca_does_not_replace_platform_roots() {
+        // 回归护栏（审查 F6）。已核实 reqwest 0.13.4 走 new_with_extra_roots
+        // （平台根 ∪ 额外根），但**升级 reqwest 可能翻转这个语义** —— 一旦变成
+        // 像 curl 的 --cacert 那样"替换"，所有用公有 CA 的网关都会被打挂。
+        //
+        // 做法：带上一张自签 CA，再去连公有 CA 的站点 —— 必须仍然成功。
+        //
+        // 先做一次**对照请求**判断网络是否可用。上一版是靠"错误信息里含不含
+        // certificate/tls 字样"来区分回归与环境问题 —— 那是不可靠的：
+        // 偶发的 "tls handshake timeout" 会被误判成回归，让这条测试随机打挂 CI。
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let plain = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        if plain.get("https://www.example.com").send().is_err() {
+            return; // 无网络环境：跳过（本测试验证的是信任集语义，不是连通性）
+        }
+
+        let certificate = reqwest::Certificate::from_pem(TEST_CA_PEM.as_bytes()).unwrap();
+        let client = reqwest::blocking::Client::builder()
+            .add_root_certificate(certificate)
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap();
+        // 对照已成功，这一步再失败就只可能是信任集被改坏
+        let response = client
+            .get("https://www.example.com")
+            .send()
+            .expect("带上应用 CA 后连不上公有站点 —— 平台信任根被替换了");
+        assert!(
+            response.status().is_success(),
+            "公有站点返回 {}，平台信任根可能被替换了",
+            response.status()
+        );
+    }
+
+    #[test]
+    fn gateway_error_body_never_leaks_a_credential() {
+        let key = "gw-sk-LIVE-EMPLOYEE-KEY-0001";
+        // 网关回显 Authorization 头是最常见的一种；也必须挡住**别的** Key
+        let echoed = format!(r#"{{"error":"bad bearer {key}"}}"#);
+        let detail = classify_response(500, &echoed, Some(key)).detail;
+        assert!(!detail.contains(key), "{detail}");
+        assert!(detail.contains("<已隐去>"), "{detail}");
+
+        let other = r#"{"error":"upstream said: Bearer gw-sk-SOME-OTHER-KEY-9999"}"#;
+        let detail = classify_response(500, other, None).detail;
+        assert!(!detail.contains("SOME-OTHER-KEY-9999"), "{detail}");
+
+        // 普通词不能被误伤
+        let benign = classify_response(500, r#"{"note":"sk-1 too short"}"#, None).detail;
+        assert!(benign.contains("sk-1"), "{benign}");
     }
 
     #[test]
@@ -2114,6 +2985,280 @@ mod tests {
             .and_then(|(_, value)| value)
             .map(PathBuf::from);
         assert_eq!(configured.as_deref(), Some(certificate));
+    }
+
+    // ---------------- macOS 启动参数（纯逻辑，Windows 上也可跑） ----------------
+
+    #[test]
+    fn macos_open_args_omit_env_without_custom_ca() {
+        // 不需要自定义 CA 时保持普通启动，因此不受 macOS 版本限制
+        let args = macos_open_args(Path::new("/Applications/WorkBuddy.app"), None);
+        assert_eq!(args, vec!["/Applications/WorkBuddy.app"]);
+        assert!(!args.iter().any(|arg| arg.contains("--env")));
+    }
+
+    #[test]
+    fn macos_open_args_inject_ca_env_when_needed() {
+        let args = macos_open_args(
+            Path::new("/Applications/WorkBuddy.app"),
+            Some(Path::new("/Users/hq/.cc-manager/ca-cert.pem")),
+        );
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "--env");
+        assert_eq!(
+            args[1],
+            "NODE_EXTRA_CA_CERTS=/Users/hq/.cc-manager/ca-cert.pem"
+        );
+        assert_eq!(args[2], "/Applications/WorkBuddy.app");
+    }
+
+    #[test]
+    fn macos_open_args_keep_paths_with_spaces_and_chinese_intact() {
+        // 走 argv 不经 shell，所以含空格 / 引号 / 中文的路径天然是一个完整参数，
+        // 不需要（也不应该）自己做转义。这里钉住"一个路径 = 一个参数"。
+        let app = Path::new("/Applications/我的 WorkBuddy.app");
+        let ca = Path::new("/Users/hq/库/Application Support/cc manager/ca-cert.pem");
+        let args = macos_open_args(app, Some(ca));
+        assert_eq!(args.len(), 3, "{args:?}");
+        assert_eq!(args[1], format!("NODE_EXTRA_CA_CERTS={}", ca.display()));
+        assert_eq!(args[2], app.display().to_string());
+    }
+
+    #[test]
+    fn launch_decision_blocks_when_already_running() {
+        // 回归（审查 F5 + F7）：open --env / Command::env 都只能给**新启动**的进程注入环境变量。
+        // WorkBuddy 已在跑时 LaunchServices 只激活它，变量进不去 —— 必须报错而不是返回成功。
+        let err = launch_decision(true, true, Some(true)).unwrap_err();
+        assert!(err.contains("完全退出"), "{err}");
+        assert!(err.contains("托盘"), "{err}");
+        // 已在运行时版本探测结果无关紧要，仍是同一结论
+        assert!(launch_decision(true, true, None).is_err());
+        assert!(launch_decision(true, true, Some(false)).is_err());
+    }
+
+    #[test]
+    fn launch_decision_allows_plain_launch_always() {
+        // 不需要自定义 CA 时：不受版本限制，也不怕已在运行
+        assert!(launch_decision(false, false, None).is_ok());
+        assert!(launch_decision(false, true, None).is_ok());
+    }
+
+    #[test]
+    fn launch_decision_reports_version_problems_precisely() {
+        assert!(launch_decision(true, false, Some(true)).is_ok());
+        let old = launch_decision(true, false, Some(false)).unwrap_err();
+        assert!(old.contains("不支持"), "{old}");
+        // 查不到版本不能当成"可用"，也不能静默按普通方式启动
+        let unknown = launch_decision(true, false, None).unwrap_err();
+        assert!(unknown.contains("无法确定"), "{unknown}");
+    }
+
+    #[test]
+    fn macos_open_env_gate_requires_ventura_or_newer() {
+        assert!(macos_open_supports_env(13));
+        assert!(macos_open_supports_env(15)); // Sequoia
+        assert!(!macos_open_supports_env(12)); // Monterey：不支持 --env
+        assert!(!macos_open_supports_env(11));
+        assert!(!macos_open_supports_env(0));
+    }
+
+    #[test]
+    fn parse_macos_major_handles_sw_vers_output_shapes() {
+        assert_eq!(parse_macos_major("15.6"), Some(15));
+        assert_eq!(parse_macos_major("13.0.1"), Some(13));
+        assert_eq!(parse_macos_major("12.7.6"), Some(12));
+        assert_eq!(parse_macos_major("15.6\n"), Some(15)); // sw_vers 输出带换行
+        assert_eq!(parse_macos_major(" 14 "), Some(14));
+        // 解析不出来必须给 None，由调用方按"不可用"报错，不能当成可用
+        assert_eq!(parse_macos_major(""), None);
+        assert_eq!(parse_macos_major("abc"), None);
+    }
+
+    // ---------------- 写入并发保护（P0-B#10） ----------------
+
+    #[test]
+    fn stale_revision_is_rejected_instead_of_overwriting() {
+        let dir = std::env::temp_dir().join(format!(
+            "ccm-wb-rev-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cc-manager-organizations.json");
+        fs::write(&path, "[]").unwrap();
+        let current = revision(&path);
+
+        // 文件没动 → 放行
+        assert!(ensure_expected_revision(&path, &current).is_ok());
+
+        // 别的程序改过 → 旧 revision 必须被拒，而不是静默 last-writer-wins
+        fs::write(&path, r#"[{"changed":true}]"#).unwrap();
+        let error = ensure_expected_revision(&path, &current).unwrap_err();
+        assert!(error.contains("已被其他程序修改"), "{error}");
+        assert!(error.contains("尚未写入"), "{error}");
+
+        // 文件不存在时 revision 是 "missing"，不是崩溃
+        let absent = dir.join("nope.json");
+        assert_eq!(revision(&absent), "missing");
+        assert!(ensure_expected_revision(&absent, "missing").is_ok());
+        assert!(ensure_expected_revision(&absent, "whatever").is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_requests_require_a_revision_so_the_guard_cannot_be_skipped() {
+        // 请求体缺 expected_revision 时必须反序列化失败。
+        // 否则调用方只要不传这个字段就能绕过并发保护，而保护还显示为"已存在"。
+        let org = serde_json::json!({ "name": "org", "url": "https://gw.example.com" });
+        assert!(serde_json::from_value::<SaveWorkBuddyOrganizationRequest>(org).is_err());
+
+        let gateway = serde_json::json!({ "url": "https://gw.example.com" });
+        assert!(serde_json::from_value::<SaveWorkBuddyGatewayRequest>(gateway).is_err());
+    }
+
+    #[test]
+    fn ownership_flips_presence_semantics() {
+        // 回归（审查 Critical）：字段语义是"由本应用新增"，而查询返回的是"已存在"。
+        // 方向写反的后果是不对称的：误删别人的信任链 vs 留下自己的 —— 前者严重得多。
+        assert_eq!(
+            ownership_from_presence(Some(true)),
+            Some(false),
+            "已存在 ⇒ 不是我们加的"
+        );
+        assert_eq!(
+            ownership_from_presence(Some(false)),
+            Some(true),
+            "不存在 ⇒ 是我们加的"
+        );
+        // 查不出来就别猜：既不算我们加的，也不算别人的
+        assert_eq!(ownership_from_presence(None), None);
+    }
+
+    // ---------------- CA 撤销（审查 F3） ----------------
+
+    fn pem(tag: &str) -> String {
+        format!("-----BEGIN CERTIFICATE-----\n{tag}\n-----END CERTIFICATE-----")
+    }
+
+    #[test]
+    fn remove_managed_pem_blocks_keeps_foreign_certificates() {
+        // sync_workbuddy_ca_bundle 是**合并**写入的，撤销时绝不能顺手删掉别人的证书
+        let managed = format!("{}\n", pem("MANAGED-A"));
+        let existing = format!(
+            "{}\n{}\n{}\n",
+            pem("FOREIGN-1"),
+            pem("MANAGED-A"),
+            pem("FOREIGN-2")
+        );
+        let left = remove_managed_pem_blocks(&existing, &managed);
+        assert!(!left.contains("MANAGED-A"), "{left}");
+        assert!(left.contains("FOREIGN-1"), "{left}");
+        assert!(left.contains("FOREIGN-2"), "{left}");
+    }
+
+    #[test]
+    fn certificate_cleanup_preserves_valid_pem_encoding_and_comments() {
+        let existing = format!("# keep this comment\n{TEST_CA_PEM}\n{}\n", pem("REMOVED"));
+        let left = remove_managed_pem_blocks(&existing, &pem("REMOVED"));
+        assert!(left.contains(TEST_CA_PEM));
+        assert!(left.starts_with("# keep this comment"));
+        reqwest::Certificate::from_pem(pem_certificates(&left)[0].as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn remove_managed_pem_blocks_handles_multiple_and_crlf() {
+        // 换行风格不同也要能比对上是同一张证书
+        let managed = format!("{}\r\n{}\r\n", pem("M1"), pem("M2"));
+        let existing = format!("{}\n{}\n", pem("M1"), pem("M2"));
+        assert_eq!(remove_managed_pem_blocks(&existing, &managed), "");
+    }
+
+    #[test]
+    fn remove_managed_pem_blocks_is_noop_without_managed_certs() {
+        let existing = format!("{}\n", pem("FOREIGN"));
+        // 没有可撤销的内容时，绝不能把别人的证书删掉
+        assert_eq!(remove_managed_pem_blocks(&existing, ""), existing);
+        assert_eq!(
+            remove_managed_pem_blocks(&existing, "no pem here"),
+            existing
+        );
+    }
+
+    #[test]
+    fn pem_blocks_ignores_truncated_input() {
+        // 只有 BEGIN 没有 END：不能 panic，也不能凭空造出一块
+        assert!(pem_blocks("-----BEGIN CERTIFICATE-----\nAAAA").is_empty());
+        assert!(pem_blocks("").is_empty());
+        assert_eq!(pem_blocks(&pem("X")).len(), 1);
+    }
+
+    #[test]
+    fn credential_file_paths_cover_write_document_artifacts() {
+        // 回归：曾经只返回 3 个主文件，于是 write_document 派生出的
+        // backup / previous / tmp（同样含明文 apiKey）完全不在权限检查范围内，
+        // 界面却照样显示"含密钥的文件均仅限本人读取"。
+        let paths = credential_file_paths();
+        assert_eq!(paths.len(), 12, "3 个主文件 × 4 种产物：{paths:?}");
+        let names: Vec<String> = paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        for base in [
+            "cc-manager-gateway.json",
+            "cc-manager-organizations.json",
+            "models.json",
+        ] {
+            assert!(names.contains(&base.to_string()), "缺少主文件 {base}");
+        }
+        assert!(
+            names.iter().any(|name| name.contains("backup")),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.contains("previous")),
+            "{names:?}"
+        );
+        assert!(names.iter().any(|name| name.ends_with(".tmp")), "{names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_document_restricts_every_artifact() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "ccm-wb-perm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        // 关键场景：这是个 app 之外创建的 0644 旧文件（WorkBuddy 自己写的）。
+        // fs::copy 会连同 0644 一起复制给 backup，所以只收紧最终文件是不够的。
+        fs::write(&path, "{\"models\":[]}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_document(&path, &serde_json::json!({ "models": [] })).unwrap();
+
+        // 成功路径结束后留下的产物：主文件 + backup（previous 会被清掉）
+        for target in [path.clone(), path.with_extension("cc-manager.backup.json")] {
+            assert!(target.exists(), "{} 应当存在", target.display());
+            let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "{} 权限是 {:o}，应被收紧到 600（含明文 apiKey）",
+                target.display(),
+                mode
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

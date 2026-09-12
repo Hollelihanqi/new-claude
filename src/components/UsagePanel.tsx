@@ -263,7 +263,7 @@ export default function UsagePanel({
     return { input, output, requests, cacheRead, cacheCreate, realTotal, hitRate };
   }, [rows]);
 
-  // 对话次数：用户真实提问数（按时间范围 + 实例筛选；提问不区分模型，故不随模型筛选变化）
+  // 对话次数：用户真实提问数（按时间范围 + 环境筛选；提问不区分模型，故不随模型筛选变化）
   const convCount = useMemo(() => {
     const list = data?.conversations || [];
     let n = 0;
@@ -393,7 +393,7 @@ export default function UsagePanel({
             </Popover>
           </Group>
           <Group gap="xs" align="center"><Text size="sm" fw={500}>模型</Text><Select data={modelOpts} value={model} onChange={(v) => setModel(v || "__all__")} w={170} /></Group>
-          <Group gap="xs" align="center"><Text size="sm" fw={500}>实例</Text><Select data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={150} /></Group>
+          <Group gap="xs" align="center"><Text size="sm" fw={500}>环境</Text><Select data={profileOpts} value={profile} onChange={(v) => setProfile(v || "__all__")} w={150} /></Group>
           <Group gap="xs" align="center" ml="auto">
             <Text size="xs" c="dimmed">自动刷新</Text>
             <Select
@@ -447,7 +447,7 @@ export default function UsagePanel({
             ))}
           </SimpleGrid>
           <Text size="xs" c="dimmed">
-            说明：以上为当前筛选（时间范围 / 模型 / 实例）下的合计；数值取自本机各实例会话记录中模型返回的 usage 用量，同一响应的多行记录已按消息 ID 去重（与 cc-switch 同口径），并已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
+            说明：以上为当前筛选（时间范围 / 模型 / 环境）下的合计；数值取自本机各环境会话记录中模型返回的 usage 用量，同一响应的多行记录已按消息 ID 去重（与 cc-switch 同口径），并已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
           </Text>
 
           <Card withBorder padding="md" radius="lg">

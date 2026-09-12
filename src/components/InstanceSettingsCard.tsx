@@ -22,8 +22,9 @@ import {
 import { api } from "../api";
 import type { InstanceSettings } from "../api";
 import StableRefreshButton from "./StableRefreshButton";
+import RiskConfirm from "./RiskConfirm";
 
-// 空间从未启动过时文件还不存在，给个可直接编辑的骨架而不是空白
+// 环境从未启动过时文件还不存在，给个可直接编辑的骨架而不是空白
 const EMPTY_DOC = "{\n}\n";
 
 type Status = { type: "info" | "success" | "error"; msg: string } | null;
@@ -34,6 +35,9 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<"toggle" | "save" | "load" | null>(null);
   const [status, setStatus] = useState<Status>(null);
+  // 开启 bypassPermissions 是**安全边界**变更（该环境不再逐次确认工具权限），
+  // 走 P0-B#8 的 critical 级确认；关闭是恢复安全，不需要拦。
+  const [bypassOpen, setBypassOpen] = useState(false);
 
   const load = useCallback(() => {
     setBusy("load");
@@ -48,14 +52,15 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
       .finally(() => setBusy(null));
   }, [name]);
 
-  // 切换空间时重置为收起状态，避免把上一个空间的草稿带过来
+  // 换选环境时重置为收起状态，避免把上一个环境的草稿带过来
   useEffect(() => {
     setExpanded(false);
     setStatus(null);
     load();
   }, [load]);
 
-  const onToggle = async (enabled: boolean) => {
+  // 返回**是否成功**：失败时调用方不能关闭确认框（否则用户以为开了、其实没有）
+  const onToggle = async (enabled: boolean): Promise<boolean> => {
     setBusy("toggle");
     try {
       const s = await api.setBypassPermissions(name, enabled);
@@ -67,8 +72,10 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
           ? "已写入 permissions.defaultMode = bypassPermissions，新开的会话默认跳过权限确认。"
           : "已移除 permissions.defaultMode，回到默认的逐次确认。",
       });
+      return true;
     } catch (e) {
       setStatus({ type: "error", msg: String(e) });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -109,21 +116,46 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
             跳过权限确认（bypassPermissions）
           </Text>
           <Text size="xs" c="dimmed">
-            只对这个空间生效。开启后该空间的 Claude 不再逐次询问工具权限，等价于每次都加{" "}
+            只对这个环境生效。开启后该环境的 Claude 不再逐次询问工具权限，等价于每次都加{" "}
             <Code>--dangerously-skip-permissions</Code>，但状态持久、可随时关闭。
           </Text>
         </Box>
         <Switch
           checked={!!data?.bypassEnabled}
-          onChange={(e) => onToggle(e.currentTarget.checked)}
+          onChange={(e) => {
+            // 只有"开启"需要确认；关闭是把安全边界恢复回去，直接执行
+            if (e.currentTarget.checked) {
+              setBypassOpen(true);
+            } else {
+              void onToggle(false);
+            }
+          }}
           disabled={busy !== null || data == null}
         />
       </Group>
 
+      <RiskConfirm
+        opened={bypassOpen}
+        level="critical"
+        title="开启「跳过权限确认」"
+        consequences={[
+          `环境「${name}」内的 Claude 不再逐次询问工具权限，文件修改与命令执行会直接执行。`,
+          "该设置是持久化的，关掉本应用后依然生效，直到你手动关闭。",
+          "只影响这一个环境，但风险面覆盖该环境里 Claude 能做的一切操作。",
+        ]}
+        confirmLabel="确认开启"
+        busy={busy === "toggle"}
+        onCancel={() => setBypassOpen(false)}
+        onConfirm={async () => {
+          // 写入失败就不能关窗 —— 否则界面看起来"已开启"，实际没有
+          if (await onToggle(true)) setBypassOpen(false);
+        }}
+      />
+
       {data?.bypassEnabled && (
         <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
           <Text size="xs">
-            该空间内的文件修改、命令执行不再二次确认。建议只在你信任的项目里长期开启。
+            该环境内的文件修改、命令执行不再二次确认。建议只在你信任的项目里长期开启。
           </Text>
         </Alert>
       )}
@@ -132,7 +164,7 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
         <Alert variant="light" color="yellow" icon={<IconAlertTriangle size={16} />}>
           <Text size="xs">
             检测到 <Code>{data.overriddenBy}</Code> 也设置了 <Code>permissions.defaultMode</Code>。
-            它的优先级高于本空间配置，在 home 目录下启动时本开关不会生效。
+            它的优先级高于本环境配置，在 home 目录下启动时本开关不会生效。
             项目自己的 <Code>.claude/settings.json</Code> 同理会覆盖这里。
           </Text>
         </Alert>

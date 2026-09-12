@@ -20,6 +20,7 @@ import {
   IconChecklist,
   IconArrowDown,
   IconTrash,
+  IconAlertTriangle,
 } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 
@@ -57,7 +58,7 @@ export default function GuidePanel() {
         <Text size="sm">
           你有时用账户登录的 <Code>claude</Code>，有时要走公司的路由网关。以前来回切换
           要重新登录、对话还会断。这个工具让你在<b>任意项目目录</b>里直接敲命令——
-          <Code>claude</Code> 用你的主账户，<Code>claude corp</Code> 用公司路由——
+          <Code>claude</Code> 用你的默认 Claude，<Code>claude corp</Code> 用公司路由——
           两者各用各的配置，互不打架，切换不掉线。
         </Text>
         <Text size="sm" mt="sm" c="dimmed">
@@ -91,12 +92,12 @@ export default function GuidePanel() {
             title="claude 在同一个目录里正常运行"
           >
             <Text size="sm" c="dimmed">
-              因为家目录被换了，它读到的是这个实例独立的配置，不会污染你的主账户。
+              因为家目录被换了，它读到的是这个环境独立的配置，不会污染你的默认 Claude。
             </Text>
           </Timeline.Item>
           <Timeline.Item
             bullet={<IconChecklist size={16} />}
-            title="命令结束，环境自动还原"
+            title="只影响这一次命令"
           >
             <Text size="sm" c="dimmed">
               你的普通 <Code>claude</Code> 完全不受影响。
@@ -117,18 +118,18 @@ export default function GuidePanel() {
           />
           <Tech
             icon={<IconTerminal2 size={20} />}
-            name="Shell 函数（zsh / PowerShell）"
-            desc="把 claude 包一层，识别到 corp 这类命令词时临时切换环境。这是日常使用的核心，不依赖本应用运行。"
+            name="Shell 函数（zsh / bash / PowerShell）"
+            desc="把 claude 包一层，识别到 corp 这类命令词时改用该环境启动。这是日常使用的核心，不依赖本应用运行。支持的终端见下方「终端支持范围」。"
           />
           <Tech
             icon={<IconShieldLock size={20} />}
-            name="钥匙串 / DPAPI 加密"
-            desc="Token 不存明文：macOS 放进钥匙串（Keychain），Windows 用 DPAPI 加密，只有你本人能解密。"
+            name="网关 Key 加密存储"
+            desc="网关 Token 不存明文：macOS 放进钥匙串（Keychain），Windows 用 DPAPI 按当前用户加密。注意 DPAPI 是用户级保护——同一登录用户下的其他程序可以解密。"
           />
           <Tech
             icon={<IconLink size={20} />}
             name="共享与同步"
-            desc="所有实例自动与主账户共享 skills / plugins / agents / commands（目录联结）；MCP 与插件启用状态在每次启动 claude 时自动合并同步。跨实例共享的 MCP 请用 claude mcp add -s user 安装（默认作用域是项目级，不参与同步）。"
+            desc="所有环境共享 skills / plugins / agents / commands（目录联结）；MCP 与插件启用状态由「应用统一维护」，保存后自动分发到每个环境，各环境也可单独覆盖。要让一个 MCP 对全部环境生效，请在「MCP 服务」里选作用范围「所有环境」添加。"
           />
         </SimpleGrid>
       </Card>
@@ -155,27 +156,23 @@ export default function GuidePanel() {
 
       <Card withBorder radius="md" padding="lg">
         <Title order={4} mb="xs">
-          公司路由：先导入 CA 证书（仅首次，必做）
+          公司路由：导入一次 CA 证书（仅首次，必做）
         </Title>
         <Text size="sm" mb="sm">
-          公司网关用的是自签名 HTTPS 证书。必须先把管理员给你的{" "}
-          <Code>ca-cert.pem</Code> 导入系统信任，否则 <Code>claude corp</Code>{" "}
-          会因为"证书不被信任"而连不上。每台机器只需做一次。
+          公司网关用的是自签名 HTTPS 证书。向管理员要 <Code>ca-cert.pem</Code>，
+          在 App <b>顶栏点「CA 证书」→ 填入路径 → 导入</b>即可，否则{" "}
+          <Code>claude corp</Code> 会因为"证书不被信任"而连不上。
         </Text>
-        <Text size="sm" fw={500}>
-          macOS（终端，会要求输入开机密码）
-        </Text>
-        <Code block>
-          sudo security add-trusted-cert -d -r trustRoot -k
-          /Library/Keychains/System.keychain ca-cert.pem
-        </Code>
-        <Text size="sm" fw={500} mt="sm">
-          Windows（以管理员身份打开 PowerShell）
-        </Text>
-        <Code block>certutil -addstore Root ca-cert.pem</Code>
-        <Text size="xs" c="dimmed" mt="sm">
-          把命令末尾的 ca-cert.pem 换成证书文件的实际路径，或先 cd 到证书所在的文件夹再运行。
-        </Text>
+        <Alert color="teal" variant="light" icon={<IconShieldLock size={16} />}>
+          <Text size="sm">
+            <b>不需要管理员权限，也不需要改系统信任库。</b>
+            导入只作用于<b>网关环境</b>：仅在 <Code>claude &lt;环境名&gt;</Code> 那一次启动时注入
+            （<Code>NODE_EXTRA_CA_CERTS</Code>），直接敲的 <Code>claude</Code> 与独立登录环境都不受影响。
+            它不会改动 macOS 钥匙串或 Windows 系统根证书库 ——
+            所以<b>不必</b>去执行 <Code>sudo security add-trusted-cert</Code> 或管理员的{" "}
+            <Code>certutil -addstore Root</Code>。各处作用的信任范围见下方「终端支持范围」一节。
+          </Text>
+        </Alert>
       </Card>
 
       <Card withBorder radius="md" padding="lg">
@@ -183,14 +180,14 @@ export default function GuidePanel() {
           怎么配置和使用
         </Title>
         <Timeline active={4} bulletSize={26} lineWidth={2}>
-          <Timeline.Item title="切到「实例配置」标签页">
+          <Timeline.Item title="切到「环境配置」标签页">
             <Text size="sm" c="dimmed">
-              点顶部的「实例配置」。
+              点顶部的「环境配置」。
             </Text>
           </Timeline.Item>
-          <Timeline.Item title="新建一个实例">
+          <Timeline.Item title="新建一个环境">
             <Text size="sm" c="dimmed">
-              名称填命令词（如 <Code>corp</Code>），类型选「自定义路由」，填公司网关地址和 token。
+              名称填命令词（如 <Code>corp</Code>），类型选「网关环境」，填公司网关地址和 token。
             </Text>
           </Timeline.Item>
           <Timeline.Item title="点「保存并接入终端」">
@@ -204,7 +201,12 @@ export default function GuidePanel() {
             </Text>
           </Timeline.Item>
           <Timeline.Item title="开始用">
-            <Code block>{`cd 任意项目目录\nclaude          # 主账户\nclaude corp     # 公司路由`}</Code>
+            <Code block>{`cd 任意项目目录\nclaude          # 默认 Claude\nclaude corp     # 公司路由`}</Code>
+            <Text size="xs" c="dimmed" mt={6}>
+              这两个命令只在「终端支持范围」里列出的终端、且集成已接入时才有效。
+              诊断页会逐个终端显示「已接入 / 终端入口未生效」——显示未生效时，敲
+              <Code>claude corp</Code> 不会使用该环境启动。
+            </Text>
           </Timeline.Item>
         </Timeline>
       </Card>
@@ -217,13 +219,13 @@ export default function GuidePanel() {
       >
         <List size="sm" spacing="xs">
           <List.Item>
-            在实例会话里用 <Code>/model</Code> 时<b>只选档位别名</b>（Opus / Sonnet /
-            Haiku / Default），不要选具体型号 ID——具体型号会写死进实例配置、绕过
-            这里设置的模型映射。App 会在「实例配置」页检测到并提供一键还原。
+            在环境会话里用 <Code>/model</Code> 时<b>只选档位别名</b>（Opus / Sonnet /
+            Haiku / Default），不要选具体型号 ID——具体型号会写死进环境配置、绕过
+            这里设置的模型映射。App 会在「环境配置」页检测到并提供一键还原。
           </List.Item>
           <List.Item>
-            尽量<b>在项目目录里</b>启动 Claude。从用户主目录（~）启动时，主账户通过{" "}
-            <Code>/model</Code> 固定选择的型号可能会优先于空间中的模型映射。
+            尽量<b>在项目目录里</b>启动 Claude。从用户主目录（~）启动时，默认 Claude通过{" "}
+            <Code>/model</Code> 固定选择的型号可能会优先于环境中的模型映射。
           </List.Item>
         </List>
       </Alert>
@@ -235,10 +237,53 @@ export default function GuidePanel() {
         title="关于安全"
       >
         <Text size="sm">
-          Token 从不以明文保存：macOS 存进钥匙串，Windows 用 DPAPI 加密（仅你本人可解密）。
-          运行实例时 token 只作为那一次进程的环境变量存在，不写进命令行历史。
+          网关 Token 不以明文保存：macOS 存进钥匙串，Windows 用 DPAPI 按当前用户加密。
+          DPAPI 是用户级保护，不是「只有你能解密」——同一登录用户下的其他程序同样可以解密；
+          Windows 上这份密文还会随配置备份一起导出到桌面。
+          WorkBuddy 的 Key 与 MCP 的 env / header 密钥是明文文件，不在上述保护范围内。
+          运行环境时 token 只作为那一次进程的环境变量存在，不写进命令行历史。
         </Text>
       </Alert>
+
+      <Card withBorder radius="md" padding="lg">
+        <Group gap="xs" mb="xs">
+          <ThemeIcon variant="light" color="blue" radius="md">
+            <IconTerminal2 size={18} />
+          </ThemeIcon>
+          <Title order={5}>终端支持范围</Title>
+        </Group>
+        <Text size="sm">
+          <Code>claude 环境名</Code> 靠一层 shell 函数生效，所以只在这些终端里有效：
+        </Text>
+        <SimpleGrid cols={{ base: 1, sm: 2 }} mt="xs" spacing="xs">
+          <div>
+            <Text size="xs" fw={700} c="dimmed">
+              macOS
+            </Text>
+            <Text size="sm">
+              <Code>zsh</Code>（<Code>~/.zshrc</Code>）、<Code>bash</Code>（
+              <Code>~/.bash_profile</Code> 与 <Code>~/.bashrc</Code>）
+            </Text>
+          </div>
+          <div>
+            <Text size="xs" fw={700} c="dimmed">
+              Windows
+            </Text>
+            <Text size="sm">
+              <Code>Windows PowerShell 5.1</Code> 与 <Code>PowerShell 7+</Code>
+              （两者配置文件是两个不同路径，会分别接入、分别检测）
+            </Text>
+          </div>
+        </SimpleGrid>
+        <Alert color="gray" variant="light" mt="sm" icon={<IconAlertTriangle size={16} />}>
+          <Text size="sm">
+            <b>未支持</b>：<Code>cmd.exe</Code>、<Code>fish</Code>、<Code>sh</Code>、
+            <Code>Git Bash</Code>、<Code>WSL</Code>。这些终端里敲 <Code>claude 环境名</Code>{" "}
+            不会使用该环境启动，也不会报错 —— 会原样走默认 Claude。需要使用其他环境时请改用上面列出的终端。
+            （cmd 需要遮蔽 Claude Code 官方启动器才能接管，风险高于收益，故不做。）
+          </Text>
+        </Alert>
+      </Card>
 
       <Card withBorder radius="md" padding="lg">
         <Group gap="xs" mb="xs">

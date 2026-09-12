@@ -20,11 +20,19 @@ const state: WorkBuddyState = {
   environment: { found: true, platform: "windows", configPath: "test", configExists: true, configValid: true, detail: "test" },
   gateway: { url: "https://a.example.test", hasApiKey: true },
   organizations: ["a", "b"].map((id) => ({ id, name: id, modelPrefix: "", url: `https://${id}.example.test`, selectedModels: [`${id}-model`], hasApiKey: true })),
-  models: [], revision: "test", warnings: [],
+  models: [], revision: "test", gatewayRevision: "test", organizationsRevision: "test", warnings: [],
 };
 let renderer: ReactTestRenderer;
 beforeEach(() => { vi.resetAllMocks(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.workBuddyState).mockResolvedValue(state); });
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.unstubAllGlobals(); });
+
+// 只取"模型多选"那组勾选框。不要用全局 findAllByType(Checkbox)：
+// 面板里还有别的 Checkbox（如风险确认弹窗的「我已了解」），全局查询会把它们一起算进来。
+const modelCheckboxValues = () =>
+  renderer.root
+    .findAllByType(Checkbox.Group)[0]
+    .findAllByType(Checkbox)
+    .map((item) => item.props.value);
 
 it("再次显示时静默更新数据且保留未保存勾选，手动刷新仍请求网关", async () => {
   vi.mocked(api.listWorkBuddyOrganizationModels).mockResolvedValue(["a-model", "extra-model"]);
@@ -63,7 +71,7 @@ it.each(["resolve", "reject"] as const)("切换组织后忽略旧模型与证书
   expect(renderer.root.findByType(Checkbox.Group).props.value).toEqual(["b-model"]);
   const content = renderer.root.findAllByType(Text).flatMap((item) => item.children).filter((item) => typeof item === "string").join(" ");
   expect(content).not.toContain("stale-certificate");
-  expect(renderer.root.findAllByType(Checkbox).map((item) => item.props.value)).toEqual(["b-model"]);
+  expect(modelCheckboxValues()).toEqual(["b-model"]);
 });
 
 it("后台更新慢或失败时保留内容，快速切回合并请求", async () => {
@@ -75,12 +83,12 @@ it("后台更新慢或失败时保留内容，快速切回合并请求", async (
   vi.mocked(api.listWorkBuddyOrganizationModels).mockReturnValueOnce(pending.promise);
   await act(async () => { renderer.update(<WorkBuddyPanel active={false} />); });
   await act(async () => { renderer.update(<WorkBuddyPanel active />); });
-  expect(renderer.root.findAllByType(Checkbox).map((item) => item.props.value)).toEqual(["a-model", "extra-model"]);
+  expect(modelCheckboxValues()).toEqual(["a-model", "extra-model"]);
   expect(renderer.root.findAllByType(Button).find((item) => item.children.includes("刷新模型"))!.props.loading).toBe(false);
   await act(async () => { renderer.update(<WorkBuddyPanel active={false} />); });
   await act(async () => { renderer.update(<WorkBuddyPanel active />); });
   expect(api.workBuddyState).toHaveBeenCalledTimes(2);
   await act(async () => { pending.reject(new Error("timeout")); });
-  expect(renderer.root.findAllByType(Checkbox).map((item) => item.props.value)).toEqual(["a-model", "extra-model"]);
+  expect(modelCheckboxValues()).toEqual(["a-model", "extra-model"]);
   expect(renderer.root.findByType(Checkbox.Group).props.value).toEqual(["extra-model"]);
 });

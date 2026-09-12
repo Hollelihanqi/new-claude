@@ -1,5 +1,5 @@
 // 作用域发现、路径解析、revision、备份、原子写入、停用仓库、list/apply 核心逻辑。
-// 所有文件 IO 集中在此；mod.rs 只做命令封装、锁与跨实例同步编排。
+// 所有文件 IO 集中在此；mod.rs 只做命令封装、锁与跨环境同步编排。
 // 测试通过 McpPaths::for_test(root) 注入独立 home，绝不读写真实 home。
 //
 // 关键不变量：
@@ -55,6 +55,9 @@ impl McpPaths {
     pub fn for_test(root: PathBuf) -> Self {
         let manager = root.join(".cc-manager");
         let _ = fs::create_dir_all(&manager);
+        // 共享源目录也要备好：有些测试直接用 fs::write 落 `shared/mcp.json`，
+        // 不先建目录会得到 NotFound（生产路径由 write_json_transactional 负责建）。
+        let _ = fs::create_dir_all(manager.join("shared"));
         Self {
             home: root,
             manager_dir: manager,
@@ -65,9 +68,19 @@ impl McpPaths {
         self.home.join(".claude.json")
     }
 
+    /// 「所有环境」作用域的落点：**应用自建的共享源**（决策 7.2）。
+    ///
+    /// 曾经这个作用域落点是默认 Claude 的 `~/.claude.json`（见 `main_claude_json`），
+    /// 于是"在应用里加一个 MCP"就等于**改写用户直接敲 `claude` 时用的那份配置**。
+    /// 现在应用独占一个文件，再单向分发到各环境；默认 Claude 完全退出这条链
+    /// （分发代码见 `crate::shared_config`，其目标路径永远在 `~/.claude-split/<环境>/` 下）。
+    pub fn shared_mcp_json(&self) -> PathBuf {
+        self.manager_dir.join("shared").join("mcp.json")
+    }
+
     pub fn instance_claude_json(&self, instance_id: &str) -> Result<PathBuf, String> {
         if !safe_instance_id(instance_id) {
-            return Err(format!("非法实例标识「{instance_id}」"));
+            return Err(format!("非法环境标识「{instance_id}」"));
         }
         if instance_id == MAIN_INSTANCE {
             Ok(self.main_claude_json())
@@ -209,6 +222,21 @@ pub(crate) mod source_id {
     pub const PROJECTS: &str = "manager:projects";
 }
 
+/// 「用户级」作用域在某个实例上的落点。
+///
+/// **必须只有这一个解析点。** 曾经这个作用域落在默认 Claude 的 `~/.claude.json`，
+/// 已改为应用自建的共享源（决策 7.2）。如果写入路径与读取路径用了不同的解析，
+/// 症状是"保存成功、界面里却没有" —— 所以 `source_file` / `current_config` /
+/// `read_service_config` / `collect_state` 全部走这里。
+pub(crate) fn user_source_path(paths: &McpPaths, inst: &str) -> Result<PathBuf, String> {
+    if inst == MAIN_INSTANCE {
+        // 「所有环境」= 应用共享源；默认 Claude 不再参与
+        Ok(paths.shared_mcp_json())
+    } else {
+        paths.instance_claude_json(inst)
+    }
+}
+
 pub(crate) fn source_file(
     paths: &McpPaths,
     instances: &[String],
@@ -222,14 +250,14 @@ pub(crate) fn source_file(
     }
     if let Some(inst) = sid.strip_prefix("user:") {
         if inst != MAIN_INSTANCE && !instances.iter().any(|x| x == inst) {
-            return Err(format!("未知实例：{inst}"));
+            return Err(format!("未知环境：{inst}"));
         }
-        return paths.instance_claude_json(inst);
+        return user_source_path(paths, inst);
     }
     if let Some(rest) = sid.strip_prefix("local:") {
         let (inst, _project) = split_two(rest)?;
         if inst != MAIN_INSTANCE && !instances.iter().any(|x| x == &inst) {
-            return Err(format!("未知实例：{inst}"));
+            return Err(format!("未知环境：{inst}"));
         }
         paths.instance_claude_json(&inst)?;
         return paths.instance_claude_json(&inst);
@@ -376,14 +404,14 @@ fn validate_disabled_entries(entries: &[DisabledEntry]) -> Result<(), String> {
         match entry.scope {
             McpScope::User => {
                 if entry.instance_id.is_some() || entry.project_path.is_some() {
-                    return Err("mcp-disabled.json 的 User 条目不能包含实例或项目".into());
+                    return Err("mcp-disabled.json 的 User 条目不能包含环境或项目".into());
                 }
             }
             McpScope::Local => {
                 if entry.instance_id.as_deref().is_none_or(str::is_empty)
                     || entry.project_path.as_deref().is_none_or(str::is_empty)
                 {
-                    return Err("mcp-disabled.json 的 Local 条目必须包含实例和项目".into());
+                    return Err("mcp-disabled.json 的 Local 条目必须包含环境和项目".into());
                 }
             }
             McpScope::Project => {
@@ -465,6 +493,53 @@ fn source_hash(target: &Path) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     target.display().to_string().hash(&mut h);
     format!("{:x}", h.finish())
+}
+
+/// 删除环境时，环境自己的 MCP 备份应移除；共享停用仓库及其备份只清该环境的记录。
+pub(crate) fn environment_cleanup_files(
+    paths: &McpPaths,
+    name: &str,
+) -> Result<Vec<(PathBuf, bool)>, String> {
+    let env_file = paths.instance_claude_json(name)?;
+    let mut files = vec![
+        (paths.disabled_store(), false),
+        (paths.openai_sync_registry(), false),
+    ];
+    for (source, remove) in [(env_file, true), (paths.disabled_store(), false)] {
+        let dir = paths.backup_dir().join(source_hash(&source));
+        match fs::symlink_metadata(&dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.to_string()),
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+                return Err("MCP 备份路径不是普通目录，已中止删除".into())
+            }
+            Ok(_) => {}
+        }
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                return Err("MCP 备份包含异常目录或链接，已中止删除".into());
+            }
+            files.push((entry.path(), remove));
+        }
+    }
+    Ok(files)
+}
+
+pub(crate) fn forget_environment_records(doc: &mut Value, name: &str) -> Result<(), String> {
+    let entries = doc
+        .get_mut("entries")
+        .and_then(Value::as_array_mut)
+        .ok_or("MCP 记录格式损坏，无法安全清理")?;
+    entries.retain(|entry| {
+        entry.get("instanceId").and_then(Value::as_str) != Some(name)
+            && entry
+                .get("source")
+                .and_then(|s| s.get("instanceId"))
+                .and_then(Value::as_str)
+                != Some(name)
+    });
+    Ok(())
 }
 
 fn backup_path(paths: &McpPaths, target: &Path) -> PathBuf {
@@ -855,7 +930,7 @@ fn set_project_mcp_map(doc: &mut Value, new_map: Map<String, Value>) {
     }
 }
 
-// ---------------- 实例集合 ----------------
+// ---------------- 环境集合 ----------------
 
 pub(crate) fn all_instances(profile_names: &[String]) -> Vec<String> {
     let mut v = vec![MAIN_INSTANCE.to_string()];
@@ -906,16 +981,16 @@ pub(crate) fn validate_action_strict(
         match loc.scope {
             McpScope::User => {
                 if loc.instance_id.is_some() {
-                    return Err("用户级不能指定实例".into());
+                    return Err("用户级不能指定环境".into());
                 }
                 if loc.project_path.is_some() {
                     return Err("用户级不能指定项目".into());
                 }
             }
             McpScope::Local => {
-                let inst = loc.instance_id.as_deref().ok_or("项目本地必须选择实例")?;
+                let inst = loc.instance_id.as_deref().ok_or("项目本地必须选择环境")?;
                 if !inst_set.contains(inst) {
-                    return Err(format!("未知实例：{inst}"));
+                    return Err(format!("未知环境：{inst}"));
                 }
                 let proj = loc.project_path.as_deref().ok_or("项目本地必须选择项目")?;
                 let canon = canonicalize_dir(proj)?;
@@ -925,7 +1000,7 @@ pub(crate) fn validate_action_strict(
             }
             McpScope::Project => {
                 if loc.instance_id.is_some() {
-                    return Err("项目共享不能指定实例".into());
+                    return Err("项目共享不能指定环境".into());
                 }
                 let proj = loc.project_path.as_deref().ok_or("项目共享必须选择项目")?;
                 let canon = canonicalize_dir(proj)?;
@@ -1217,7 +1292,7 @@ impl<'a> Workbench<'a> {
     ) -> Result<Option<Map<String, Value>>, String> {
         match locator.scope {
             McpScope::User => {
-                let p = self.paths.instance_claude_json(MAIN_INSTANCE)?;
+                let p = user_source_path(self.paths, MAIN_INSTANCE)?;
                 self.ensure(&p)?;
                 let doc = self.docs.get(&p).unwrap();
                 let map = read_user_map(&doc.value)?;
@@ -1278,8 +1353,20 @@ fn member_config(
 
 fn local_parts(locator: &McpLocator) -> Result<(String, String), String> {
     match (&locator.instance_id, &locator.project_path) {
-        (Some(i), Some(p)) => Ok((i.clone(), p.clone())),
-        _ => Err("Local locator 缺少实例或项目".into()),
+        (Some(i), Some(p)) => {
+            // 「项目本地」曾经允许 `__main__`，那次写入落在**默认 Claude 的
+            // `~/.claude.json`**（`instance_claude_json` 的 `__main__` 特判）——
+            // 与"应用对默认 Claude 只读"直接冲突。现在这是后端硬边界：
+            // 界面即使漏了过滤，也写不进去。
+            if i == MAIN_INSTANCE {
+                return Err(
+                    "「项目本地」不支持默认 Claude：应用不会修改它的配置。请选择一个环境，或改用「所有环境」。"
+                        .into(),
+                );
+            }
+            Ok((i.clone(), p.clone()))
+        }
+        _ => Err("Local locator 缺少环境或项目".into()),
     }
 }
 
@@ -1315,7 +1402,7 @@ pub(crate) fn read_service_config(
 ) -> Result<Option<Map<String, Value>>, String> {
     match locator.scope {
         McpScope::User => {
-            let path = paths.instance_claude_json(MAIN_INSTANCE)?;
+            let path = user_source_path(paths, MAIN_INSTANCE)?;
             let doc = match read_doc(&path) {
                 DocRead::Missing => return Ok(None),
                 DocRead::Failed(e) => return Err(e),
@@ -1661,7 +1748,7 @@ fn save_locator_enabled(
 ) -> Result<(), String> {
     match target.scope {
         McpScope::User => {
-            let p = paths.instance_claude_json(MAIN_INSTANCE)?;
+            let p = user_source_path(paths, MAIN_INSTANCE)?;
             wb.user_set(&p, &target.name, config)
         }
         McpScope::Local => {
@@ -1686,7 +1773,7 @@ fn delete_locator_enabled(
 ) -> Result<(), String> {
     match target.scope {
         McpScope::User => {
-            let p = paths.instance_claude_json(MAIN_INSTANCE)?;
+            let p = user_source_path(paths, MAIN_INSTANCE)?;
             wb.user_del(&p, &target.name)
         }
         McpScope::Local => {
@@ -2054,7 +2141,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
     let mut contexts: BTreeSet<(String, String)> = BTreeSet::new();
 
     for inst in &instances {
-        let path = match paths.instance_claude_json(inst) {
+        let path = match user_source_path(paths, inst) {
             Ok(p) => p,
             Err(e) => {
                 issues.push(McpSourceIssue {
@@ -2102,7 +2189,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                         issues.push(McpSourceIssue {
                             source_id: source_id::user(inst),
                             path: path.display().to_string(),
-                            detail: "该实例的顶层 mcpServers 与主账户不一致，将在下次同步收敛"
+                            detail: "该环境包含不同于应用共享库的 MCP 配置；环境独立配置会保留，请查看共享覆盖详情"
                                 .into(),
                         });
                     }
@@ -2189,7 +2276,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         }
     }
 
-    // 覆盖关系以“全部实例 × 全部已知项目”为上下文全集。手工登记但尚未出现在
+    // 覆盖关系以“全部环境 × 全部已知项目”为上下文全集。手工登记但尚未出现在
     // .claude.json.projects 的项目同样会在该项目运行时覆盖同名 User 定义。
     contexts.clear();
     for inst in &instances {
@@ -2275,8 +2362,8 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         }
     }
 
-    // 所有实例×已知项目组合（含尚未创建的 Local 上下文），保证新建 Local 有 revision 可用。
-    // instance_claude_json 失败（非法实例标识）必须生成来源问题，禁止用 if let Ok 静默丢弃。
+    // 所有环境×已知项目组合（含尚未创建的 Local 上下文），保证新建 Local 有 revision 可用。
+    // instance_claude_json 失败（非法环境标识）必须生成来源问题，禁止用 if let Ok 静默丢弃。
     for inst in &instances {
         let p = match paths.instance_claude_json(inst) {
             Ok(p) => p,
@@ -2584,7 +2671,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         .map(|i| McpInstanceRef {
             id: i.clone(),
             label: if i == MAIN_INSTANCE {
-                "主账户".into()
+                "应用共享库".into()
             } else {
                 i.clone()
             },
@@ -2611,7 +2698,60 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         operation_warnings: Vec::new(),
         sync_targets: Vec::new(),
         sync_target_revisions: BTreeMap::new(),
+        shared_overrides: shared_overrides(paths, &instances),
     }
+}
+
+/// 哪些环境的哪些条目**覆盖了共享配置**。
+///
+/// 决策 7.2 要求界面显示冲突，而不是静默以环境为准 —— 静默会让用户
+/// 以为共享值已经生效，等到发现不一致时已经无从判断是哪一步的问题。
+///
+/// 判定完全复用分发引擎的纯函数 `shared_config::plan_env`，
+/// **不另写一套比较逻辑** —— 两套判据必然漂移，而漂移的后果是
+/// "界面说你没覆盖、分发却按覆盖处理"。
+pub(crate) fn shared_overrides(
+    paths: &McpPaths,
+    instances: &[String],
+) -> Vec<crate::mcp::SharedOverride> {
+    let shared_dir = paths.manager_dir.join("shared");
+    let shared: Map<String, Value> = fs::read_to_string(shared_dir.join("mcp.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("mcpServers").and_then(|f| f.as_object()).cloned())
+        .unwrap_or_default();
+    let ledger: crate::shared_config::Ledger =
+        fs::read_to_string(shared_dir.join("distribution.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+    let ledger = ledger.normalized();
+
+    let mut out = vec![];
+    for inst in instances {
+        if inst == MAIN_INSTANCE {
+            continue; // 共享源自己不存在"覆盖共享配置"
+        }
+        let Ok(env_path) = paths.instance_claude_json(inst) else {
+            continue;
+        };
+        let env_entries = fs::read_to_string(&env_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.get("mcpServers").and_then(|f| f.as_object()).cloned())
+            .unwrap_or_default();
+        let before = ledger.entries(crate::shared_config::FIELD_MCP, inst);
+        for info in crate::shared_config::plan_env(&shared, &env_entries, &before).overrides {
+            out.push(crate::mcp::SharedOverride {
+                env: inst.clone(),
+                name: info.name,
+                reason: info.reason.label().to_string(),
+                shared_value: info.shared_value,
+                env_value: info.env_value,
+            });
+        }
+    }
+    out
 }
 
 fn transport_pair(config: &Map<String, Value>) -> (McpTransport, Option<String>) {
@@ -2745,8 +2885,8 @@ mod tests {
         }
     }
 
-    fn write_main(paths: &McpPaths, v: Value) {
-        write_json_transactional(paths, &paths.main_claude_json(), &v).unwrap();
+    fn write_user_source(paths: &McpPaths, v: Value) {
+        write_json_transactional(paths, &paths.shared_mcp_json(), &v).unwrap();
     }
     fn map_of(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
@@ -2776,16 +2916,132 @@ mod tests {
         }
     }
 
+    /// 决策 7.2：同名但内容不同的环境条目**保留环境值**，但**必须报出来**
+    /// —— 静默保留会让用户以为共享值已经生效。
+    #[test]
+    fn shared_overrides_reports_environment_entries_that_override_the_shared_library() {
+        let (paths, _t) = setup();
+        let shared_dir = paths.manager_dir.join("shared");
+        fs::create_dir_all(&shared_dir).unwrap();
+        fs::write(
+            shared_dir.join("mcp.json"),
+            r#"{"mcpServers":{"A":{"cmd":"shared"}}}"#,
+        )
+        .unwrap();
+        // corp 里 A 与共享值不同（台账没有记录 ⇒ 环境自己的配置），另有自己的 B
+        let corp = paths.instance_claude_json("corp").unwrap();
+        fs::create_dir_all(corp.parent().unwrap()).unwrap();
+        fs::write(
+            &corp,
+            r#"{"mcpServers":{"A":{"cmd":"mine"},"B":{"cmd":"only-here"}}}"#,
+        )
+        .unwrap();
+
+        let found = shared_overrides(&paths, &["corp".to_string()]);
+
+        assert_eq!(found.len(), 1, "只有同名不同内容的 A 该报冲突：{found:?}");
+        assert_eq!(found[0].env, "corp");
+        assert_eq!(found[0].name, "A");
+        // 两边差异都要给出来，界面才能展示
+        assert_eq!(
+            found[0].shared_value,
+            Some(serde_json::json!({"cmd": "shared"}))
+        );
+        assert_eq!(found[0].env_value, Some(serde_json::json!({"cmd": "mine"})));
+        // 共享库里没有的名字不是"覆盖"
+        assert!(!found.iter().any(|o| o.name == "B"), "{found:?}");
+        // 共享源自己（__main__）不该被当成某个环境
+        assert!(shared_overrides(&paths, &[MAIN_INSTANCE.to_string()]).is_empty());
+    }
+
+    #[test]
+    fn environment_deletion_removes_only_its_disabled_and_sync_records() {
+        let mut disabled = serde_json::json!({"version":1,"entries":[
+            {"instanceId":"corp","config":{"env":{"TOKEN":"test-only"}}},
+            {"instanceId":"alt"},{"instanceId":null}]});
+        forget_environment_records(&mut disabled, "corp").unwrap();
+        assert_eq!(disabled["entries"].as_array().unwrap().len(), 2);
+        assert!(!disabled.to_string().contains("test-only"));
+        let mut registry = serde_json::json!({"entries":[{"source":{"instanceId":"corp"}},{"source":{"instanceId":"alt"}}]});
+        forget_environment_records(&mut registry, "corp").unwrap();
+        assert_eq!(registry["entries"][0]["source"]["instanceId"], "alt");
+        assert!(
+            forget_environment_records(&mut serde_json::json!({"entries":false}), "corp").is_err()
+        );
+    }
+
+    #[test]
+    fn cleanup_includes_environment_backups_and_shared_disabled_backups() {
+        let (paths, _t) = setup();
+        let env = paths.instance_claude_json("corp").unwrap();
+        let own = backup_path(&paths, &env);
+        fs::write(&own, "{}").unwrap();
+        let shared = backup_path(&paths, &paths.disabled_store());
+        fs::write(&shared, "{}").unwrap();
+        let files = environment_cleanup_files(&paths, "corp").unwrap();
+        assert!(files.contains(&(own, true)));
+        assert!(files.contains(&(shared, false)));
+        assert!(!files
+            .iter()
+            .any(|(path, _)| path == &paths.main_claude_json()));
+    }
+
     #[test]
     fn path_resolution_three_scopes() {
         let (paths, _t) = setup();
-        assert_eq!(paths.main_claude_json(), paths.home.join(".claude.json"));
+        // 「所有环境」的落点 = 应用自建共享源，**不再是**默认 Claude 的 ~/.claude.json
         assert_eq!(
-            paths.instance_claude_json("__main__").unwrap(),
-            paths.main_claude_json()
+            paths.shared_mcp_json(),
+            paths.manager_dir.join("shared").join("mcp.json")
         );
+        assert_ne!(paths.shared_mcp_json(), paths.main_claude_json());
+        // 默认 Claude 的路径访问器本身没变（它仍被只读用途引用），
+        // 但**任何作用域都不会再落到它上面** —— 见 source_file 的 user: 分支
+        assert_eq!(paths.main_claude_json(), paths.home.join(".claude.json"));
         assert!(paths.instance_claude_json("bad name").is_err());
         assert!(paths.instance_claude_json("..").is_err());
+    }
+
+    /// 验收（用户指定）：**默认 Claude 的文件未被改写**。
+    ///
+    /// 这条是"只读边界"的底线 —— 用户在应用里对「所有环境」做任何操作，
+    /// `~/.claude.json` 都必须一个字节都不变。
+    #[test]
+    fn user_scope_operations_never_touch_the_default_claude_file() {
+        let (paths, _t) = setup();
+        let original = json!({
+            "mcpServers": {"userOwned": {"command": "node"}},
+            "projects": {"/some/project": {"history": []}},
+            "otherLogin": "xyz"
+        });
+        write_json_transactional(&paths, &paths.main_claude_json(), &original).unwrap();
+        let before = fs::read_to_string(paths.main_claude_json()).unwrap();
+
+        let target = user_locator("shared-one");
+        apply_action_files(
+            &paths,
+            &[],
+            &save_action(target.clone(), map_of(json!({"command": "go"}))),
+        )
+        .unwrap();
+        apply_action_files(
+            &paths,
+            &[],
+            &McpChangeAction::SetEnabled {
+                target: target.clone(),
+                enabled: false,
+            },
+        )
+        .unwrap();
+        apply_action_files(&paths, &[], &McpChangeAction::Delete { target }).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(paths.main_claude_json()).unwrap(),
+            before,
+            "默认 Claude 的配置被应用改写了"
+        );
+        // 而共享源确实被写到了（不是"什么都没做"导致的假通过）
+        assert!(paths.shared_mcp_json().is_file(), "共享源没被写入");
     }
 
     #[test]
@@ -2800,7 +3056,7 @@ mod tests {
     #[test]
     fn user_save_then_delete_preserves_other_fields() {
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers":{"keep":{"command":"node"}},"otherLogin":"xyz"}),
         );
@@ -2812,13 +3068,13 @@ mod tests {
         )
         .unwrap();
         let doc: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["new"]["command"], "go");
         assert_eq!(doc["mcpServers"]["keep"]["command"], "node");
         assert_eq!(doc["otherLogin"], "xyz");
         apply_action_files(&paths, &[], &McpChangeAction::Delete { target }).unwrap();
         let doc2: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(doc2["mcpServers"].get("new").is_none());
         assert_eq!(doc2["mcpServers"]["keep"]["command"], "node");
         assert_eq!(doc2["otherLogin"], "xyz");
@@ -2838,14 +3094,14 @@ mod tests {
         )
         .unwrap();
         let doc: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["u"]["customField"]["nested"], 1);
     }
 
     #[test]
     fn local_only_modifies_named_instance() {
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let proj = paths.home.join("proj-a");
         fs::create_dir_all(&proj).unwrap();
         register_project(&paths, &proj.display().to_string()).unwrap();
@@ -2880,7 +3136,7 @@ mod tests {
             "node"
         );
         assert!(serde_json::from_str::<Value>(
-            &fs::read_to_string(paths.main_claude_json()).unwrap()
+            &fs::read_to_string(paths.shared_mcp_json()).unwrap()
         )
         .unwrap()
         .get("projects")
@@ -2995,7 +3251,7 @@ mod tests {
     #[test]
     fn user_disable_then_enable_roundtrip() {
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers":{"d":{"command":"node","env":{"TOKEN":"x"}}}}),
         );
@@ -3010,7 +3266,7 @@ mod tests {
         )
         .unwrap();
         let main: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(main["mcpServers"].as_object().unwrap().is_empty());
         let (store, _) = read_disabled(&paths);
         assert!(store
@@ -3027,7 +3283,7 @@ mod tests {
         )
         .unwrap();
         let main2: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert_eq!(main2["mcpServers"]["d"]["command"], "node");
         let (store2, _) = read_disabled(&paths);
         assert!(store2.entries.is_empty());
@@ -3073,10 +3329,10 @@ mod tests {
     #[test]
     fn revision_change_rejects_apply() {
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"x":{"command":"node"}}}));
-        let rev = revision(&paths.main_claude_json());
+        write_user_source(&paths, json!({"mcpServers":{"x":{"command":"node"}}}));
+        let rev = revision(&paths.shared_mcp_json());
         std::thread::sleep(std::time::Duration::from_millis(20));
-        write_main(&paths, json!({"mcpServers":{"x":{"command":"python"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"x":{"command":"python"}}}));
         let mut expected = BTreeMap::new();
         expected.insert(source_id::user(MAIN_INSTANCE), rev);
         assert!(
@@ -3088,9 +3344,9 @@ mod tests {
     fn revision_rejects_same_length_content_change() {
         // 同长度、同时间粒度下内容变化：hash 不同仍触发 revision 冲突
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"x":{"command":"aaaa"}}}));
-        let rev = revision(&paths.main_claude_json());
-        write_main(&paths, json!({"mcpServers":{"x":{"command":"bbbb"}}})); // 同长度
+        write_user_source(&paths, json!({"mcpServers":{"x":{"command":"aaaa"}}}));
+        let rev = revision(&paths.shared_mcp_json());
+        write_user_source(&paths, json!({"mcpServers":{"x":{"command":"bbbb"}}})); // 同长度
         let mut expected = BTreeMap::new();
         expected.insert(source_id::user(MAIN_INSTANCE), rev);
         assert!(
@@ -3104,7 +3360,7 @@ mod tests {
         let proj = paths.home.join("proj-d");
         fs::create_dir_all(&proj).unwrap();
         register_project(&paths, &proj.display().to_string()).unwrap();
-        write_main(
+        write_user_source(
             &paths,
             json!({
                 "mcpServers": {"shared": {"command": "node"}},
@@ -3138,7 +3394,7 @@ mod tests {
         let proj = paths.home.join("registered-only-shadow");
         fs::create_dir_all(&proj).unwrap();
         register_project(&paths, &proj.display().to_string()).unwrap();
-        write_main(&paths, json!({"mcpServers":{"shared":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"shared":{"command":"node"}}}));
         write_json_transactional(
             &paths,
             &proj.join(".mcp.json"),
@@ -3165,7 +3421,7 @@ mod tests {
         let proj = paths.home.join("proj-e");
         fs::create_dir_all(&proj).unwrap();
         register_project(&paths, &proj.display().to_string()).unwrap();
-        write_main(
+        write_user_source(
             &paths,
             json!({
                 "mcpServers": {"shared": {"command": "node"}},
@@ -3206,11 +3462,11 @@ mod tests {
     fn backup_rotation_keeps_at_most_five() {
         let (paths, _t) = setup();
         for i in 0..7 {
-            write_main(&paths, json!({"i": i}));
+            write_user_source(&paths, json!({"i": i}));
         }
         let bak_dir = paths
             .backup_dir()
-            .join(source_hash(&paths.main_claude_json()));
+            .join(source_hash(&paths.shared_mcp_json()));
         let count = fs::read_dir(&bak_dir).map(|rd| rd.count()).unwrap_or(0);
         assert!(count <= 5, "备份份数 {count} 超过 5");
     }
@@ -3220,11 +3476,11 @@ mod tests {
         // 同一秒多次写入：纳秒+计数保证备份名唯一，不互相覆盖
         let (paths, _t) = setup();
         for i in 0..6 {
-            write_main(&paths, json!({"i": i, "pad": "_______________________"}));
+            write_user_source(&paths, json!({"i": i, "pad": "_______________________"}));
         }
         let bak_dir = paths
             .backup_dir()
-            .join(source_hash(&paths.main_claude_json()));
+            .join(source_hash(&paths.shared_mcp_json()));
         let count = fs::read_dir(&bak_dir).map(|rd| rd.count()).unwrap_or(0);
         assert_eq!(count, 5, "同秒多次写入应保留 5 份不同版本，实际 {count}");
     }
@@ -3233,7 +3489,7 @@ mod tests {
     fn batch_save_same_source_keeps_all() {
         // 同一 source（user）批量保存多个服务：全部保留
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let action = McpChangeAction::BatchSave {
             items: vec![
                 McpSaveItem {
@@ -3255,7 +3511,7 @@ mod tests {
         };
         apply_action_files(&paths, &[], &action).unwrap();
         let doc: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(doc["mcpServers"].get("a").is_some());
         assert!(doc["mcpServers"].get("b").is_some());
         assert!(doc["mcpServers"].get("c").is_some());
@@ -3265,7 +3521,7 @@ mod tests {
     fn same_file_rename_original_disappears() {
         // 同文件重命名：old 消失，new 出现
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"old":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"old":{"command":"node"}}}));
         let original = user_locator("old");
         let target = McpLocator {
             scope: McpScope::User,
@@ -3281,16 +3537,16 @@ mod tests {
         };
         apply_action_files(&paths, &[], &action).unwrap();
         let doc: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(doc["mcpServers"].get("old").is_none(), "old 应已删除");
         assert!(doc["mcpServers"].get("new").is_some());
     }
 
     #[test]
     fn local_cross_project_move_no_residue() {
-        // 同一实例文件内跨 Local 项目移动：旧项目下不残留
+        // 同一环境文件内跨 Local 项目移动：旧项目下不残留
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let inst = "alpha";
         let proj1 = paths.home.join("p1");
         let proj2 = paths.home.join("p2");
@@ -3359,7 +3615,7 @@ mod tests {
     #[test]
     fn local_disable_enable_roundtrip() {
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let proj = paths.home.join("lp");
         fs::create_dir_all(&proj).unwrap();
         register_project(&paths, &proj.display().to_string()).unwrap();
@@ -3427,7 +3683,7 @@ mod tests {
     fn unparseable_existing_file_rejects_overwrite() {
         let (paths, _t) = setup();
         // 主配置损坏：写操作必须拒绝，且不覆盖
-        fs::write(paths.main_claude_json(), "not json").unwrap();
+        fs::write(paths.shared_mcp_json(), "not json").unwrap();
         let target = user_locator("x");
         let res = apply_action_files(
             &paths,
@@ -3437,7 +3693,7 @@ mod tests {
         assert!(res.is_err(), "损坏文件应拒绝覆盖");
         // 内容未被覆盖
         assert_eq!(
-            fs::read_to_string(paths.main_claude_json()).unwrap(),
+            fs::read_to_string(paths.shared_mcp_json()).unwrap(),
             "not json"
         );
         // list 应报告 issue
@@ -3451,7 +3707,7 @@ mod tests {
     #[test]
     fn unregistered_project_locator_rejected() {
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let proj = paths.home.join("unregistered");
         fs::create_dir_all(&proj).unwrap();
         // 不登记，直接 Save Project
@@ -3473,7 +3729,7 @@ mod tests {
     #[test]
     fn illegal_locator_rejected() {
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         // User 带 instance
         let bad = McpLocator {
             scope: McpScope::User,
@@ -3525,7 +3781,7 @@ mod tests {
     fn legacy_illegal_name_kept_only_when_unchanged() {
         // 旧非法名：仅 original==target 时允许编辑；改名则新名必须合法
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers":{"bad name":{"command":"node"}}}),
         );
@@ -3576,14 +3832,14 @@ mod tests {
         // 快照读取失败发生在首次写入之前：第一目标为已有普通文件，后续目标必须在 fs::read
         // 阶段确定失败（目录当作文件读 → 非 NotFound 错误），事务在任何写入前终止。
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
-        let main_bytes = fs::read(paths.main_claude_json()).unwrap();
+        write_user_source(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
+        let main_bytes = fs::read(paths.shared_mcp_json()).unwrap();
         // 目录作为 PlannedWrite 目标：fs::read 目录确定失败（非 NotFound），触发快照阶段终止
         let dir_target = paths.home.join("a-real-dir");
         fs::create_dir_all(&dir_target).unwrap();
         let writes = vec![
             PlannedWrite {
-                path: paths.main_claude_json(),
+                path: paths.shared_mcp_json(),
                 value: json!({"mcpServers":{"a":{"command":"CHANGED"}}}),
             },
             PlannedWrite {
@@ -3595,7 +3851,7 @@ mod tests {
         assert!(res.is_err(), "快照读取失败应在任何写入前终止");
         // 第一目标原始 bytes 完全不变（连临时文件都不应产生）
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             main_bytes,
             "第一目标原始 bytes 完全不变"
         );
@@ -3603,9 +3859,9 @@ mod tests {
 
     #[test]
     fn user_delete_not_revived_after_sync() {
-        // User 删除后，即便实例副本仍停留旧状态，主账户为空，下次同步不会从空主账户复活已删项
+        // User 删除后，即便环境副本仍停留旧状态，默认 Claude为空，下次同步不会从空默认 Claude复活已删项
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"rm":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"rm":{"command":"node"}}}));
         apply_action_files(
             &paths,
             &[],
@@ -3614,23 +3870,23 @@ mod tests {
             },
         )
         .unwrap();
-        // 主账户已删
+        // 默认 Claude已删
         let main: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(main["mcpServers"].get("rm").is_none());
-        // 模拟一个仍带 rm 的实例副本，跑一次同步收敛应把它也删除（不复活）
+        // 模拟一个仍带 rm 的环境副本，跑一次同步收敛应把它也删除（不复活）
         let inst = "alpha";
         let p = paths.instance_claude_json(inst).unwrap();
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         write_json_transactional(&paths, &p, &json!({"mcpServers":{"rm":{"command":"node"}}}))
             .unwrap();
-        // 注：sync_configs_locked 依赖真实 snapshot；这里只验证主账户不会被空实例复活：
-        // 主账户仍是删除后状态。
+        // 注：sync_configs_locked 依赖真实 snapshot；这里只验证默认 Claude不会被空环境复活：
+        // 默认 Claude仍是删除后状态。
         let main2: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(
             main2["mcpServers"].get("rm").is_none(),
-            "主账户删除后不应被实例副本复活"
+            "默认 Claude删除后不应被环境副本复活"
         );
     }
 
@@ -3638,7 +3894,7 @@ mod tests {
     fn edit_disabled_service_stays_disabled() {
         // 编辑停用服务：保持停用，只更新 disabled entry，不写入启用来源
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
         let target = user_locator("d");
         apply_action_files(
             &paths,
@@ -3658,7 +3914,7 @@ mod tests {
         apply_action_files(&paths, &[], &action).unwrap();
         // 仍未启用
         let main: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(
             main["mcpServers"].get("d").is_none(),
             "编辑停用服务不应意外启用"
@@ -3673,7 +3929,7 @@ mod tests {
     fn disable_nonexistent_service_errors() {
         // User/Local 停用找不到启用配置必须报错，禁止创建幽灵停用项
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let res = apply_action_files(
             &paths,
             &[],
@@ -3707,9 +3963,9 @@ mod tests {
 
     #[test]
     fn project_only_in_secondary_instance_toggle() {
-        // 项目仅由次级实例 .claude.json.projects 发现（未登记）时，传入该实例 Project 启停成功
+        // 项目仅由次级环境 .claude.json.projects 发现（未登记）时，传入该环境 Project 启停成功
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let inst = "alpha";
         let proj = paths.home.join("sec-proj");
         fs::create_dir_all(&proj).unwrap();
@@ -3749,7 +4005,7 @@ mod tests {
             json!({"version":"not-a-number","entries":"oops"}).to_string(),
         )
         .unwrap();
-        write_main(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
         let res = apply_action_files(
             &paths,
             &[],
@@ -3802,8 +4058,8 @@ mod tests {
         // 模拟：target→rollback 后、tmp→target 前进程中断（target 缺失、rollback 在）
         // 下次写入应先恢复 rollback 并终止，要求刷新后重试
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
-        let target = paths.main_claude_json();
+        write_user_source(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
+        let target = paths.shared_mcp_json();
         let rollback = target.with_file_name(format!(".ccm-rollback-{}", source_hash(&target)));
         fs::rename(&target, &rollback).unwrap();
         assert!(!target.exists());
@@ -3824,7 +4080,7 @@ mod tests {
     fn forged_original_with_illegal_name_rejected() {
         // 空配置环境：伪造 original=target="bad name"（实际不存在）必须拒绝
         let (paths, _t) = setup();
-        write_main(&paths, json!({}));
+        write_user_source(&paths, json!({}));
         let bad = McpLocator {
             scope: McpScope::User,
             name: "bad name".into(),
@@ -3847,7 +4103,7 @@ mod tests {
     fn legacy_illegal_name_real_history_edit_succeeds() {
         // 真实存在的非法名历史服务，不改名编辑应成功
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers":{"bad name":{"command":"node"}}}),
         );
@@ -3868,7 +4124,7 @@ mod tests {
             "真实历史服务不改名编辑应成功"
         );
         let doc: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["bad name"]["command"], "go");
     }
 
@@ -3876,18 +4132,18 @@ mod tests {
     fn type_wrong_mcp_servers_rejected_and_bytes_unchanged() {
         // mcpServers 存在但不是对象：写盘必须 Err 且源文件 bytes 完全不变
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers":["not","an","object"], "other":"keep"}),
         );
-        let bytes = fs::read(paths.main_claude_json()).unwrap();
+        let bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let action = save_action(user_locator("new"), map_of(json!({"command":"go"})));
         assert!(
             apply_action_files(&paths, &[], &action).is_err(),
             "mcpServers 类型错误应拒绝写盘"
         );
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             bytes,
             "源文件原始 bytes 不应变化"
         );
@@ -3935,13 +4191,13 @@ mod tests {
     fn multi_file_rollback_deterministic() {
         // 确定性多文件事务：第一份写入成功、第二份失败 → 第一份回滚、第二份未创建
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
         let blocker = paths.home.join("blocker-file");
         fs::write(&blocker, "x").unwrap(); // blocker 是文件，其下子目录无法创建
         let bad_target = blocker.join("deep").join("x.json");
         let writes = vec![
             PlannedWrite {
-                path: paths.main_claude_json(),
+                path: paths.shared_mcp_json(),
                 value: json!({"mcpServers":{"a":{"command":"CHANGED"}}}),
             },
             PlannedWrite {
@@ -3952,7 +4208,7 @@ mod tests {
         let res = apply_storage_transaction(&paths, writes);
         assert!(res.is_err());
         let main: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert_eq!(
             main["mcpServers"]["a"]["command"], "node",
             "第一份应回滚为原值"
@@ -4012,7 +4268,7 @@ mod tests {
     fn affected_normal_save_excludes_disabled() {
         // 普通启用保存：affected 不含 manager:disabled
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"a":{"command":"node"}}}));
         let action = save_action(user_locator("a"), map_of(json!({"command":"go"})));
         let affected = affected_source_ids(&paths, &[], &action).unwrap();
         assert!(affected
@@ -4028,7 +4284,7 @@ mod tests {
     fn affected_disabled_edit_includes_disabled() {
         // 编辑停用定义：既校验 locator 的直接 source，也校验 manager:disabled
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
         let target = user_locator("d");
         apply_action_files(
             &paths,
@@ -4098,7 +4354,7 @@ mod tests {
             "version=2 的 disabled store 必须拒绝"
         );
         // apply 操作也拒绝
-        write_main(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
+        write_user_source(&paths, json!({"mcpServers":{"d":{"command":"node"}}}));
         let res = apply_action_files(
             &paths,
             &[],
@@ -4143,7 +4399,7 @@ mod tests {
     fn non_object_service_member_issue() {
         // mcpServers[name] 非对象 → collect_state 报 issue 且 read_service_config 返回 Err
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers": {"bad": "not-an-object", "ok": {"command": "node"}}}),
         );
@@ -4173,8 +4429,8 @@ mod tests {
     fn corrupt_config_apply_rejected() {
         // enabled 配置文件损坏（解析失败）：apply 写盘路径应拒绝且原 bytes 不变
         let (paths, _t) = setup();
-        fs::write(paths.main_claude_json(), "not json").unwrap();
-        let bytes = fs::read(paths.main_claude_json()).unwrap();
+        fs::write(paths.shared_mcp_json(), "not json").unwrap();
+        let bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let target = user_locator("x");
         let res = apply_action_files(
             &paths,
@@ -4183,7 +4439,7 @@ mod tests {
         );
         assert!(res.is_err(), "损坏文件应拒绝写入");
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             bytes,
             "原 bytes 不变"
         );
@@ -4198,11 +4454,11 @@ mod tests {
     fn delete_non_object_member_errors_and_bytes_unchanged() {
         // mcpServers[name] 为非对象时，直接 Delete apply 必须 Err 且源文件 bytes 不变
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers":{"bad":"not-an-object"}, "keep":"v"}),
         );
-        let bytes = fs::read(paths.main_claude_json()).unwrap();
+        let bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let res = apply_action_files(
             &paths,
             &[],
@@ -4212,7 +4468,7 @@ mod tests {
         );
         assert!(res.is_err(), "删除非对象成员应报错");
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             bytes,
             "源文件 bytes 不变"
         );
@@ -4222,8 +4478,8 @@ mod tests {
     fn move_from_non_object_member_errors_and_bytes_unchanged() {
         // original 为非对象成员时，移动/重命名 apply 必须 Err 且源文件 bytes 不变
         let (paths, _t) = setup();
-        write_main(&paths, json!({"mcpServers":{"bad":"str"}}));
-        let bytes = fs::read(paths.main_claude_json()).unwrap();
+        write_user_source(&paths, json!({"mcpServers":{"bad":"str"}}));
+        let bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let original = user_locator("bad");
         let target = user_locator("new");
         let action = McpChangeAction::Save {
@@ -4235,7 +4491,7 @@ mod tests {
         let res = apply_action_files(&paths, &[], &action);
         assert!(res.is_err(), "从非对象成员移动应报错");
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             bytes,
             "源文件 bytes 不变"
         );
@@ -4250,8 +4506,8 @@ mod tests {
             json!({"version":"not-a-number"}).to_string(),
         )
         .unwrap();
-        write_main(&paths, json!({}));
-        let main_bytes = fs::read(paths.main_claude_json()).unwrap();
+        write_user_source(&paths, json!({}));
+        let main_bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let res = apply_action_files(
             &paths,
             &[],
@@ -4259,7 +4515,7 @@ mod tests {
         );
         assert!(res.is_err(), "disabled store 损坏时 Save 应报错");
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             main_bytes,
             "不应写入 enabled 来源"
         );
@@ -4274,8 +4530,8 @@ mod tests {
             json!({"version":"not-a-number"}).to_string(),
         )
         .unwrap();
-        write_main(&paths, json!({}));
-        let main_bytes = fs::read(paths.main_claude_json()).unwrap();
+        write_user_source(&paths, json!({}));
+        let main_bytes = fs::read(paths.shared_mcp_json()).unwrap();
         let action = McpChangeAction::BatchSave {
             items: vec![McpSaveItem {
                 target: user_locator("n"),
@@ -4286,7 +4542,7 @@ mod tests {
         let res = apply_action_files(&paths, &[], &action);
         assert!(res.is_err(), "disabled store 损坏时 BatchSave 应报错");
         assert_eq!(
-            fs::read(paths.main_claude_json()).unwrap(),
+            fs::read(paths.shared_mcp_json()).unwrap(),
             main_bytes,
             "不应写入 enabled 来源"
         );
@@ -4313,7 +4569,7 @@ mod tests {
     fn collect_state_reports_issue_for_non_object_projects() {
         // .claude.json 的 projects 不是对象：collect_state 必须生成来源问题
         let (paths, _t) = setup();
-        write_main(&paths, json!({"projects": ["not", "an", "object"]}));
+        write_user_source(&paths, json!({"projects": ["not", "an", "object"]}));
         let state = collect_state(&paths, &[]);
         assert!(
             state
@@ -4329,7 +4585,7 @@ mod tests {
     fn collect_state_reports_issue_for_inaccessible_project_key() {
         // projects 中某个项目路径不可访问：collect_state 必须生成来源问题，不静默跳过
         let (paths, _t) = setup();
-        write_main(&paths, json!({"projects": { "E:\\does\\not\\exist": {} }}));
+        write_user_source(&paths, json!({"projects": { "E:\\does\\not\\exist": {} }}));
         let state = collect_state(&paths, &[]);
         assert!(
             state
@@ -4470,7 +4726,7 @@ mod tests {
     #[test]
     fn enabled_original_overwrites_disabled_target_without_residue() {
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers": {
                 "enabled-a": {"command": "node"},
@@ -4500,7 +4756,7 @@ mod tests {
         apply_action_files(&paths, &[], &action).unwrap();
 
         let main: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(main["mcpServers"].get("enabled-a").is_none());
         assert_eq!(main["mcpServers"]["disabled-b"]["command"], "go");
         let (disabled, issue) = read_disabled(&paths);
@@ -4517,7 +4773,7 @@ mod tests {
     #[test]
     fn disabled_original_overwrites_enabled_target_without_residue() {
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers": {
                 "disabled-a": {"command": "node"},
@@ -4548,7 +4804,7 @@ mod tests {
         apply_action_files(&paths, &[], &action).unwrap();
 
         let main: Value =
-            serde_json::from_str(&fs::read_to_string(paths.main_claude_json()).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(main["mcpServers"].get("disabled-a").is_none());
         assert!(main["mcpServers"].get("enabled-b").is_none());
         let (disabled, issue) = read_disabled(&paths);
@@ -4571,7 +4827,7 @@ mod tests {
         let project = paths.home.join("disabled-user-to-project");
         fs::create_dir_all(&project).unwrap();
         register_project(&paths, &project.display().to_string()).unwrap();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers": {"move-me": {"command": "node"}}}),
         );
@@ -4659,7 +4915,7 @@ mod tests {
         let project_doc: Value =
             serde_json::from_str(&fs::read_to_string(project.join(".mcp.json")).unwrap()).unwrap();
         assert!(project_doc["mcpServers"].get("move-me").is_none());
-        if let Ok(text) = fs::read_to_string(paths.main_claude_json()) {
+        if let Ok(text) = fs::read_to_string(paths.shared_mcp_json()) {
             let main: Value = serde_json::from_str(&text).unwrap();
             assert!(main
                 .get("mcpServers")
@@ -4680,7 +4936,7 @@ mod tests {
     #[test]
     fn batch_save_requires_overwrite_for_disabled_target() {
         let (paths, _t) = setup();
-        write_main(
+        write_user_source(
             &paths,
             json!({"mcpServers": {"disabled": {"command": "node"}}}),
         );

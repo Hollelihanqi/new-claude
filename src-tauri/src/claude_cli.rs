@@ -597,7 +597,7 @@ fn merge_missed_stages(stages: Vec<SelectionResult>) -> SelectionResult {
 
 pub fn detect_claude() -> ClaudeDetection {
     let platform = Platform::current();
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::home();
     let names = executable_names(platform);
     let mut missed_stages = Vec::new();
     let mut shell_warning = None;
@@ -681,7 +681,7 @@ pub fn detect_claude() -> ClaudeDetection {
 }
 
 pub fn remember_manual_path(path: PathBuf) -> Result<ClaudeDetection, String> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::home();
     let result = select_working_candidate(
         vec![Candidate::new(path, DetectionSource::Manual)],
         verify_claude,

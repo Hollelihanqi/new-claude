@@ -173,6 +173,39 @@ export interface McpState {
   operationWarnings: string[];
   syncTargets: McpSyncTargetInfo[];
   syncTargetRevisions: Record<string, string>;
+  /** 哪些环境的哪些条目覆盖了共享配置（决策 7.2：必须显示，不能静默以环境为准） */
+  sharedOverrides: McpSharedOverride[];
+}
+
+/** 某个环境的插件继承状态 */
+export interface PluginEnvState {
+  env: string;
+  value?: boolean | null;
+  /** true = 与共享值一致（继承）；false = 该环境独立覆盖 */
+  inherited: boolean;
+  /** 覆盖原因（继承时为空） */
+  reason: string;
+}
+
+/** 插件启用状态总览的一行 */
+export interface PluginRow {
+  name: string;
+  /** 共享库里的值（null = 共享库里没有这一条） */
+  shared?: boolean | null;
+  /** 默认 Claude 的值 —— 只展示，不可编辑 */
+  defaultClaude?: boolean | null;
+  envs: PluginEnvState[];
+}
+
+export interface McpSharedOverride {
+  env: string;
+  name: string;
+  /** 人类可读的原因，如「已覆盖共享配置（你修改过它）」 */
+  reason: string;
+  /** 共享库里的值；共享库没有该条时为 undefined */
+  sharedValue?: Record<string, unknown> | null;
+  /** 环境里的值；该环境已删除这条时为 undefined */
+  envValue?: Record<string, unknown> | null;
 }
 
 export interface McpSyncPreview {
@@ -283,12 +316,12 @@ export interface UsageStats {
 
 /** ModelPinWarning（serde rename_all = camelCase）：/model 钉死具体型号、绕过档位映射 */
 export interface ModelPinWarning {
-  profile: string; // 实例名；主账户为 __main__
+  profile: string; // 环境名；默认 Claude为 __main__
   model: string;
   settingsPath: string;
 }
 
-/** InstanceSettings（serde rename_all = camelCase）：某个独立空间的 settings.json */
+/** InstanceSettings（serde rename_all = camelCase）：某个独立环境的 settings.json */
 export interface InstanceSettings {
   path: string;
   exists: boolean;
@@ -354,7 +387,12 @@ export interface WorkBuddyState {
   gateway: WorkBuddyGatewayConfig;
   organizations: WorkBuddyOrganization[];
   models: WorkBuddyModel[];
+  /** `models.json` 的修订号 */
   revision: string;
+  /** `cc-manager-gateway.json` 的修订号 */
+  gatewayRevision: string;
+  /** `cc-manager-organizations.json` 的修订号 */
+  organizationsRevision: string;
   warnings: string[];
 }
 
@@ -401,6 +439,20 @@ export const api = {
     invoke("preview_mcp_change", { request }),
   applyMcpChange: (request: McpChangeRequest): Promise<McpState> =>
     invoke("apply_mcp_change", { request }),
+  /** 撤销某个环境对被分发条目的覆盖，改回共享值（决策 7.2：必须用户显式触发） */
+  restoreSharedMcpEntry: (env: string, name: string): Promise<string> =>
+    invoke("restore_shared_mcp_entry", { env, name }),
+  /** 插件启用状态总览（扩展 → Plugins） */
+  pluginsOverview: (): Promise<PluginRow[]> => invoke("plugins_overview"),
+  /** 设置「所有环境」的共享启用状态 */
+  setSharedPlugin: (name: string, enabled: boolean): Promise<string> =>
+    invoke("set_shared_plugin", { name, enabled }),
+  /** 设置某个环境的独立启用状态（覆盖） */
+  setEnvPlugin: (env: string, name: string, enabled: boolean): Promise<string> =>
+    invoke("set_env_plugin", { env, name, enabled }),
+  /** 撤销该环境的独立设置，恢复继承共享值 */
+  restorePluginInheritance: (env: string, name: string): Promise<string> =>
+    invoke("restore_plugin_inheritance", { env, name }),
   testMcpServer: (request: McpTestRequest): Promise<McpTestResult> =>
     invoke("test_mcp_server", { request }),
   previewMcpTargetSync: (
@@ -414,14 +466,20 @@ export const api = {
     invoke("disable_mcp_target", { request }),
   backupConfig: (): Promise<string> => invoke("backup_config"),
   recentSyncLog: (): Promise<string[]> => invoke("recent_sync_log"),
+  // 兼容入口：作用于**全部网关环境**（保留给不指定目标的调用方）
   importCert: (path: string): Promise<string> => invoke("import_cert", { path }),
   clearCerts: (): Promise<string> => invoke("clear_certs"),
-  detectModels: (baseUrl: string, token: string): Promise<string[]> =>
-    invoke("detect_models", { baseUrl, token }),
+  // 按网关注入/清空：CA 是**每个网关各自一份**，不再全局共用（约束 5）
+  importCertFor: (envs: string[], path: string): Promise<string> =>
+    invoke("import_cert_for", { envs, path }),
+  clearCertsFor: (envs: string[]): Promise<string> =>
+    invoke("clear_certs_for", { envs }),
+  detectModels: (baseUrl: string, token: string, env = ""): Promise<string[]> =>
+    invoke("detect_models", { env, baseUrl, token }),
   detectModelsFor: (name: string): Promise<string[]> =>
     invoke("detect_models_for", { name }),
   usageStats: (): Promise<UsageStats> => invoke("usage_stats"),
-  // 独立空间的 settings.json：开关与手动编辑共用同一份读写
+  // 独立环境的 settings.json：开关与手动编辑共用同一份读写
   readInstanceSettings: (name: string): Promise<InstanceSettings> =>
     invoke("read_instance_settings", { name }),
   writeInstanceSettings: (
@@ -441,22 +499,40 @@ export const api = {
   fixModelPin: (profile: string): Promise<string> =>
     invoke("fix_model_pin", { profile }),
   healthCheck: (): Promise<HealthItem[]> => invoke("health_check"),
+  /** 最近一次完整健康检查。从未检测过 / 记录损坏 / 时间戳来自未来都返回 null */
+  lastVerification: (): Promise<{ at: number; problems: number } | null> =>
+    invoke("last_verification"),
   exportDiagnostics: (): Promise<string> => invoke("export_diagnostics"),
   // WorkBuddy 独立模型配置
   workBuddyState: (): Promise<WorkBuddyState> => invoke("workbuddy_state"),
   setWorkBuddyExecutable: (path: string): Promise<WorkBuddyState> =>
     invoke("set_workbuddy_executable", { path }),
-  saveWorkBuddyGateway: (url: string, apiKey: string | undefined): Promise<WorkBuddyState> =>
-    invoke("save_workbuddy_gateway", { request: { url, apiKey: apiKey || null } }),
+  saveWorkBuddyGateway: (
+    url: string,
+    apiKey: string | undefined,
+    expectedRevision: string
+  ): Promise<WorkBuddyState> =>
+    invoke("save_workbuddy_gateway", {
+      request: { url, apiKey: apiKey || null, expectedRevision },
+    }),
   saveWorkBuddyOrganization: (
     id: string | undefined,
     name: string,
     modelPrefix: string,
     url: string,
-    apiKey: string | undefined
+    apiKey: string | undefined,
+    /** 来自 state.organizationsRevision；不一致后端会拒绝覆盖 */
+    expectedRevision: string
   ): Promise<WorkBuddyState> =>
     invoke("save_workbuddy_organization", {
-      request: { id: id || null, name, modelPrefix, url, apiKey: apiKey || null },
+      request: {
+        id: id || null,
+        name,
+        modelPrefix,
+        url,
+        apiKey: apiKey || null,
+        expectedRevision,
+      },
     }),
   deleteWorkBuddyOrganization: (id: string): Promise<WorkBuddyState> =>
     invoke("delete_workbuddy_organization", { id }),
@@ -499,5 +575,6 @@ export const api = {
     invoke("test_workbuddy_model", {
       request: { id, url, apiKey: apiKey || null, useCustomProtocol, useGlobalKey },
     }),
-  launchWorkBuddy: (): Promise<void> => invoke("launch_workbuddy"),
+  // 返回启动结果说明：CA 若未能写进 WorkBuddy 安装目录（权限不足），会在这里带出提示
+  launchWorkBuddy: (): Promise<string> => invoke("launch_workbuddy"),
 };

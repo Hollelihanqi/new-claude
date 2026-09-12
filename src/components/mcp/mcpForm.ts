@@ -9,16 +9,19 @@ import type {
 
 export const REDACTED = "__CC_MANAGER_REDACTED__";
 
+// 三个作用范围的用词以决策 7.2 为准（术语表：不再说「用户级」这类含糊说法）。
+// ⚠️ 注意别把这里的「用户级」误伤到别处 —— `GuidePanel`/`securityClaims` 里的
+// 「用户级保护」说的是 DPAPI 的作用域，是另一个意思，不能跟着改。
 export const SCOPE_LABELS: Record<McpScope, string> = {
-  user: "用户级",
-  local: "项目本地",
-  project: "项目共享",
+  user: "所有环境",
+  local: "指定环境",
+  project: "当前项目",
 };
 
 export const SCOPE_DESCRIPTIONS: Record<McpScope, string> = {
-  user: "所有项目、所有 Claude 实例可用",
-  local: "仅指定项目、指定 Claude 实例可用",
-  project: "写入项目 .mcp.json，可由团队共享",
+  user: "写入「应用共享库」，自动分发到每个环境（各环境可单独覆盖）",
+  local: "仅指定的项目 + 环境可用，不影响其他环境",
+  project: "写入项目 .mcp.json，可由团队共享；不进入共享库",
 };
 
 export const TRANSPORT_LABELS: Record<McpTransport, string> = {
@@ -60,13 +63,15 @@ export function buildSyncTargetColumns(
   return [...columns].map(([targetId, label]) => ({ targetId, label }));
 }
 
-/** 用户级只显示“用户级”徽标，不再在徽标下重复显示“全局”。 */
+/** 「所有环境」只显示徽标，不再在徽标下重复显示「全局」。 */
 export function serviceContextLabel(service: McpService): string {
   const { locator } = service;
   if (locator.scope === "user") return "";
   const project = locator.projectPath?.split(/[\\/]/).filter(Boolean).pop() ?? "未命名项目";
   if (locator.scope === "local") {
-    return `${locator.instanceId ?? "默认实例"} / ${project}`;
+    // instanceId 缺失 = 默认 Claude自己的项目级配置。默认 Claude**不是环境**，
+    // 原先把这里写成「默认环境」等于把它当成了环境的一种。
+    return `${locator.instanceId ?? "默认 Claude"} / ${project}`;
   }
   return project;
 }
@@ -277,19 +282,19 @@ export function restoreRedactedValues(
 export function validateLocatorForScope(locator: McpLocator): Record<string, string> {
   const errs: Record<string, string> = {};
   if (locator.scope === "user") {
-    if (locator.instanceId) errs.instanceId = "用户级不能指定实例";
-    if (locator.projectPath) errs.projectPath = "用户级不能指定项目";
+    if (locator.instanceId) errs.instanceId = "「所有环境」不能指定环境";
+    if (locator.projectPath) errs.projectPath = "「所有环境」不能指定项目";
   } else if (locator.scope === "local") {
-    if (!locator.instanceId) errs.instanceId = "项目本地必须选择实例";
-    if (!locator.projectPath) errs.projectPath = "项目本地必须选择项目";
+    if (!locator.instanceId) errs.instanceId = "「指定环境」必须选择环境";
+    if (!locator.projectPath) errs.projectPath = "「指定环境」必须选择项目";
   } else if (locator.scope === "project") {
-    if (locator.instanceId) errs.instanceId = "项目共享不能指定实例";
-    if (!locator.projectPath) errs.projectPath = "项目共享必须选择项目";
+    if (locator.instanceId) errs.instanceId = "「当前项目」不能指定环境";
+    if (!locator.projectPath) errs.projectPath = "「当前项目」必须选择项目";
   }
   return errs;
 }
 
-/** 筛选/搜索用的可读文本：名称、command、url、项目路径、实例名。 */
+/** 筛选/搜索用的可读文本：名称、command、url、项目路径、环境名。 */
 export function serviceSearchText(service: McpService): string {
   const parts = [
     service.locator.name,

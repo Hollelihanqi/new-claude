@@ -85,7 +85,7 @@ export default function ConfigPanel({
   const detectRequest = useRef(0);
   const detectInFlight = useRef(false);
 
-  // 连接或实例改变后，旧请求只能结束，不能更新当前表单。
+  // 连接或环境改变后，旧请求只能结束，不能更新当前表单。
   useEffect(() => {
     setDetected([]);
     setDetectBusy(false);
@@ -94,7 +94,7 @@ export default function ConfigPanel({
     return () => { detectRequest.current += 1; };
   }, [sel, form.baseUrl, form.type, token]);
 
-  // /model 钉死具体型号的告警（含主账户 __main__）
+  // /model 钉死具体型号的告警（含默认 Claude __main__）
   const [pins, setPins] = useState<ModelPinWarning[]>([]);
   const [fixBusy, setFixBusy] = useState("");
 
@@ -114,7 +114,7 @@ export default function ConfigPanel({
   usePageActivation(load);
 
   const pinLabel = (profile: string) =>
-    profile === "__main__" ? "主账户" : `实例 ${profile}`;
+    profile === "__main__" ? "默认 Claude" : `环境 ${profile}`;
 
   const onFixPin = async (profile: string) => {
     setFixBusy(profile);
@@ -141,7 +141,7 @@ export default function ConfigPanel({
     });
     setToken("");
     setDetected([]);
-    // 提示条是页面级共享状态，切实例必须清掉，否则上一个实例的报错会"跟着"过来
+    // 提示条是页面级共享状态，切环境必须清掉，否则上一个环境的报错会"跟着"过来
     setStatus({ type: "info", msg: "" });
   };
 
@@ -155,8 +155,8 @@ export default function ConfigPanel({
 
   const valid = () => {
     const n = form.name.trim();
-    if (!n) return "请填写实例名称。";
-    // 编辑已有实例：名称不可改（输入框已禁用），旧规则时代的名字放行，只校验新建
+    if (!n) return "请填写环境名称。";
+    // 编辑已有环境：名称不可改（输入框已禁用），旧规则时代的名字放行，只校验新建
     if (sel) return null;
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(n))
       return "名称只能包含英文字母、数字、下划线、短横线（1~40 个字符）。";
@@ -191,7 +191,7 @@ export default function ConfigPanel({
       return;
     }
     if (!sel && !token.trim()) {
-      setDetectStatus({ type: "error", msg: "新建实例需先填 API Key 才能检测模型。" });
+      setDetectStatus({ type: "error", msg: "新建环境需先填 API Key 才能检测模型。" });
       return;
     }
     const request = ++detectRequest.current;
@@ -200,7 +200,7 @@ export default function ConfigPanel({
     setDetectStatus({ type: "info", msg: "正在检测当前网关模型…" });
     try {
       const list = token.trim()
-        ? await api.detectModels(baseUrl, token.trim())
+        ? await api.detectModels(baseUrl, token.trim(), sel || "")
         : await api.detectModelsFor(sel!);
       if (request !== detectRequest.current) return;
       const models = [...new Set(list.map((m) => m.trim()).filter(Boolean))];
@@ -260,7 +260,7 @@ export default function ConfigPanel({
 
   const onDelete = async () => {
     if (!sel) {
-      setStatus({ type: "error", msg: "请先在左侧选中一个实例。" });
+      setStatus({ type: "error", msg: "请先在左侧选中一个环境。" });
       return;
     }
     setBusyAction("delete");
@@ -314,12 +314,12 @@ export default function ConfigPanel({
       <Modal
         opened={pageActive && (deleteOpen)}
         onClose={() => setDeleteOpen(false)}
-        title={`彻底删除空间${sel ? `「${sel}」` : ""}`}
+        title={`彻底删除环境${sel ? `「${sel}」` : ""}`}
         centered
       >
         <Stack gap="md">
           <Alert color="orange" icon={<IconAlertTriangle size={16} />}>
-            此操作不可恢复，将清除该空间的配置、API Key、登录态、项目记录、历史用量数据、终端命令和同步记录。
+            此操作不可恢复，将清除该环境的配置、API Key、登录态、项目记录、历史用量数据、终端命令和同步记录。
           </Alert>
           <Button
             color="red"
@@ -344,42 +344,65 @@ export default function ConfigPanel({
           style={{ flex: "0 0 auto" }}
         >
           <Stack gap={6}>
-            {pins.map((w) => (
-              <Group key={w.profile} gap="xs" wrap="nowrap" justify="space-between">
-                <Text size="sm">
-                  {pinLabel(w.profile)}当前固定使用模型 <Code>{w.model}</Code>
-                  {w.profile === "__main__"
-                    ? "。从用户主目录启动 Claude 时，这项设置会优先于空间中的 Opus、Sonnet 和 Haiku 映射，实际模型可能与空间配置不一致。"
-                    : "，因此该空间配置的 Opus、Sonnet 和 Haiku 映射不会生效。"}
-                </Text>
-                <Button
-                  size="xs"
-                  variant="light"
-                  color="orange"
-                  loading={fixBusy === w.profile}
-                  onClick={() => onFixPin(w.profile)}
-                  style={{ flexShrink: 0 }}
+            {pins.map((w) =>
+              // 决策 7.4：默认 Claude **只读告警，不给「一键恢复」**。
+              // 应用可以发现风险并说明原因，但不替用户改写他自己那份配置。
+              w.profile === "__main__" ? (
+                <Stack key={w.profile} gap={2}>
+                  <Text size="sm">
+                    检测到默认 Claude 配置固定使用模型 <Code>{w.model}</Code>
+                    。当你从用户主目录启动网关环境时，该设置可能覆盖环境的模型映射。
+                    <b>应用不会修改此配置。</b>建议从实际项目目录启动；如需调整，请在
+                    Claude Code 中自行修改。
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    配置文件：<Code>{w.settingsPath}</Code>
+                  </Text>
+                </Stack>
+              ) : (
+                <Group
+                  key={w.profile}
+                  gap="xs"
+                  wrap="nowrap"
+                  justify="space-between"
                 >
-                  恢复档位选择
-                </Button>
-              </Group>
-            ))}
-            <Text size="xs" c="dimmed">
-              恢复后会清除固定型号，重新使用空间配置的模型映射。以后通过 /model
-              切换模型时，请选择 Opus、Sonnet 或 Haiku，而不是带版本号的具体型号。
-            </Text>
+                  <Text size="sm">
+                    环境 <Code>{w.profile}</Code> 当前固定使用模型{" "}
+                    <Code>{w.model}</Code>
+                    ，因此该环境配置的 Opus、Sonnet 和 Haiku 映射不会生效。
+                  </Text>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    color="orange"
+                    loading={fixBusy === w.profile}
+                    onClick={() => onFixPin(w.profile)}
+                    style={{ flexShrink: 0 }}
+                  >
+                    恢复档位选择
+                  </Button>
+                </Group>
+              )
+            )}
+            {/* 兜底说明只在真有环境钉死时才写：默认 Claude 那条没有按钮，写它就成了误导 */}
+            {pins.some((w) => w.profile !== "__main__") && (
+              <Text size="xs" c="dimmed">
+                恢复后会清除固定型号，重新使用环境配置的模型映射。以后通过 /model
+                切换模型时，请选择 Opus、Sonnet 或 Haiku，而不是带版本号的具体型号。
+              </Text>
+            )}
           </Stack>
         </Alert>
       )}
 
       <div className="config-grid">
-      {/* 左栏：实例列表，独立滚动 */}
+      {/* 左栏：环境列表，独立滚动 */}
       <div className="instances-pane">
         <Card withBorder padding="sm" radius="lg" className="instances-card">
           <Group justify="space-between" mb="sm" px={4}>
             <div>
               <Title order={5}>运行环境</Title>
-              <Text size="xs" c="dimmed">选择要配置的实例</Text>
+              <Text size="xs" c="dimmed">选择要配置的环境</Text>
             </div>
             <Button
               size="xs"
@@ -392,13 +415,15 @@ export default function ConfigPanel({
           </Group>
           <div className="main-account-card">
             <div className="main-account-icon"><IconUser size={16} /></div>
-            <div><Text fw={650} size="sm">主账户</Text><Text size="xs" c="dimmed">默认 Claude 环境 · {env?.claude_found ? "正常" : "CLI 未就绪"}</Text></div>
+            {/* 默认 Claude**不是环境** —— 它是"没切环境"时的那个账户，本应用只读不写。
+                原先把这里写成「默认 Claude 环境」，等于把它当成了环境的一种。 */}
+            <div><Text fw={650} size="sm">默认 Claude</Text><Text size="xs" c="dimmed">没选环境时用的账户（本应用不修改它的配置）· {env?.claude_found ? "CLI 正常" : "CLI 未就绪"}</Text></div>
             <div className="main-account-usage"><strong>{mainUsage.requests}</strong><span>今日请求</span></div>
           </div>
           <Stack gap={4}>
             {profiles.length === 0 && (
               <Text size="sm" c="dimmed" p="xs">
-                还没有实例。点「新建」创建第一个（比如 bj）。
+                还没有环境。点「新建」创建第一个（比如 bj）。
               </Text>
             )}
             {profiles.map((p) => (
@@ -406,7 +431,7 @@ export default function ConfigPanel({
                 key={p.name}
                 active={sel === p.name}
                 label={<Text fw={650} size="sm">{p.name}</Text>}
-                description={`${p.type === "router" ? "公司网关路由" : "独立 Claude 账户"} · ${profileHealthy(p) ? "正常" : "待完善"}`}
+                description={`${p.type === "router" ? "网关环境" : "独立登录环境"} · ${profileHealthy(p) ? "正常" : "待完善"}`}
                 leftSection={
                   p.type === "router" ? (
                     <IconWorld size={16} />
@@ -426,7 +451,7 @@ export default function ConfigPanel({
         </Card>
       </div>
 
-      {/* 右栏：实例设置表单（独立滚动） */}
+      {/* 右栏：环境设置表单（独立滚动） */}
       <div className="editor-scroll">
         <Card withBorder padding="lg" radius="lg" className="editor-card">
           <Stack gap="sm">
@@ -437,7 +462,7 @@ export default function ConfigPanel({
               </div>
               <Group gap="xs">
                 <Badge variant="light" color={sel ? "blue" : "green"}>
-                  {sel ? "已创建" : "新实例"}
+                  {sel ? "已创建" : "新环境"}
                 </Badge>
                 <Button
                   variant="subtle"
@@ -491,10 +516,10 @@ export default function ConfigPanel({
               </div>
             )}
 
-            <div className="form-section-label"><span>01</span><div><strong>连接信息</strong><small>实例身份与访问凭证</small></div></div>
+            <div className="form-section-label"><span>01</span><div><strong>连接信息</strong><small>环境身份与访问凭证</small></div></div>
 
             <TextInput
-              label="实例名称 = 你要输入的命令词"
+              label="环境名称 = 你要输入的命令词"
               description={
                 sel
                   ? "名称创建后不可修改（它是固定的命令词）。如需改名，请删除后重新新建。"
@@ -510,8 +535,8 @@ export default function ConfigPanel({
             <Select
               label="类型"
               data={[
-                { value: "router", label: "自定义路由（公司网关 / 第三方）" },
-                { value: "account", label: "另一个账户（独立登录）" },
+                { value: "router", label: "网关环境（公司网关 / 第三方）" },
+                { value: "account", label: "独立登录环境（独立登录）" },
               ]}
               value={form.type}
               onChange={(v) => setForm({ ...form, type: (v || "router") as Profile["type"] })}
@@ -523,7 +548,7 @@ export default function ConfigPanel({
                 <TextInput
                   label="ANTHROPIC_BASE_URL（公司网关地址）"
                   description="按公司网关说明填写，通常要带 /anthropic 后缀。"
-                  placeholder="https://10.0.147.128:8080/anthropic"
+                  placeholder="https://gateway.example.com:8080/anthropic"
                   value={form.baseUrl}
                   onChange={(e) =>
                     setForm({ ...form, baseUrl: e.currentTarget.value })
@@ -595,14 +620,15 @@ export default function ConfigPanel({
             <div className="form-section-label"><span>03</span><div><strong>自动化与命令</strong><small>共享策略与终端调用方式</small></div></div>
             <Alert variant="light" color="cyan" icon={<IconInfoCircle size={16} />}>
               <Text size="xs">
-                skills / plugins / agents / commands 会自动共享；MCP 与插件启用状态在每次启动 Claude 时双向同步。
-                跨实例共享的 MCP 请用 <Code>claude mcp add -s user</Code> 安装。
+                skills / plugins / agents / commands 会自动共享；MCP 与插件启用状态由应用统一维护，
+                保存后自动分发到每个环境（各环境也可单独覆盖）。
+                跨环境共享的 MCP 请在「MCP 服务」中选择「所有环境」添加。
               </Text>
             </Alert>
 
             {sel && (
               <>
-                <div className="form-section-label"><span>04</span><div><strong>权限与高级配置</strong><small>该空间的 settings.json</small></div></div>
+                <div className="form-section-label"><span>04</span><div><strong>权限与高级配置</strong><small>该环境的 settings.json</small></div></div>
                 <InstanceSettingsCard key={sel} name={sel} />
               </>
             )}
@@ -612,9 +638,9 @@ export default function ConfigPanel({
                 用法预览
               </Text>
               <Code block>
-                {`cd 任意项目目录\nclaude            # 主账户，原样\nclaude ${
+                {`cd 任意项目目录\nclaude            # 默认 Claude，原样\nclaude ${
                   form.name.trim() || "<名称>"
-                }     # 切到这个实例，跑完自动恢复`}
+                }     # 使用该环境启动，其他终端不受影响`}
               </Code>
             </Box>
 

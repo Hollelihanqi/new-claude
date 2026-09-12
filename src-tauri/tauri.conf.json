@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Center",
+  "productName": "PathMux",
   "version": "2.3.8",
-  "identifier": "com.ccswitch.desktop",
+  "identifier": "com.pathmux.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Claude 管理中心",
+        "title": "并路 PathMux",
         "width": 980,
         "height": 720,
         "minWidth": 800,
@@ -27,6 +27,11 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "windows": {
+      "wix": {
+        "upgradeCode": "3f2eb614-3df5-5951-9163-e54ae1820787"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
