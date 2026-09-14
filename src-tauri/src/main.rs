@@ -4694,25 +4694,113 @@ mod tests {
     // 全程用**相对路径**（cwd = 临时目录）：Git Bash 的 PATH 只认 POSIX 形式，
     // 塞 `C:/...` 进去会让 PATH 查找整个失效。
     //
-    // 返回 None 表示本机跑不了（没有 bash / 假 claude 进不了 PATH），调用方直接 return。
-    fn probe_generated_sh(list: &[Profile], probe_body: &str) -> Option<(Vec<String>, String)> {
-        if std::process::Command::new("bash")
-            .arg("-c")
-            .arg(":")
-            .output()
-            .is_err()
-        {
-            eprintln!("跳过：本机没有 bash");
-            return None;
+    fn bash_candidates(
+        windows: bool,
+        git_home: Option<&std::ffi::OsStr>,
+        program_files: Option<&std::ffi::OsStr>,
+        program_files_x86: Option<&std::ffi::OsStr>,
+    ) -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+        if windows {
+            // Windows 自带的 `bash.exe` 是 WSL 启动器；GitHub Windows Runner 虽然
+            // 预装了 Git Bash，但普通进程的 PATH 可能先命中 WSL。优先使用 Git
+            // for Windows 的明确路径，才能真正执行下面的 POSIX shell 回归测试。
+            if let Some(root) = git_home {
+                candidates.push(PathBuf::from(root).join("bin/bash.exe"));
+            }
+            for root in [program_files, program_files_x86].into_iter().flatten() {
+                let candidate = PathBuf::from(root).join("Git/bin/bash.exe");
+                if !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
         }
-        let dir = std::env::temp_dir().join(format!(
-            "ccm-sh-probe-{}-{}",
-            std::process::id(),
+        candidates.push(PathBuf::from("bash"));
+        candidates
+    }
+
+    fn test_bash_executable() -> Option<PathBuf> {
+        for candidate in bash_candidates(
+            cfg!(target_os = "windows"),
+            std::env::var_os("GIT_HOME").as_deref(),
+            std::env::var_os("ProgramFiles").as_deref(),
+            std::env::var_os("ProgramFiles(x86)").as_deref(),
+        ) {
+            let Ok(out) = std::process::Command::new(&candidate)
+                .arg("--version")
+                .output()
+            else {
+                continue;
+            };
+            let version = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if out.status.success() && version.to_ascii_lowercase().contains("gnu bash") {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn bash_candidates_prefer_git_for_windows_over_path_bash() {
+        let candidates = bash_candidates(
+            true,
+            Some(std::ffi::OsStr::new(r"C:\hostedtoolcache\windows\Git")),
+            Some(std::ffi::OsStr::new(r"C:\Program Files")),
+            None,
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from(r"C:\hostedtoolcache\windows\Git").join("bin/bash.exe"),
+                PathBuf::from(r"C:\Program Files").join("Git/bin/bash.exe"),
+                PathBuf::from("bash"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bash_candidates_use_path_bash_on_non_windows() {
+        assert_eq!(
+            bash_candidates(false, None, None, None),
+            vec![PathBuf::from("bash")]
+        );
+    }
+
+    fn sh_probe_temp_dir(nanos: u128) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // SystemTime 在部分 macOS Runner 上的实际分辨率低于纳秒。两个并行测试
+        // 可能读到同一个时间值；若目录名只含 pid + 时间，其中一个测试清理目录时
+        // 会删掉另一个仍在执行的假 claude。进程内序号保证即使时钟不走也不碰撞。
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "ccm-sh-probe-{}-{nanos}-{sequence}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn sh_probe_temp_dirs_stay_unique_when_clock_value_repeats() {
+        assert_ne!(sh_probe_temp_dir(42), sh_probe_temp_dir(42));
+    }
+
+    // 返回 None 表示本机跑不了（没有 GNU bash / 假 claude 进不了 PATH），调用方直接 return。
+    fn probe_generated_sh(list: &[Profile], probe_body: &str) -> Option<(Vec<String>, String)> {
+        let Some(bash) = test_bash_executable() else {
+            eprintln!("跳过：本机没有 GNU bash");
+            return None;
+        };
+        let dir = sh_probe_temp_dir(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
-        ));
+                .as_nanos(),
+        );
         fs::create_dir_all(dir.join("home/.cc-manager")).unwrap();
         fs::create_dir_all(dir.join("bin")).unwrap();
         // CA 现在是**按网关**的：corp 有自己的 bundle；没有它的网关拿不到 CA
@@ -4740,7 +4828,7 @@ mod tests {
              if [ \"$(command -v claude)\" != \"bin/claude\" ]; then echo SKIP; exit 3; fi; \
              . ./cc.sh; {probe_body}"
         );
-        let out = std::process::Command::new("bash")
+        let out = std::process::Command::new(&bash)
             .arg("-c")
             .arg(&probe)
             .current_dir(&dir)

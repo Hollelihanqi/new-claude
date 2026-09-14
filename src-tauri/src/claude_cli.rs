@@ -840,10 +840,18 @@ mod tests {
 
     #[test]
     fn empty_path_is_reported_as_not_found_with_checked_locations() {
-        let candidates = vec![Candidate::new(
-            PathBuf::from("/opt/homebrew/bin/claude"),
-            DetectionSource::Fallback,
-        )];
+        // 不可拿真实安装位置当“不存在”的夹具：开发机或 Runner 一旦恰好安装了
+        // Claude，这条测试就会把同一个模拟错误判成 Unusable，结果随宿主机漂移。
+        let missing = std::env::temp_dir().join(format!(
+            "cc-manager-no-such-claude-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!missing.exists());
+        let candidates = vec![Candidate::new(missing, DetectionSource::Fallback)];
 
         let result = select_working_candidate(candidates, |_| Err("文件不存在".to_string()));
 
