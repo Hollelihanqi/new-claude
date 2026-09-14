@@ -34,11 +34,14 @@ function markdownEmphasisHits(file: string): string[] {
     .replace(/\/\*[\s\S]*?\*\//g, "");
   const hits: string[] = [];
   text.split("\n").forEach((raw, index) => {
+    // Git 在 Windows runner 上检出为 CRLF；split("\n") 后先去掉残留的 \r，
+    // 否则下面的行尾注释正则无法匹配，注释会被误报成界面文案。
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     // 先按行首丢掉纯注释行（`// …`、`* …` 续行）。只靠下面的行尾正则不够 ——
     // 缩进后的 `  // …` 与 JSDoc 续行都漏得过去（第一版就漏了 `api.ts` 两行）。
-    const trimmed = raw.trim();
+    const trimmed = line.trim();
     if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return;
-    const code = raw.replace(/(^|\s)\/\/.*$/, "");
+    const code = line.replace(/(^|\s)\/\/.*$/, "");
     if (code.includes("**")) hits.push(`${file}:${index + 1}  ${code.trim().slice(0, 80)}`);
   });
   return hits;
@@ -52,6 +55,9 @@ describe("界面文案不写 Markdown", () => {
     // 注释里的不算
     const commented = "let x = 1; // **不跟随链接**";
     expect(commented.replace(/(^|\s)\/\/.*$/, "").includes("**")).toBe(false);
+    const commentedCrlf = "let x = 1; // **不跟随链接**\r";
+    const normalized = commentedCrlf.endsWith("\r") ? commentedCrlf.slice(0, -1) : commentedCrlf;
+    expect(normalized.replace(/(^|\s)\/\/.*$/, "").includes("**")).toBe(false);
     // URL 里的 // 不能被当成注释起点
     const url = 'const u = "https://x/**y**";';
     expect(url.replace(/(^|\s)\/\/.*$/, "").includes("**")).toBe(true);

@@ -314,15 +314,11 @@ fn remove_entry(path: &Path) -> Result<(), String> {
         Err(e) => return Err(e.to_string()),
     };
     if meta.file_type().is_symlink() {
-        if fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false) {
-            fs::remove_dir(path).map_err(|e| e.to_string())
-        } else {
-            // 损坏的 Windows Junction 无法通过 metadata 判断为目录。先按文件链接
-            // 删除，失败后再按目录链接删除；两种操作都只删链接本身，不递归目标。
-            fs::remove_file(path)
-                .or_else(|_| fs::remove_dir(path))
-                .map_err(|e| e.to_string())
-        }
+        // Unix 的目录符号链接必须用 remove_file 删除；Windows 的目录 Junction
+        // 则必须用 remove_dir。依次尝试两种非递归操作，只删除链接本身。
+        fs::remove_file(path)
+            .or_else(|_| fs::remove_dir(path))
+            .map_err(|e| e.to_string())
     } else if meta.is_dir() {
         fs::remove_dir_all(path).map_err(|e| e.to_string())
     } else {

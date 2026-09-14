@@ -202,6 +202,13 @@ fn copy_tree_merge(
         let file_type = entry.file_type()?; // **不跟随链接**
 
         if file_type.is_symlink() {
+            // 只确认目标当前可访问，不遍历目标内容。悬空或无权访问的链接必须记为
+            // 跳过并阻止切换；否则 Unix 可以重建悬空链接，迁移会在不同平台上产生
+            // 不同结果，且用户会误以为共享资源已经完整迁移。
+            if let Err(e) = fs::metadata(&from) {
+                skipped.push(format!("{}（{e}）", from.display()));
+                continue;
+            }
             if fs::symlink_metadata(&to).is_ok() {
                 if resolved_link_target(&from).ok() == resolved_link_target(&to).ok()
                     && fs::read_link(&to).is_ok()
