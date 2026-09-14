@@ -703,6 +703,82 @@ pub fn remember_manual_path(path: PathBuf) -> Result<ClaudeDetection, String> {
     })
 }
 
+/// 在指定 Claude 配置目录中执行官方插件命令。
+///
+/// 这里只注入 `CLAUDE_CONFIG_DIR`，并主动清掉网关地址、Key、模型映射和网关 CA。
+/// 插件管理不需要访问模型网关，不能把环境凭据带给安装过程。
+pub(crate) fn run_plugin_action(
+    config_dir: &Path,
+    action: &str,
+    plugin: &str,
+) -> Result<String, String> {
+    if !matches!(
+        action,
+        "install" | "update" | "uninstall" | "enable" | "disable"
+    ) {
+        return Err("不支持的插件操作".into());
+    }
+    if !valid_plugin_identifier(plugin) {
+        return Err("插件名称格式不正确".into());
+    }
+    let detection = detect_claude();
+    let executable = detection
+        .path
+        .ok_or_else(|| format!("未找到可用的 Claude Code：{}", detection.detail))?;
+    fs::create_dir_all(config_dir).map_err(|e| format!("创建环境配置目录失败：{e}"))?;
+    let command = plugin_command(&executable, config_dir, action, plugin);
+    let output = run_with_timeout(command, Duration::from_secs(120))?;
+    let text = output_text(&output);
+    if output.status.success() {
+        Ok(if text.is_empty() {
+            "Claude Code 已完成操作".into()
+        } else {
+            text
+        })
+    } else {
+        Err(if text.is_empty() {
+            format!("Claude Code 插件命令失败：{}", output.status)
+        } else {
+            format!("Claude Code 插件命令失败：{text}")
+        })
+    }
+}
+
+pub(crate) fn valid_plugin_identifier(plugin: &str) -> bool {
+    !plugin.is_empty()
+        && plugin.len() <= 300
+        && !plugin.starts_with('/')
+        && !plugin.starts_with('-')
+        && !plugin.contains("..")
+        && plugin
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-' | '/'))
+}
+
+fn plugin_command(executable: &Path, config_dir: &Path, action: &str, plugin: &str) -> Command {
+    let mut args = vec!["plugin", action, plugin, "--scope", "user"];
+    if matches!(action, "install" | "update" | "uninstall") {
+        // Tauri 后台进程没有交互式终端。Claude Code 对可能执行安装命令的插件
+        // 要求非交互调用显式确认，否则按钮会立即失败，看起来像“闪一下没反应”。
+        args.push("--yes");
+    }
+    let mut command = command_for_executable(executable, &args);
+    for name in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "NODE_EXTRA_CA_CERTS",
+    ] {
+        command.env_remove(name);
+    }
+    command.env("CLAUDE_CONFIG_DIR", config_dir);
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,5 +899,65 @@ mod tests {
 
         assert_eq!(verify_claude(&executable).unwrap(), "9.9.9 (Claude Code)");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plugin_command_targets_one_config_and_removes_gateway_credentials() {
+        let executable = if cfg!(target_os = "windows") {
+            PathBuf::from(r"C:\tools\claude.exe")
+        } else {
+            PathBuf::from("/usr/local/bin/claude")
+        };
+        let config = PathBuf::from("profile-home");
+        let command = plugin_command(&executable, &config, "install", "demo@market");
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(args
+            .windows(3)
+            .any(|window| window == ["plugin", "install", "demo@market"]));
+        assert!(args.windows(2).any(|window| window == ["--scope", "user"]));
+        assert!(args.iter().any(|arg| arg == "--yes"));
+        let env = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|v| v.to_string_lossy().to_string()),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            env.get("CLAUDE_CONFIG_DIR").and_then(Clone::clone),
+            Some(config.to_string_lossy().to_string())
+        );
+        assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN"), Some(&None));
+        assert_eq!(env.get("ANTHROPIC_BASE_URL"), Some(&None));
+        assert_eq!(env.get("NODE_EXTRA_CA_CERTS"), Some(&None));
+    }
+
+    #[test]
+    fn plugin_identifier_rejects_shell_metacharacters() {
+        for value in [
+            "demo&whoami",
+            "demo|more",
+            "demo>file",
+            "demo^x",
+            "demo%PATH%",
+            "../demo",
+            "--help",
+        ] {
+            assert!(
+                !valid_plugin_identifier(value),
+                "accepted unsafe value: {value}"
+            );
+        }
+        for value in ["demo@market", "@scope/demo@market", "my-plugin_2.0@corp"] {
+            assert!(
+                valid_plugin_identifier(value),
+                "rejected valid value: {value}"
+            );
+        }
     }
 }

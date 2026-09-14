@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "默认权限：仅启用核心功能，所有系统操作都在 Rust 命令内完成。",
+  "description": "默认权限：核心功能 + 自绘标题栏所需的窗口控制。除窗口控制外，其余系统操作都在 Rust 命令内完成。",
   "windows": [
     "main"
   ],
@@ -9,6 +9,10 @@
     "core:default",
     "updater:default",
     "process:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close"
   ]
 }

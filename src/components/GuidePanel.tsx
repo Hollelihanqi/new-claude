@@ -129,7 +129,7 @@ export default function GuidePanel() {
           <Tech
             icon={<IconLink size={20} />}
             name="共享与同步"
-            desc="所有环境共享 skills / plugins / agents / commands（目录联结）；MCP 与插件启用状态由「应用统一维护」，保存后自动分发到每个环境，各环境也可单独覆盖。要让一个 MCP 对全部环境生效，请在「MCP 服务」里选作用范围「所有环境」添加。"
+            desc="Skills 与 Agents 存在应用自己的共享库，按条目复制到每个环境；环境里的同名版本优先，也可以明确排除。Plugins 由应用调用 Claude Code 官方命令，在目标环境中独立安装和启停。MCP 从应用共享源单向分发，同名时保留环境配置并显示冲突。"
           />
         </SimpleGrid>
       </Card>

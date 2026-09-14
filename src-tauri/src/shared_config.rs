@@ -320,9 +320,9 @@ pub(crate) fn apply_plan(
 
 // ---------------- 文件层 ----------------
 //
-// 上面是纯决策；这一层只负责读写，且**只碰三个自己的文件 + 受管理环境的文件**。
-// 默认 Claude 的 `~/.claude.json` / `~/.claude/settings.json` **只被读一次**（首次采集），
-// 此后本模块的任何代码路径都不会再碰它们（设计 §四）。
+// 上面是纯决策；这一层只负责读写应用自己的文件与受管理环境的文件。
+// 默认 Claude 的 MCP 不参与初始化或分发；插件页只读它的插件清单，供用户明确选择
+// 要在哪些环境重新安装，绝不把默认 Claude 当成后台共享源。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -347,7 +347,8 @@ pub(crate) fn ledger_path() -> PathBuf {
     shared_dir().join("distribution.json")
 }
 
-/// 默认 Claude 的文件 —— **仅供首次采集使用**。
+/// 默认 Claude 的文件 —— 只供插件管理页读取现有插件清单。
+/// MCP 初始化和后台同步不得调用它。
 fn default_claude_path(field: &str) -> PathBuf {
     if field == FIELD_MCP {
         crate::home().join(".claude.json")
@@ -425,20 +426,14 @@ pub(crate) fn save_shared(field: &str, entries: &Map<String, Value>) -> Result<(
         .map_err(|e| format!("写共享源失败：{e}"))
 }
 
-/// **首次迁移**（设计 §四）：把默认 Claude 现有配置**只读采集**成共享源的种子。
-///
-/// - 只在共享源文件**尚不存在**时执行 ⇒ 天然幂等，不需要额外的版本号文件；
-///   用户后来即使把共享项全删光，文件仍在（空对象），不会被重新灌回旧内容。
-/// - **只读**默认 Claude，不写回、不移动它的任何东西。
-/// - **不碰环境**：各环境现有值一律保留，冲突项不静默统一。
-pub(crate) fn seed_shared_if_missing(field: &str) -> Result<Option<usize>, String> {
+/// 初始化空的应用共享源。默认 Claude 的 MCP 和插件只允许在界面中只读查看，
+/// 不能因为共享文件不存在就被静默采集。已有共享源保持原样，兼容升级前的数据。
+pub(crate) fn initialize_shared_if_missing(field: &str) -> Result<bool, String> {
     if shared_path(field).is_file() {
-        return Ok(None);
+        return Ok(false);
     }
-    let harvested = read_field(&default_claude_path(field), field)?;
-    let count = harvested.len();
-    save_shared(field, &harvested)?;
-    Ok(Some(count))
+    save_shared(field, &Map::new())?;
+    Ok(true)
 }
 
 /// 一个环境在一轮分发里的结果。
@@ -458,6 +453,7 @@ pub(crate) struct DistributeReport {
 }
 
 impl DistributeReport {
+    #[cfg(test)]
     pub fn override_count(&self) -> usize {
         self.envs.iter().map(|e| e.overrides.len()).sum()
     }
@@ -532,16 +528,14 @@ fn with_file_rollback<T>(
     }
 }
 
-/// 首次迁移入口：两个域各采集一次（幂等）。在 GUI 启动、`--sync`、
-/// 以及任何分发之前调用都安全 —— 共享源已存在时它就是一次文件存在性检查。
-pub(crate) fn ensure_seeded() -> Vec<String> {
+/// 两个域的空共享源初始化（幂等）。任何默认 Claude 内容都必须由用户从界面
+/// 明确导入或安装，后台同步不能替用户做范围选择。
+pub(crate) fn ensure_shared_sources() -> Vec<String> {
     let mut notes = vec![];
     for field in [FIELD_MCP, FIELD_PLUGINS] {
-        match seed_shared_if_missing(field) {
-            Ok(Some(count)) => notes.push(format!(
-                "{field}：已从现有配置只读采集 {count} 项到应用共享库"
-            )),
-            Ok(None) => {}
+        match initialize_shared_if_missing(field) {
+            Ok(true) => notes.push(format!("{field}：已初始化空共享源")),
+            Ok(false) => {}
             Err(e) => notes.push(format!("{field}：共享库初始化失败：{e}")),
         }
     }
@@ -554,6 +548,10 @@ pub(crate) fn ensure_seeded() -> Vec<String> {
 /// （那正是"用户改过的条目不得被覆盖"的反面：也不该被自动改回去）。
 pub(crate) fn restore_entry(field: &str, env: &str, name: &str) -> Result<String, String> {
     let _guard = crate::sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
+    restore_entry_locked(field, env, name)
+}
+
+pub(crate) fn restore_entry_locked(field: &str, env: &str, name: &str) -> Result<String, String> {
     validate_env(env)?;
     let mut ledger = load_ledger()?;
     let shared = load_shared(field)?;
@@ -585,30 +583,6 @@ pub(crate) fn restore_entry(field: &str, env: &str, name: &str) -> Result<String
     Ok(format!("已把环境「{env}」的「{name}」恢复为共享配置。"))
 }
 
-/// 在**应用共享库**里设置某个条目（并立刻分发）。
-pub(crate) fn set_shared_entry(field: &str, name: &str, value: Value) -> Result<String, String> {
-    let _guard = crate::sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
-    let mut shared = load_shared(field)?;
-    shared.insert(name.to_string(), value);
-    let names = crate::profile_names(&crate::load());
-    let report = with_file_rollback(&[shared_path(field)], || {
-        save_shared(field, &shared)?;
-        distribute(field, &names)
-    })?;
-    let written: usize = report.envs.iter().map(|e| e.written).sum();
-    let overridden = report.override_count();
-    let mut msg = format!("共享库已更新「{name}」，分发到 {written} 处");
-    if overridden > 0 {
-        msg.push_str(&format!(
-            "；另有 {overridden} 处被环境自身的设置覆盖、未被改写"
-        ));
-    }
-    if !report.warnings.is_empty() {
-        msg.push_str(&format!("；{}", report.warnings.join("；")));
-    }
-    Ok(msg)
-}
-
 fn validate_env(env: &str) -> Result<(), String> {
     if env == crate::MAIN_PROFILE_KEY
         || env == "."
@@ -621,33 +595,105 @@ fn validate_env(env: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 在**某个环境**里设置某个条目（= 该环境的独立覆盖）。
-///
-/// 不改上次分发值，另记显式覆盖意图；即使值暂时与共享值相同，也不会丢失独立设置。
-pub(crate) fn set_env_entry(
-    field: &str,
+fn plugin_state_matches(actual: Option<&Value>, enabled: bool) -> bool {
+    actual.and_then(Value::as_bool) == Some(enabled) || (!enabled && actual.is_none())
+}
+
+/// Claude Code 官方插件命令成功后，只记录“所有环境”的共享策略与已确认状态。
+/// 本函数绝不写环境 settings.json；若官方命令没有产出预期状态，直接报错。
+pub(crate) fn record_shared_plugin_after_cli(
+    name: &str,
+    enabled: bool,
+    envs: &[String],
+) -> Result<String, String> {
+    let _guard = crate::sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
+    let mut shared = load_shared(FIELD_PLUGINS)?;
+    let mut ledger = load_ledger()?;
+    let value = Value::Bool(enabled);
+    for env in envs {
+        validate_env(env)?;
+        let current = read_field(&env_path(env, FIELD_PLUGINS), FIELD_PLUGINS)?;
+        let actual = current.get(name);
+        if !plugin_state_matches(actual, enabled) {
+            return Err(format!(
+                "环境「{env}」的官方插件命令已返回成功，但实际启停状态没有更新"
+            ));
+        }
+        let mut entries = ledger.entries(FIELD_PLUGINS, env);
+        if actual.is_some() {
+            entries.insert(name.to_string(), value.clone());
+        } else {
+            entries.remove(name);
+        }
+        ledger.set_entries(FIELD_PLUGINS, env, entries);
+        ledger.mark_override(FIELD_PLUGINS, env, name, false);
+    }
+    shared.insert(name.to_string(), value);
+    with_file_rollback(&[shared_path(FIELD_PLUGINS), ledger_path()], || {
+        save_shared(FIELD_PLUGINS, &shared)?;
+        save_ledger(&ledger)
+    })?;
+    Ok(format!("已记录插件「{name}」的所有环境共享策略"))
+}
+
+/// Claude Code 官方插件命令成功后，把该环境标成独立决定；不再重复写插件配置。
+pub(crate) fn record_env_plugin_after_cli(
     env: &str,
     name: &str,
-    value: Value,
+    enabled: bool,
 ) -> Result<String, String> {
     let _guard = crate::sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
     validate_env(env)?;
+    let current = read_field(&env_path(env, FIELD_PLUGINS), FIELD_PLUGINS)?;
+    if !plugin_state_matches(current.get(name), enabled) {
+        return Err(format!(
+            "环境「{env}」的官方插件命令已返回成功，但实际启停状态没有更新"
+        ));
+    }
     let mut ledger = load_ledger()?;
-    let path = env_path(env, field);
-    let mut doc = read_document(&path)?;
-    set_field_value(&mut doc, field, name, value)?;
-    ledger.mark_override(field, env, name, true);
-    with_file_rollback(&[path.clone(), ledger_path()], || {
-        crate::sync::write_json_atomic(&path, &doc).map_err(|e| format!("写回失败：{e}"))?;
-        save_ledger(&ledger)
-    })?;
-    Ok(format!("已把环境「{env}」的「{name}」设为独立设置。"))
+    ledger.mark_override(FIELD_PLUGINS, env, name, true);
+    save_ledger(&ledger)?;
+    Ok(format!("已记录环境「{env}」对插件「{name}」的独立策略"))
+}
+
+/// 只在调用方持有配置锁时使用：冻结当前插件状态为环境独立策略。
+pub(crate) fn mark_plugin_override_locked(env: &str, name: &str) -> Result<(), String> {
+    validate_env(env)?;
+    let mut ledger = load_ledger()?;
+    ledger.mark_override(FIELD_PLUGINS, env, name, true);
+    save_ledger(&ledger)
+}
+
+/// 只在调用方持有配置锁，且官方 enable/disable 已成功后使用。
+/// 核对环境实际值，再更新台账；不写 settings.json。
+pub(crate) fn restore_plugin_after_cli_locked(env: &str, name: &str) -> Result<(), String> {
+    validate_env(env)?;
+    let shared = load_shared(FIELD_PLUGINS)?;
+    let enabled = shared
+        .get(name)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("共享策略里已经没有插件「{name}」"))?;
+    let current = read_field(&env_path(env, FIELD_PLUGINS), FIELD_PLUGINS)?;
+    if !plugin_state_matches(current.get(name), enabled) {
+        return Err(format!("环境「{env}」的插件状态与共享策略不一致"));
+    }
+    let mut ledger = load_ledger()?;
+    let mut entries = ledger.entries(FIELD_PLUGINS, env);
+    if current.get(name).is_some() {
+        entries.insert(name.to_string(), Value::Bool(enabled));
+    } else {
+        entries.remove(name);
+    }
+    ledger.set_entries(FIELD_PLUGINS, env, entries);
+    ledger.mark_override(FIELD_PLUGINS, env, name, false);
+    save_ledger(&ledger)
 }
 
 /// 把一个条目写进文档的某个域，**只动这个域里的这一个条目**。
 ///
 /// 这是 `settings.json` / `.claude.json` 这类**属于用户**的文件，所以字段类型不对时
 /// **报错中止**，而不是像分发路径那样重建它 —— 宁可失败也不覆盖可疑内容。
+#[cfg(test)]
 fn set_field_value(doc: &mut Value, field: &str, name: &str, value: Value) -> Result<(), String> {
     let obj = doc
         .as_object_mut()
@@ -672,6 +718,13 @@ pub(crate) struct PluginEnvState {
     pub inherited: bool,
     /// 覆盖原因（继承时为空串）
     pub reason: String,
+    /// Claude Code 的插件安装记录中是否存在该插件。
+    pub installed: bool,
+    pub version: Option<String>,
+    /// false 表示仍是旧版整目录共享结构，需先退出共享目录。
+    pub storage_independent: bool,
+    /// true 表示该环境明确不跟随共享插件策略；与“停用”是两种状态。
+    pub excluded: bool,
 }
 
 /// 一个环境在 `plugins_overview` 里的中间态：它的值 + 逐条的继承/覆盖判定。
@@ -685,7 +738,38 @@ pub(crate) struct PluginRow {
     pub shared: Value,
     /// 默认 Claude 的值 —— **只展示，不可编辑**（约束 4：应用对默认 Claude 只读）
     pub default_claude: Option<Value>,
+    pub default_installed: bool,
+    pub default_version: Option<String>,
     pub envs: Vec<PluginEnvState>,
+}
+
+fn installed_plugins(config_dir: &Path) -> Result<BTreeMap<String, Option<String>>, String> {
+    let path = config_dir.join("plugins").join("installed_plugins.json");
+    if !path.try_exists().map_err(|e| e.to_string())? {
+        return Ok(BTreeMap::new());
+    }
+    let doc = read_document(&path)?;
+    let Some(plugins) = doc.get("plugins").and_then(Value::as_object) else {
+        return Err(format!("{} 缺少 plugins 对象", path.display()));
+    };
+    Ok(plugins
+        .iter()
+        .map(|(name, installs)| {
+            let version = installs
+                .as_array()
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("version"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            (name.clone(), version)
+        })
+        .collect())
+}
+
+fn plugin_storage_independent(config_dir: &Path) -> bool {
+    fs::symlink_metadata(config_dir.join("plugins"))
+        .map(|meta| !meta.file_type().is_symlink())
+        .unwrap_or(true)
 }
 
 /// 插件启用状态的总览：共享库有哪些、每个环境是继承还是覆盖、默认 Claude 是什么。
@@ -694,10 +778,11 @@ pub(crate) struct PluginRow {
 pub(crate) fn plugins_overview() -> Result<Vec<PluginRow>, String> {
     let shared = load_shared(FIELD_PLUGINS)?;
     let ledger = load_ledger()?;
-    let envs = crate::profile_names(&crate::load());
+    let envs = crate::configured_profile_names();
 
     // 默认 Claude 的那份：只读展示
     let default_claude = read_field(&default_claude_path(FIELD_PLUGINS), FIELD_PLUGINS)?;
+    let default_installed = installed_plugins(&crate::home().join(".claude"))?;
 
     let mut per_env: Vec<EnvPluginState> = vec![];
     for env in &envs {
@@ -716,11 +801,35 @@ pub(crate) fn plugins_overview() -> Result<Vec<PluginRow>, String> {
         per_env.push((env.clone(), values, states));
     }
 
+    let installed_by_env = envs
+        .iter()
+        .map(|env| {
+            let dir = crate::sync::instance_dir(env);
+            Ok((
+                env.clone(),
+                installed_plugins(&dir)?,
+                plugin_storage_independent(&dir),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
     let mut names: Vec<String> = shared.keys().cloned().collect();
     for (_, values, states) in &per_env {
         for n in values.keys().chain(states.iter().map(|(n, _, _)| n)) {
             if !names.contains(n) {
                 names.push(n.clone());
+            }
+        }
+    }
+    for name in default_installed.keys() {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    for (_, installed, _) in &installed_by_env {
+        for name in installed.keys() {
+            if !names.contains(name) {
+                names.push(name.clone());
             }
         }
     }
@@ -732,15 +841,28 @@ pub(crate) fn plugins_overview() -> Result<Vec<PluginRow>, String> {
         .map(|name| PluginRow {
             shared: shared.get(&name).cloned().unwrap_or(Value::Null),
             default_claude: default_claude.get(&name).cloned(),
+            default_installed: default_installed.contains_key(&name),
+            default_version: default_installed.get(&name).cloned().flatten(),
             envs: per_env
                 .iter()
                 .map(|(env, values, states)| {
                     let hit = states.iter().find(|(n, _, _)| *n == name);
+                    let installation = installed_by_env.iter().find(|(target, _, _)| target == env);
                     PluginEnvState {
                         env: env.clone(),
                         value: values.get(&name).cloned(),
                         inherited: hit.map(|(_, i, _)| *i).unwrap_or(false),
                         reason: hit.map(|(_, _, r)| r.clone()).unwrap_or_default(),
+                        installed: installation
+                            .is_some_and(|(_, installed, _)| installed.contains_key(&name)),
+                        version: installation
+                            .and_then(|(_, installed, _)| installed.get(&name))
+                            .cloned()
+                            .flatten(),
+                        storage_independent: installation
+                            .map(|(_, _, independent)| *independent)
+                            .unwrap_or(true),
+                        excluded: false,
                     }
                 })
                 .collect(),
@@ -928,6 +1050,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(dir.read(&path)[FIELD_PLUGINS]["p@m"], true);
+    }
+
+    #[test]
+    fn plugin_cli_recording_never_writes_environment_settings() {
+        let source = include_str!("shared_config.rs");
+        let start = source.find("fn plugin_state_matches").unwrap();
+        let end = source[start..]
+            .find("fn set_field_value")
+            .map(|offset| start + offset)
+            .unwrap();
+        let recording = &source[start..end];
+        assert!(!recording.contains("write_json_atomic"));
+        assert!(recording.contains("read_field"));
+        assert!(recording.contains("save_ledger"));
     }
 
     #[test]

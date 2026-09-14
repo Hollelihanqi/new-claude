@@ -56,6 +56,8 @@ import McpImportModal from "./McpImportModal";
 import StableRefreshButton from "../StableRefreshButton";
 import McpServiceDrawer from "./McpServiceDrawer";
 import McpSummaryGrid from "./McpSummaryGrid";
+import FeatureHelp from "../FeatureHelp";
+import { MCP_HELP, MCP_SCOPE_HELP } from "../featureHelpContent";
 import {
   SCOPE_BADGE_COLOR,
   SCOPE_LABELS,
@@ -381,7 +383,10 @@ export default function McpPanel() {
     <div className="mcp-page">
       <Group justify="space-between" align="flex-start">
         <div>
-          <Title order={3}>MCP 服务</Title>
+          <Group gap={6} align="center">
+            <Title order={3}>MCP 服务</Title>
+            <FeatureHelp content={MCP_HELP} />
+          </Group>
           <Text size="sm" c="dimmed">
             管理「所有环境」、「指定环境」和「当前项目」三种作用范围的 MCP 配置：
             写入共享库的会「自动分发」到每个环境，各环境也可单独覆盖。
@@ -390,7 +395,10 @@ export default function McpPanel() {
         <StableRefreshButton busy={busy} label="刷新" onClick={load} />
       </Group>
 
-      <McpSummaryGrid summary={summary} />
+      <McpSummaryGrid
+        summary={summary}
+        sharedOverrideCount={state?.sharedOverrides?.length}
+      />
 
       {/* 决策 7.2：同名时环境配置优先，但**必须显示冲突**。
           静默保留会让用户以为共享值已经生效，等到发现不一致时无从判断是哪一步的问题。 */}
@@ -488,6 +496,7 @@ export default function McpPanel() {
           ]}
           style={{ flex: "0 0 140px" }}
         />
+        <FeatureHelp content={MCP_SCOPE_HELP} />
         <Select
           value={instanceFilter}
           onChange={(v) => setInstanceFilter(v ?? "all")}

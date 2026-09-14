@@ -22,19 +22,23 @@ describe("McpSummaryGrid", () => {
     let renderer!: ReactTestRenderer;
 
     act(() => {
-      renderer = create(<McpSummaryGrid summary={undefined} />);
+      renderer = create(<McpSummaryGrid summary={undefined} sharedOverrideCount={undefined} />);
     });
 
     expect(renderer.root.findAllByType("section")).toHaveLength(4);
     expect(renderer.root.findAllByType("section").map((card) => (
       card.findAllByType("span").map((text) => text.children.join("")).join("")
     )))
-      .toEqual(["全部定义—", "已启用—", "存在警告—", "被覆盖—"]);
+      .toEqual(["全部定义—", "已启用—", "存在警告—", "环境覆盖—"]);
 
     act(() => {
-      renderer.update(<McpSummaryGrid summary={loadedSummary} />);
+      renderer.update(<McpSummaryGrid summary={loadedSummary} sharedOverrideCount={2} />);
     });
 
     expect(renderer.root.findAllByType("section")).toHaveLength(4);
+    expect(renderer.root.findAllByType("section")[3].findAllByType("span")
+      .map((text) => text.children.join(""))).toEqual(["环境覆盖", "2"]);
+    expect(renderer.root.findAllByType("section")[3].props.title)
+      .toContain("保留了该环境自己的值");
   });
 });

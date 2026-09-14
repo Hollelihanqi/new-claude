@@ -20,6 +20,8 @@ import {
 import { IconAlertTriangle } from "@tabler/icons-react";
 import type { McpChangeAction, McpScope, McpState } from "../../api";
 import { SCOPE_DESCRIPTIONS, SCOPE_LABELS, inferTransport, TRANSPORT_LABELS } from "./mcpForm";
+import FeatureHelp from "../FeatureHelp";
+import { MCP_SCOPE_HELP } from "../featureHelpContent";
 
 const MAX_BYTES = 1024 * 1024; // 1 MiB
 const MAX_ITEMS = 100;
@@ -261,7 +263,7 @@ export default function McpImportModal({ opened, state, onClose, onSave }: Props
 
         {items.length > 0 && (
           <>
-            <Text size="sm" fw={600}>目标作用域</Text>
+            <Group gap={4}><Text size="sm" fw={600}>目标作用域</Text><FeatureHelp content={MCP_SCOPE_HELP} /></Group>
             <Group grow align="flex-start">
               <Select
                 label="作用域"

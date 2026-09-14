@@ -1,12 +1,13 @@
-// 全局共享同步:
-// 1) ensure_links —— 把每个环境的 skills/plugins/agents/commands 目录用
-//    Junction(Windows)/symlink(Unix) 指向**应用共享资源根** `~/.cc-manager/shared/`
-//    （决策 7.3），零配置、幂等。
-//    迁移完成前 `master_dir()` 仍返回 `~/.claude`，行为与改造前完全一致 ——
-//    "复制没成功"永远不会让环境突然看不到内容（标记文件即切换开关）。
-// 2) sync_configs —— mcpServers / enabledPlugins 无法用链接共享
-//    (CLI 用临时文件+rename 原子改写会顶掉链接)，改由 `crate::shared_config`
-//    从**应用自建共享源单向分发**到各环境（决策 7.2）。
+// 配置同步与旧版共享迁移辅助代码。
+//
+// `skills/plugins/agents/commands` 整目录链接属于 v2.3.8 及更早版本的迁移结构。
+// 新版启动流程不再调用这段迁移；Skills / Agents 由 `crate::extensions` 逐项分发，
+// Plugins 按环境交给 Claude Code 官方 CLI 管理，Commands 只保留存量兼容。
+//
+// sync_configs —— mcpServers 无法用链接共享（CLI 用临时文件+rename 原子改写
+//    会顶掉链接），改由 `crate::shared_config` 从**应用自建共享源单向分发**到
+//    各环境（决策 7.2）。插件目录和启停由 Claude Code 官方 CLI 管理，不能
+//    混进每次 `--sync` 的 JSON 直写流程。
 //    原先这里是"基于快照的三方双向合并"，已随该决策退役 —— 它会让单个环境的
 //    覆盖传播到其他环境，与"各环境可独立覆盖"冲突。
 // 该模块被 GUI(sync_all 命令)和 CLI 模式(--sync,由 cc.ps1/cc.sh 在每次
@@ -15,11 +16,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+#[cfg(not(test))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(not(test))]
+use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime};
 
 pub const SHARED_SUBDIRS: [&str; 4] = ["skills", "plugins", "agents", "commands"];
 
@@ -37,6 +41,7 @@ fn migration_marker() -> PathBuf {
     crate::cfg_dir().join("shared-migrated")
 }
 
+#[allow(dead_code)]
 pub(crate) fn shared_migration_done() -> bool {
     migration_marker().is_file()
 }
@@ -53,6 +58,7 @@ pub(crate) fn shared_migration_done() -> bool {
 ///    不写就等于什么都没发生过，下次启动重试。
 ///
 /// 返回给用户看的提示（无事发生时是 None）。
+#[allow(dead_code)]
 pub(crate) fn migrate_shared_resources_once() -> Option<String> {
     let Some(_guard) = acquire_config_lock() else {
         return Some("共享资源迁移等待其他配置操作完成，下次启动重试".into());
@@ -149,13 +155,8 @@ pub(crate) fn migrate_shared_resources_at(
     Some(note)
 }
 
-/// 当前**实际生效**的共享资源根。展示类功能（扩展中心）必须用它 ——
-/// 写死 `~/.claude` 会在迁移之后显示默认 Claude 的那份，而不是环境真正共享的那份。
-pub(crate) fn effective_shared_root() -> PathBuf {
-    master_dir()
-}
-
 /// 共享资源当前该指向哪里。迁移完成前保持旧根（`~/.claude`），行为与改造前完全一致。
+#[allow(dead_code)]
 fn master_dir() -> PathBuf {
     if shared_migration_done() {
         shared_root()
@@ -254,7 +255,7 @@ fn resolved_link_target(path: &Path) -> std::io::Result<PathBuf> {
     })
 }
 
-fn create_directory_link(target: &Path, link: &Path) -> Result<(), String> {
+pub(crate) fn create_directory_link(target: &Path, link: &Path) -> Result<(), String> {
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())?;
     #[cfg(windows)]
@@ -463,10 +464,12 @@ pub(crate) fn credential_file_paths() -> Vec<PathBuf> {
 fn lock_path() -> PathBuf {
     crate::cfg_dir().join("sync.lock")
 }
+#[cfg(not(test))]
 fn log_path() -> PathBuf {
     crate::cfg_dir().join("sync.log")
 }
 
+#[cfg(not(test))]
 pub fn log_line(msg: &str) {
     if let Ok(mut f) = fs::OpenOptions::new()
         .create(true)
@@ -480,6 +483,11 @@ pub fn log_line(msg: &str) {
         let _ = writeln!(f, "[{ts}] {msg}");
     }
 }
+
+/// 单元测试中的迁移夹具会故意制造失败并调用日志入口。测试进程不能把这些
+/// `ccm-sync-test-*` 记录写进当前用户的真实诊断日志。
+#[cfg(test)]
+pub fn log_line(_msg: &str) {}
 
 // ---------------- 目录链接 ----------------
 
@@ -512,6 +520,7 @@ pub(crate) fn remove_link(p: &Path) -> std::io::Result<()> {
 
 // 旧的真实目录(隔离时代的安装)→ 内容搬进主目录,同名冲突留在原地;
 // 搬空则删目录,搬不空则整体改名备份,腾出路径建链。返回备份路径(如有)。
+#[cfg(test)]
 fn migrate_dir(dst: &Path, src: &Path) -> std::io::Result<Option<PathBuf>> {
     for entry in fs::read_dir(dst)? {
         let entry = entry?;
@@ -535,27 +544,10 @@ fn migrate_dir(dst: &Path, src: &Path) -> std::io::Result<Option<PathBuf>> {
     }
 }
 
-// 幂等:链接齐全时零开销(纯 fs 检查,不起 PowerShell)
-pub fn ensure_links(names: &[String]) -> Result<Vec<String>, String> {
-    // 迁移未完成时只保留旧入口，绝不向默认 Claude 目录合并或建目录。
-    if !shared_migration_done() {
-        return Ok(vec![
-            "共享资源迁移尚未完成，保留原链接，请检查诊断日志后重试".into(),
-        ]);
-    }
-    ensure_links_at(&master_dir(), names)
-}
-
-/// 按**指定**的共享根建链。抽出来有两个用处：
-/// 迁移时要先在**新根**上把链接建好、成功了才写标记；失败则用**同一套逻辑**切回旧根
-/// （手写一份回滚代码必然与建链逻辑漂移，而漂移的后果是回滚回不到原状）。
-pub fn ensure_links_at(master: &Path, names: &[String]) -> Result<Vec<String>, String> {
-    ensure_links_in(master, &crate::home().join(".claude-split"), names)
-}
-
 /// 最内层：共享根与环境目录父目录都显式给定。
 /// 有了它，迁移的**完整流程**（建链 → 切链 → 失败回滚）可以在临时目录上真跑一遍，
 /// 不必拿用户的真实 `~/.claude` 做试验。
+#[cfg(test)]
 pub(crate) fn ensure_links_in(
     master: &Path,
     instance_root: &Path,
@@ -657,36 +649,6 @@ pub(crate) fn ensure_links_in(
     Ok(msgs)
 }
 
-// 健康检查用:找出各环境缺失/指错的共享目录链接,只报告不修复
-// (修复由 ensure_links 在下次启动时完成)。逻辑与 ensure_links 的判定分支一一对应。
-pub fn broken_links(names: &[String]) -> Vec<String> {
-    let master = master_dir();
-    let mut probs = vec![];
-    for name in names {
-        if name.is_empty() {
-            continue;
-        }
-        let inst = instance_dir(name);
-        if !inst.exists() {
-            continue; // 环境从未启动且未建链,不算异常
-        }
-        for sub in SHARED_SUBDIRS {
-            let dst = inst.join(sub);
-            match fs::symlink_metadata(&dst) {
-                Err(_) => probs.push(format!("{name}/{sub} 链接缺失")),
-                Ok(m) if m.file_type().is_symlink() => {
-                    if !link_points_to(&dst, &master.join(sub)) {
-                        probs.push(format!("{name}/{sub} 链接指向异常"));
-                    }
-                }
-                Ok(m) if m.is_dir() => probs.push(format!("{name}/{sub} 是独立目录（未共享）")),
-                Ok(_) => probs.push(format!("{name}/{sub} 被同名文件占用")),
-            }
-        }
-    }
-    probs
-}
-
 pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
     let text = serde_json::to_vec_pretty(v).map_err(std::io::Error::other)?;
     write_bytes_atomic(path, &text)
@@ -717,7 +679,7 @@ pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<(
     }
     let mut file = options.open(&tmp)?;
     let result = (|| {
-        file.write_all(bytes)?;
+        std::io::Write::write_all(&mut file, bytes)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp, path)?;
@@ -951,30 +913,26 @@ pub(crate) struct SyncOutcome {
 pub(crate) fn sync_configs_locked(names: &[String]) -> Result<SyncOutcome, String> {
     let mut summary: Vec<String> = vec![];
     let mut warnings: Vec<String> = vec![];
-    warnings.extend(crate::shared_config::ensure_seeded());
+    warnings.extend(crate::shared_config::ensure_shared_sources());
 
-    for field in [
-        crate::shared_config::FIELD_MCP,
-        crate::shared_config::FIELD_PLUGINS,
-    ] {
-        let report = crate::shared_config::distribute(field, names)?;
-        let written: usize = report.envs.iter().map(|e| e.written).sum();
-        let removed: usize = report.envs.iter().map(|e| e.removed).sum();
-        summary.push(format!(
-            "{field}：{} 个环境，下发 {written} 条 / 清理 {removed} 条",
-            report.envs.len()
-        ));
-        warnings.extend(report.warnings.iter().cloned());
-        // 环境覆盖必须报出来 —— 静默保留会让用户以为共享值已经生效
-        for env in &report.envs {
-            for info in &env.overrides {
-                warnings.push(format!(
-                    "{field}：环境「{}」的「{}」{}，已保留环境自身的值",
-                    env.env,
-                    info.name,
-                    info.reason.label()
-                ));
-            }
+    let field = crate::shared_config::FIELD_MCP;
+    let report = crate::shared_config::distribute(field, names)?;
+    let written: usize = report.envs.iter().map(|e| e.written).sum();
+    let removed: usize = report.envs.iter().map(|e| e.removed).sum();
+    summary.push(format!(
+        "{field}：{} 个环境，下发 {written} 条 / 清理 {removed} 条",
+        report.envs.len()
+    ));
+    warnings.extend(report.warnings.iter().cloned());
+    // 环境覆盖必须报出来 —— 静默保留会让用户以为共享值已经生效
+    for env in &report.envs {
+        for info in &env.overrides {
+            warnings.push(format!(
+                "{field}：环境「{}」的「{}」{}，已保留环境自身的值",
+                env.env,
+                info.name,
+                info.reason.label()
+            ));
         }
     }
     Ok(SyncOutcome {
@@ -1326,6 +1284,19 @@ mod tests {
         } else {
             assert_eq!(master_dir(), crate::home().join(".claude"));
         }
+    }
+
+    #[test]
+    fn shell_sync_never_writes_plugin_state_directly() {
+        let source = include_str!("sync.rs");
+        let start = source.find("pub(crate) fn sync_configs_locked").unwrap();
+        let end = source[start..]
+            .find("pub fn sync_configs")
+            .map(|offset| start + offset)
+            .unwrap();
+        let body = &source[start..end];
+        assert!(body.contains("FIELD_MCP"));
+        assert!(!body.contains("FIELD_PLUGINS"));
     }
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);

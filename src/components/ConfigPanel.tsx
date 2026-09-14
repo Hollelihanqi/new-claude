@@ -511,7 +511,7 @@ export default function ConfigPanel({
                 <Badge size="xs" variant="light" color={selProfile?.type === "router" ? (selProfile.hasToken ? "teal" : "orange") : (selRuntime.authenticated ? "teal" : "orange")}>
                   {selProfile?.type === "router" ? (selProfile.hasToken ? "凭证已保存" : "缺少凭证") : (selRuntime.authenticated ? "账户已登录" : "等待登录")}
                 </Badge>
-                <Badge size="xs" variant="light" color={selRuntime.sharedDirsOk ? "cyan" : "orange"}>{selRuntime.sharedDirsOk ? "扩展全局共享" : "共享待修复"}</Badge>
+                <Badge size="xs" variant="light" color={selRuntime.sharedDirsOk ? "cyan" : "orange"}>{selRuntime.sharedDirsOk ? "扩展结构正常" : "扩展待迁移"}</Badge>
                 {selProfile?.type === "router" && <Badge size="xs" variant="light" color="blue">{[selProfile.opusModel, selProfile.sonnetModel, selProfile.haikuModel].filter(Boolean).length}/3 模型映射</Badge>}
               </div>
             )}
@@ -620,9 +620,9 @@ export default function ConfigPanel({
             <div className="form-section-label"><span>03</span><div><strong>自动化与命令</strong><small>共享策略与终端调用方式</small></div></div>
             <Alert variant="light" color="cyan" icon={<IconInfoCircle size={16} />}>
               <Text size="xs">
-                skills / plugins / agents / commands 会自动共享；MCP 与插件启用状态由应用统一维护，
-                保存后自动分发到每个环境（各环境也可单独覆盖）。
-                跨环境共享的 MCP 请在「MCP 服务」中选择「所有环境」添加。
+                Skills 与 Agents 由扩展中心逐项共享，各环境可保留自己的同名版本或明确排除；
+                Plugins 通过 Claude Code 官方命令按环境安装。跨环境共享的 MCP 请在「MCP 服务」中
+                选择「所有环境」添加。
               </Text>
             </Alert>
 

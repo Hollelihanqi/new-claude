@@ -207,8 +207,9 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
           />
           <Alert variant="light" color="cyan" icon={<IconInfoCircle size={16} />}>
             <Text size="xs">
-              后台同步会改写这个文件的 <Code>enabledPlugins</Code> 字段（其余内容原样保留）。
-              若保存时提示已被修改，点「重新加载」取回最新内容再改。
+              PathMux 不会直接改写这个文件里的 <Code>enabledPlugins</Code>；插件操作交给
+              Claude Code 官方命令完成。若文件被 Claude Code 或其他工具更新，保存时会阻止覆盖，
+              请点「重新加载」取回最新内容再改。
             </Text>
           </Alert>
           <Group gap="xs">

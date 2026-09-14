@@ -32,6 +32,7 @@ import type { EnvInfo } from "./api";
 import type { UsageStats } from "./api";
 import ConfigPanel from "./components/ConfigPanel";
 import PersistentPage from "./components/PersistentPage";
+import TitleBar from "./components/TitleBar";
 import { USAGE_AUTO_OPTIONS } from "./components/usageAutoOptions";
 import StableRefreshButton from "./components/StableRefreshButton";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
@@ -263,8 +264,8 @@ export default function App({
       });
     }
   };
-  // 启动即建齐共享链接并跑一轮 MCP/插件启用状态合并。
-  // 失败不阻断应用，但必须让用户知道当前配置可能尚未同步。
+  // 首屏显示后异步执行一次完整启动同步。后端把扩展分发、MCP 分发和旧插件迁移
+  // 串成同一个后台作业，避免多个启动任务争锁；失败不阻断应用，但必须明确告知。
   useEffect(() => {
     api.syncAll().catch((e) => {
       notifications.show({
@@ -326,10 +327,14 @@ export default function App({
 
   return (
     <div className="app-shell">
+      {/* 自绘标题栏占 grid 第一行、横跨两列（含侧栏上方）。平台差异由后端 platform 决定，
+          见 components/titleBarLayout。非 Windows/macOS 平台它自己返回 null、不渲染。 */}
+      <TitleBar platform={env?.platform} />
+
       <aside className="app-sidebar">
         <div className="brand-block">
           <div className="brand-mark"><BrandGlyph /></div>
-          <div className="brand-copy"><strong>并路 PathMux</strong><span>每个终端，一条独立模型通道</span></div>
+          <div className="brand-copy"><strong>并路 PathMux</strong></div>
         </div>
         <Text className="nav-eyebrow">工作台</Text>
         <SideNav value={view} onChange={setView} />

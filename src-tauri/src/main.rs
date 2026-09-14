@@ -7,11 +7,9 @@ use tauri::Manager;
 
 mod claude_cli;
 mod credentials;
+mod extensions;
 mod health;
 mod mcp;
-// 尚未接线到命令层（见 docs/共享配置分发设计-2026-09-12.md §七），
-// 接线完成后应去掉 allow
-#[allow(dead_code)]
 mod shared_config;
 mod sync;
 mod workbuddy;
@@ -61,15 +59,6 @@ struct ProfileRuntimeInfo {
     shared_dirs_ok: bool,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ExtensionGroup {
-    kind: String,
-    label: String,
-    path: String,
-    items: Vec<String>,
-}
-
 fn newest_modified(dir: &std::path::Path) -> Option<std::time::SystemTime> {
     let mut newest: Option<std::time::SystemTime> = None;
     if let Ok(entries) = fs::read_dir(dir) {
@@ -88,18 +77,6 @@ fn newest_modified(dir: &std::path::Path) -> Option<std::time::SystemTime> {
         }
     }
     newest
-}
-
-fn directory_items(path: &std::path::Path) -> Vec<String> {
-    let mut items = fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str().map(String::from))
-        .filter(|name| !name.starts_with('.'))
-        .collect::<Vec<_>>();
-    items.sort_by_key(|name| name.to_ascii_lowercase());
-    items
 }
 
 // ---------------- 路径 ----------------
@@ -489,13 +466,56 @@ pub(crate) fn transport_is_loopback_or_secure(url: &str) -> bool {
     }
 }
 
-fn valid_base_url(value: &str) -> bool {
+/// 地址的**书写形态**是否合法（scheme / 长度 / 无空白控制字符）。
+///
+/// **刻意不含**传输安全策略 —— 两件事的原因和修法完全不同，折叠成一个布尔
+/// 会让「远程明文被拒」被报成「地址格式错误」，用户改半天格式也修不好。
+/// 需要完整校验用 [`valid_base_url`]；需要分别报错用本函数 + [`transport_is_loopback_or_secure`]。
+fn base_url_shape_ok(value: &str) -> bool {
     let value = normalize_base_url(value);
     (value.starts_with("https://") || value.starts_with("http://"))
         && value.len() <= 2048
         && !value.chars().any(|c| c.is_control() || c.is_whitespace())
-        // 远程 http 会明文发送 API Key，见 transport_is_loopback_or_secure
-        && transport_is_loopback_or_secure(&value)
+}
+
+fn valid_base_url(value: &str) -> bool {
+    let value = normalize_base_url(value);
+    // 远程 http 会明文发送 API Key，见 transport_is_loopback_or_secure
+    base_url_shape_ok(&value) && transport_is_loopback_or_secure(&value)
+}
+
+/// 网关地址被拒的**原因**。两种原因的修法完全不同，所以是类型而不是布尔。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaseUrlRejection {
+    /// 书写形态就不对（缺 scheme / 有空格 / 超长）。
+    Malformed,
+    /// 形态合法，但传输不安全（远程明文 http）—— 改格式没用，得换 https 或回环地址。
+    PlaintextTransport,
+}
+
+impl BaseUrlRejection {
+    /// 用户可见文案。**文案只有这一处**，避免同一策略散出两套说法。
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Malformed => "网关地址必须是有效的 http:// 或 https:// 地址，且不能包含空格。",
+            Self::PlaintextTransport => PLAINTEXT_TRANSPORT_REJECTED,
+        }
+    }
+}
+
+/// 网关地址不合法时给出**原因准确**的拒绝理由；合法则返回 `None`。
+///
+/// **保存与探测共用这一处**：同一个策略散出两套说法，就会出现「地址明明写得对，
+/// 却被告知格式错误」—— 用户怎么改都修不好，因为真正的原因（远程明文被拒）没说出来。
+pub(crate) fn base_url_rejection(value: &str) -> Option<BaseUrlRejection> {
+    let value = normalize_base_url(value);
+    if !base_url_shape_ok(&value) {
+        return Some(BaseUrlRejection::Malformed);
+    }
+    if !transport_is_loopback_or_secure(&value) {
+        return Some(BaseUrlRejection::PlaintextTransport);
+    }
+    None
 }
 
 // ---------------- shell 引用 ----------------
@@ -536,7 +556,8 @@ fn generate_sh(list: &[Profile]) -> String {
     // 约束 1：默认 `claude` 必须**零副作用透传**。所以脚本**加载时（source）什么都不做**：
     // 不导出环境变量、不同步配置 —— 默认 `claude` 与同一终端里的其他 Node 程序都不受影响。
     // CA 属于网关环境的信任配置，只在 `claude <网关环境>` 这一次启动时注入（见下方 router 分支）。
-    // 每次启动/退出**环境**前后调本程序 --sync:维护共享链接 + 分发共享配置。
+    // 每次启动/退出**环境**前后调本程序 --sync：分发 Skills / Agents 与共享 MCP。
+    // 插件必须由 Claude Code 官方 plugin 命令处理，不进入这条快捷同步路径。
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -1052,8 +1073,8 @@ const RELOAD_HINT: &str =
 fn install_integration(list: &[Profile]) -> Result<String, String> {
     fs::create_dir_all(cfg_dir()).map_err(|e| e.to_string())?;
     migrate_instances(list);
-    // 所有环境始终与默认 Claude共享 skills/plugins/agents/commands(幂等)
-    let mut link_warns = sync::ensure_links(&profile_names(list)).unwrap_or_else(|e| vec![e]);
+    // Skills / Agents 逐项分发；不再把整个目录连到一起。
+    let mut link_warns = extensions::sync_all_locked(&profile_names(list));
     // 名字含不安全字符的环境不会被写进终端脚本(generate_sh/ps1 里跳过)，明确告知而不是静默失效
     let unsafe_names: Vec<&str> = list
         .iter()
@@ -1190,7 +1211,7 @@ struct InstanceSettings {
     path: String,
     exists: bool,
     content: String,
-    // 保存时回传做冲突检测：后台 --sync 也会写这个文件（只改 enabledPlugins 字段）
+    // 保存时回传做冲突检测：Claude Code 或其他工具可能同时修改这个文件。
     revision: String,
     bypass_enabled: bool,
     // 更高优先级的配置也设了 defaultMode 时，本开关不生效
@@ -1395,8 +1416,8 @@ fn save_profile(profile: Profile, token: Option<String>) -> Result<String, Strin
         );
     }
     if p.type_ == "router" {
-        if !valid_base_url(&p.base_url) {
-            return Err("网关地址必须是有效的 http:// 或 https:// 地址，且不能包含空格。".into());
+        if let Some(reason) = base_url_rejection(&p.base_url) {
+            return Err(reason.message().into());
         }
         match token.as_ref().filter(|s| !s.is_empty()) {
             Some(t) => match store_token(&p.name, t) {
@@ -1428,7 +1449,12 @@ fn save_profile(profile: Profile, token: Option<String>) -> Result<String, Strin
         list.push(p);
     }
     save(&list).map_err(|e| e.to_string())?;
-    install_integration(&list)
+    let integration = install_integration(&list)?;
+    // 新环境保存成功后就应当拥有共享 MCP，不能等用户再点一次“同步并修复”
+    // 或重启应用。这里已经持有配置锁，因此调用非重入的内部入口。
+    let names = profile_names(&list);
+    let outcome = sync::sync_configs_locked(&names)?;
+    Ok(compose_sync_report(&integration, &outcome, &names))
 }
 
 #[derive(Clone)]
@@ -1465,6 +1491,7 @@ fn deletion_artifact_paths() -> Result<Vec<PathBuf>, String> {
         sh_path(),
         cfg_dir().join("sync-snapshot.json"),
         shared_config::ledger_path(),
+        cfg_dir().join("shared").join("resources.json"),
     ];
     for profile in load() {
         if let Some(path) = ca_bundle_path(&profile.name) {
@@ -1735,6 +1762,7 @@ fn delete_profile(name: String) -> Result<String, String> {
         // 共享配置的分发台账里也要抹掉这个环境：否则将来重建同名环境时，
         // 那条"我们分发过 X"的记录会让 X 被判成"用户改过/删过"，再也收敛不到共享值。
         shared_config::forget_env(&name)?;
+        extensions::forget_target_locked(&name)?;
         for (path, remove) in &mcp_cleanup {
             if !path.try_exists().map_err(|e| e.to_string())? {
                 continue;
@@ -1779,8 +1807,10 @@ fn delete_profile(name: String) -> Result<String, String> {
         }
         let residual_configs = config_artifacts_reference_profile(&name)?;
         let ledger_residual = shared_config::ledger_references_env(&name)?;
+        let extension_residual = extensions::state_references_target(&name)?;
         let script_residual = integration_scripts_reference_profile(&name)?;
-        if !residual_configs.is_empty() || ledger_residual || script_residual {
+        if !residual_configs.is_empty() || ledger_residual || extension_residual || script_residual
+        {
             return Err(format!(
                 "删除前核验发现残留：配置 {} 处，终端命令 {}，分发记录 {}",
                 residual_configs.len(),
@@ -1789,7 +1819,7 @@ fn delete_profile(name: String) -> Result<String, String> {
                 } else {
                     "已清理"
                 },
-                if ledger_residual {
+                if ledger_residual || extension_residual {
                     "存在"
                 } else {
                     "已清理"
@@ -1843,7 +1873,7 @@ fn delete_profile(name: String) -> Result<String, String> {
     Ok("环境配置、凭证、终端命令、同步记录、登录态、项目记录和历史用量数据均已彻底删除。".into())
 }
 
-// GUI 启动时调用:刷新集成脚本(exe 路径可能变化)+ 建齐共享链接 + 跑一轮配置合并
+// GUI 启动时调用：刷新集成脚本（exe 路径可能变化）+ 分发扩展与共享 MCP。
 #[tauri::command]
 /// 组装「同步并修复」的结果汇报：① 做了什么 ② 影响了谁 ③ 哪里没成。
 ///
@@ -1868,7 +1898,7 @@ fn compose_sync_report(integration: &str, outcome: &sync::SyncOutcome, names: &[
         )
     };
     lines.push(format!(
-        "影响范围：{scope}；每个环境只更新应用管理的 mcpServers 与 enabledPlugins 条目。"
+        "影响范围：{scope}；本次只分发应用管理的 mcpServers。插件操作由 Claude Code 官方命令执行。"
     ));
 
     if outcome.warnings.is_empty() {
@@ -1888,14 +1918,35 @@ fn compose_sync_report(integration: &str, outcome: &sync::SyncOutcome, names: &[
     )
 }
 
+fn sync_all_blocking() -> Result<String, String> {
+    // 启动同步只允许有一个入口。旧实现同时从 setup 后台任务和前端调用这里，
+    // 两边会争同一把锁，让首次打开稳定出现一次“配置正在同步”的假失败。
+    let result = (|| {
+        let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
+        let list = load();
+        let names = profile_names(&list);
+        let msg = install_integration(&list)?; // 内含 Skills / Agents 逐项分发
+        let outcome = sync::sync_configs_locked(&names)?;
+        Ok(compose_sync_report(&msg, &outcome, &names))
+    })();
+
+    // 旧插件目录迁移也在同一个后台作业里串行执行；每个环境内部仍独立加锁和回退。
+    // 即使 MCP / Shell 同步失败，迁移也保留自己的重试机会和日志。
+    for note in extensions::migrate_legacy_plugins_blocking() {
+        sync::log_line(&format!("插件目录迁移:{note}"));
+    }
+    match &result {
+        Ok(report) => sync::log_line(&format!("GUI 同步并修复:{report}")),
+        Err(error) => sync::log_line(&format!("GUI 同步并修复失败:{error}")),
+    }
+    result
+}
+
 #[tauri::command]
-fn sync_all() -> Result<String, String> {
-    let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
-    let list = load();
-    let names = profile_names(&list);
-    let msg = install_integration(&list)?; // 内含 ensure_links
-    let outcome = sync::sync_configs_locked(&names)?;
-    Ok(compose_sync_report(&msg, &outcome, &names))
+async fn sync_all() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(sync_all_blocking)
+        .await
+        .map_err(|e| format!("环境同步任务异常：{e}"))?
 }
 
 #[tauri::command]
@@ -1951,7 +2002,8 @@ fn profile_runtime_info_blocking() -> Vec<ProfileRuntimeInfo> {
                 .map(|value| value.as_secs());
             let authenticated =
                 config.join(".claude.json").is_file() || config.join(".credentials.json").is_file();
-            let shared_dirs_ok = sync::broken_links(std::slice::from_ref(&profile.name)).is_empty();
+            let shared_dirs_ok =
+                extensions::problems(std::slice::from_ref(&profile.name)).is_empty();
             ProfileRuntimeInfo {
                 name: profile.name,
                 config_dir: config.display().to_string(),
@@ -1963,28 +2015,6 @@ fn profile_runtime_info_blocking() -> Vec<ProfileRuntimeInfo> {
             }
         })
         .collect()
-}
-
-#[tauri::command]
-fn extension_overview() -> Vec<ExtensionGroup> {
-    // 必须用**实际生效**的共享根：迁移到 `~/.cc-manager/shared/` 之后，
-    // 写死 `~/.claude` 会显示默认 Claude 的那份，而不是环境真正共享的那份。
-    let master = sync::effective_shared_root();
-    let groups = [
-        ("skills", "Skills", master.join("skills")),
-        ("plugins", "Plugins", master.join("plugins")),
-        ("agents", "Agents", master.join("agents")),
-        ("commands", "Commands", master.join("commands")),
-    ]
-    .into_iter()
-    .map(|(kind, label, path)| ExtensionGroup {
-        kind: kind.into(),
-        label: label.into(),
-        items: directory_items(&path),
-        path: path.display().to_string(),
-    })
-    .collect::<Vec<_>>();
-    groups
 }
 
 #[tauri::command]
@@ -2193,34 +2223,22 @@ fn import_cert_into(envs: &[String], path: &str) -> Result<String, String> {
 // 共享库有哪些、每个环境是继承还是覆盖、默认 Claude 是什么（只读展示）。
 #[tauri::command]
 fn plugins_overview() -> Result<Vec<shared_config::PluginRow>, String> {
-    shared_config::plugins_overview()
-}
-
-// 在应用共享库里设置某个插件的启用状态（= 「所有环境」）
-#[tauri::command]
-fn set_shared_plugin(name: String, enabled: bool) -> Result<String, String> {
-    shared_config::set_shared_entry(
-        shared_config::FIELD_PLUGINS,
-        &name,
-        serde_json::Value::Bool(enabled),
-    )
-}
-
-// 在某个环境里单独设置（= 该环境的独立覆盖）
-#[tauri::command]
-fn set_env_plugin(env: String, name: String, enabled: bool) -> Result<String, String> {
-    shared_config::set_env_entry(
-        shared_config::FIELD_PLUGINS,
-        &env,
-        &name,
-        serde_json::Value::Bool(enabled),
-    )
+    let mut rows = shared_config::plugins_overview()?;
+    let exclusions = extensions::plugin_exclusions()?;
+    for row in &mut rows {
+        for env in &mut row.envs {
+            env.excluded = exclusions
+                .get(&env.env)
+                .is_some_and(|plugins| plugins.contains(&row.name));
+        }
+    }
+    Ok(rows)
 }
 
 // 「恢复继承」：撤销该环境对某个插件的独立设置，改回共享值
 #[tauri::command]
-fn restore_plugin_inheritance(env: String, name: String) -> Result<String, String> {
-    shared_config::restore_entry(shared_config::FIELD_PLUGINS, &env, &name)
+async fn restore_plugin_inheritance(env: String, name: String) -> Result<String, String> {
+    extensions::restore_plugin_inheritance(env, name).await
 }
 
 // 「恢复使用共享配置」：撤销某个环境对被分发条目所做的覆盖。
@@ -2557,6 +2575,9 @@ pub(crate) fn curl_command() -> std::process::Command {
 #[derive(Debug, Clone)]
 pub(crate) enum ProbeError {
     InvalidUrl,
+    /// 地址本身合法，但传输不安全（远程明文 http）—— 与 [`ProbeError::InvalidUrl`]
+    /// **必须分开**：一个是"写错了"，一个是"写对了但不让用"，修法完全不同。
+    PlaintextTransport,
     MissingToken,
     Curl {
         kind: CurlFailure,
@@ -2587,6 +2608,7 @@ impl ProbeError {
             ProbeError::InvalidUrl => {
                 "网关地址必须是有效的 http:// 或 https:// 地址，且不能包含空格。".into()
             }
+            ProbeError::PlaintextTransport => PLAINTEXT_TRANSPORT_REJECTED.into(),
             ProbeError::MissingToken => "请先填写 API Key（检测需要鉴权）。".into(),
             // 措辞与 workbuddy.rs 的证书报错保持一致，避免同一件事出现两套说法。
             // 但只有"信任链"类退出码才能断言"导入 CA 就好"，其余 TLS 码另有原因。
@@ -2851,8 +2873,10 @@ pub(crate) fn detect_models_ladder(
     token: &str,
 ) -> Result<(TrustMode, Vec<String>), ProbeError> {
     let base = base_url.trim().trim_end_matches('/');
-    if !valid_base_url(base) {
-        return Err(ProbeError::InvalidUrl);
+    match base_url_rejection(base) {
+        Some(BaseUrlRejection::PlaintextTransport) => return Err(ProbeError::PlaintextTransport),
+        Some(BaseUrlRejection::Malformed) => return Err(ProbeError::InvalidUrl),
+        None => {}
     }
     if token.trim().is_empty() {
         return Err(ProbeError::MissingToken);
@@ -3306,22 +3330,18 @@ fn main() {
         if let Some(msg) = reconcile_shared_ca() {
             sync::log_line(&msg);
         }
-        // 共享资源迁移同样要排在刷新脚本之前：脚本与链接都依赖"共享根到底在哪"，
-        // 迁移没完成时 master_dir() 仍指向旧根，行为与改造前一致。
-        if let Some(msg) = sync::migrate_shared_resources_once() {
-            sync::log_line(&msg);
-        }
+        // Skills / Agents 由 extensions 逐项接管。不能再运行旧的整目录迁移，
+        // 否则会重新把 Plugins 与已退役的 Commands 链接到共享目录。
         // 升级后第一次跑到这里就把过期脚本换掉，不必等用户打开 GUI
         if let Some(msg) = refresh_scripts_if_stale(&list) {
             sync::log_line(&msg);
         }
-        match sync::ensure_links(&names) {
-            Ok(warns) => {
-                for w in warns {
-                    sync::log_line(&w);
-                }
+        if let Some(_guard) = sync::acquire_config_lock() {
+            for warning in extensions::sync_all_locked(&names) {
+                sync::log_line(&format!("扩展分发警告:{warning}"));
             }
-            Err(e) => sync::log_line(&format!("ensure_links 失败:{e}")),
+        } else {
+            sync::log_line("扩展分发跳过：另一个配置操作正在进行");
         }
         // CLI(--sync) 路径：把 warnings 也写进日志，别只留一句 summary
         match sync::sync_configs(&names) {
@@ -3362,9 +3382,8 @@ fn main() {
             if let Some(msg) = reconcile_shared_ca() {
                 sync::log_line(&msg);
             }
-            if let Some(msg) = sync::migrate_shared_resources_once() {
-                sync::log_line(&msg);
-            }
+            // 首屏完成后，前端只调用一次异步 sync_all；所有文件扫描和旧插件迁移
+            // 都在它的 blocking worker 中串行执行。setup 不再启动第二个争锁任务。
             // 同上：GUI 启动也做一次脚本自愈，两条路径谁先发生都能修好
             if let Some(msg) = refresh_scripts_if_stale(&load()) {
                 sync::log_line(&msg);
@@ -3380,7 +3399,17 @@ fn main() {
             environment,
             set_claude_executable,
             profile_runtime_info,
-            extension_overview,
+            extensions::resource_overview,
+            extensions::import_default_resource,
+            extensions::install_resource_from_path,
+            extensions::set_resource_excluded,
+            extensions::restore_resource_inheritance,
+            extensions::delete_shared_resource,
+            extensions::sync_extension_resources,
+            extensions::set_resource_auto_import,
+            extensions::plugin_targets,
+            extensions::set_plugin_excluded,
+            extensions::manage_plugin,
             mcp::list_mcp_services,
             mcp::register_mcp_project,
             mcp::unregister_mcp_project,
@@ -3394,8 +3423,6 @@ fn main() {
             recent_sync_log,
             restore_shared_mcp_entry,
             plugins_overview,
-            set_shared_plugin,
-            set_env_plugin,
             restore_plugin_inheritance,
             import_cert,
             import_cert_for,
@@ -3655,6 +3682,63 @@ mod tests {
         assert!(!valid_base_url("file:///tmp/config"));
     }
 
+    /// 回归：远程明文被拒时，报的必须是「明文」原因，**不能**报成「地址格式错误」。
+    ///
+    /// 实测缺陷：`http://203.0.113.5:8080` 是完全合法的 URL，旧实现却回
+    /// 「必须是有效的 http:// 或 https:// 地址」—— 用户改格式永远改不好。
+    #[test]
+    fn plaintext_rejection_is_not_reported_as_a_malformed_url() {
+        // 形态合法但远程明文 → 明文原因
+        assert_eq!(
+            base_url_rejection("http://203.0.113.5:8080"),
+            Some(BaseUrlRejection::PlaintextTransport)
+        );
+        assert_eq!(
+            base_url_rejection("http://gateway.example.com/anthropic"),
+            Some(BaseUrlRejection::PlaintextTransport)
+        );
+        // 真的写错了 → 形态原因（两种原因必须区分开）
+        assert_eq!(
+            base_url_rejection("gateway.example.com"),
+            Some(BaseUrlRejection::Malformed)
+        );
+        assert_eq!(
+            base_url_rejection("https://example.com/a b"),
+            Some(BaseUrlRejection::Malformed)
+        );
+        // 合法地址不报错
+        assert_eq!(base_url_rejection("https://gw.example.com"), None);
+        assert_eq!(base_url_rejection("http://127.0.0.1:8080"), None);
+        assert_eq!(base_url_rejection("http://localhost:8080"), None);
+
+        // 明文提示必须说清「为什么」与「怎么办」，否则用户仍然只知道"地址不对"
+        let msg = BaseUrlRejection::PlaintextTransport.message();
+        assert!(msg.contains("明文"), "应说明明文过网：{msg}");
+        assert!(msg.contains("https://"), "应给出改用 https 的出路：{msg}");
+        assert!(
+            msg.contains("127.0.0.1") && msg.contains("localhost"),
+            "应给出回环地址的出路：{msg}"
+        );
+    }
+
+    /// 探测路径与保存路径必须给出**同一套**说法（同一个策略不该有两套文案）。
+    #[test]
+    fn probe_and_save_agree_on_the_plaintext_message() {
+        assert_eq!(
+            ProbeError::PlaintextTransport.message(),
+            BaseUrlRejection::PlaintextTransport.message()
+        );
+        assert_eq!(
+            ProbeError::InvalidUrl.message(),
+            BaseUrlRejection::Malformed.message()
+        );
+        // 且两者的「明文」与「格式」文案必须互不相同（折叠回一个就等于没修）
+        assert_ne!(
+            ProbeError::PlaintextTransport.message(),
+            ProbeError::InvalidUrl.message()
+        );
+    }
+
     // ---------------- 集成刷新的失败必须冒泡（P0-A#6） ----------------
 
     // ---------------- 同步结果汇报（P0-B#9） ----------------
@@ -3674,12 +3758,12 @@ mod tests {
             "已接入：zsh",
             &outcome(
                 "mcpServers 3 项/写回 2 份",
-                &["mcpServers：ds 写失败", "enabledPlugins：跳过 a"],
+                &["mcpServers：ds 写失败", "mcpServers：跳过 a"],
             ),
             &["a".into(), "ds".into()],
         );
         assert!(report.contains("mcpServers：ds 写失败"), "{report}");
-        assert!(report.contains("enabledPlugins：跳过 a"), "{report}");
+        assert!(report.contains("mcpServers：跳过 a"), "{report}");
         assert!(report.contains("警告 2 条"), "{report}");
         // 影响范围要说清影响了谁，不能只说"完成"；
         // 并且必须写明默认 Claude **不参与** —— 决策 7.2 之后它已退出这条链，
@@ -3696,6 +3780,23 @@ mod tests {
         assert!(report.contains("无警告。"), "{report}");
         // 没有环境时不能写成"影响了默认 Claude" —— 一个都没影响
         assert!(report.contains("没有受管理环境"), "{report}");
+    }
+
+    #[test]
+    fn gui_startup_has_one_async_sync_path_without_a_setup_lock_race() {
+        let source = include_str!("main.rs");
+        let start = source.find(".setup(|app|").unwrap();
+        let end = source[start..]
+            .find(".invoke_handler")
+            .map(|offset| start + offset)
+            .unwrap();
+        let setup = &source[start..end];
+        assert!(!setup.contains("extensions::sync_all_locked"));
+        assert!(!setup.contains("migrate_legacy_plugins_blocking"));
+
+        let sync_start = source.find("async fn sync_all()").unwrap();
+        let sync_body: String = source[sync_start..].chars().take(500).collect();
+        assert!(sync_body.contains("spawn_blocking(sync_all_blocking)"));
     }
 
     #[test]
@@ -3716,6 +3817,28 @@ mod tests {
         }
         // 删除路径必须走非重入内部函数，否则会自己把自己锁住
         assert!(source.contains("forget_profile_locked"));
+    }
+
+    #[test]
+    fn saving_an_environment_immediately_distributes_shared_mcp() {
+        let source = include_str!("main.rs");
+        let start = source.find("fn save_profile").unwrap();
+        let end = source[start..]
+            .find("struct DeletionFileSnapshot")
+            .map(|offset| start + offset)
+            .unwrap();
+        let body = &source[start..end];
+        assert!(body.contains("sync::sync_configs_locked(&names)"));
+        assert!(body.contains("compose_sync_report"));
+    }
+
+    #[test]
+    fn gui_sync_records_success_and_failure_in_the_diagnostic_log() {
+        let source = include_str!("main.rs");
+        let start = source.find("fn sync_all_blocking").unwrap();
+        let body: String = source[start..].chars().take(1800).collect();
+        assert!(body.contains("GUI 同步并修复:{report}"));
+        assert!(body.contains("GUI 同步并修复失败:{error}"));
     }
 
     #[test]
@@ -5582,6 +5705,7 @@ mod tests {
         assert_no_success_claim(&ProbeError::Auth { http_code: 401 }.message());
         assert_no_success_claim(&ProbeError::MissingToken.message());
         assert_no_success_claim(&ProbeError::InvalidUrl.message());
+        assert_no_success_claim(&ProbeError::PlaintextTransport.message());
         assert_no_success_claim(
             &ProbeError::BadResponse {
                 http_code: 500,

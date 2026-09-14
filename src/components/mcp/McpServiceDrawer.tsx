@@ -40,6 +40,8 @@ import {
   sensitivePathsForConfig,
   validateLocatorForScope,
 } from "./mcpForm";
+import FeatureHelp from "../FeatureHelp";
+import { MCP_SCOPE_HELP } from "../featureHelpContent";
 
 const RESERVED_NAMES = [
   "workspace",
@@ -422,7 +424,7 @@ export default function McpServiceDrawer({
           <Box pt="md">
             {tab === "form" ? (
               <Stack gap="md">
-                <Fieldset legend="基本信息">
+                <Fieldset legend={<Group gap={4}>基本信息<FeatureHelp content={MCP_SCOPE_HELP} /></Group>}>
                   <div className="mcp-form-grid">
                     <TextInput
                       label="服务名称"

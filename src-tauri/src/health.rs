@@ -540,26 +540,26 @@ fn run_health_checks() -> Vec<HealthItem> {
         }
     }
 
-    // 4. 共享目录链接
+    // 4. 扩展资源结构（逐项分发 + 旧版整目录链接迁移）
     if !names.is_empty() {
-        let probs = crate::sync::broken_links(&names);
+        let probs = crate::extensions::problems(&names);
         if probs.is_empty() {
             items.push(item(
                 "links",
-                "共享目录链接",
+                "扩展资源结构",
                 "ok",
                 format!(
-                    "{} 个环境的 skills/plugins/agents/commands 链接完好。",
+                    "{} 个环境的 Skills、Agents 与 Plugins 目录结构正常。",
                     names.len()
                 ),
             ));
         } else {
             items.push(item(
                 "links",
-                "共享目录链接",
+                "扩展资源结构",
                 "warn",
                 format!(
-                    "发现异常：{}。下次启动 claude 或本程序时会自动修复。",
+                    "发现异常：{}。下次启动本程序时会在后台继续迁移或修复。",
                     probs.join("、")
                 ),
             ));

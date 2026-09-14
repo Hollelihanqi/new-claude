@@ -7,6 +7,8 @@
   --app-muted: #74838c;
   --app-sidebar: #102b35;
   --app-sidebar-soft: rgba(255, 255, 255, 0.07);
+  /* 自绘标题栏高度。与 components/titleBarLayout.ts 的 TITLEBAR_HEIGHT_PX 由测试钉住一致。 */
+  --app-titlebar-height: 44px;
 }
 
 html,
@@ -38,11 +40,54 @@ body {
   height: 100%;
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
+  /* 第一行给自绘标题栏。用 auto 而不是固定高度：非 Windows/macOS 平台标题栏不渲染时，
+     该行会塌成 0，不会在顶部留一条空白。第二行是侧栏 + 主区，见它们的 grid-row。 */
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--app-bg);
 }
 
+/* ---------------- 自绘标题栏 ---------------- */
+/* Windows 关掉了原生边框（tauri.windows.conf.json 的 decorations: false），由这一条补上：
+   既提供窗口拖动区域，也承载最小化 / 最大化 / 关闭。
+   macOS 用 titleBarStyle: "Overlay" 保留原生红黄绿灯，这里只占高度、并用内边距给灯让位。 */
+.app-titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  height: var(--app-titlebar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* 与下方 .app-header 同色系，让两条在视觉上连成一体 */
+  background: rgba(255, 255, 255, .93);
+  border-bottom: 1px solid var(--app-border);
+  backdrop-filter: blur(14px);
+  user-select: none;
+}
+
+/* 拖拽只用 data-tauri-drag-region 属性，**刻意不加** app-region: drag。
+   官方「Windows 触摸/笔」那条建议用的是 WebView2 原生拖动，它会吃掉鼠标事件，
+   结果是双击最大化失效 —— 相比触摸拖动，双击最大化是更常用的桌面行为。
+   副作用：触摸/笔无法拖动标题栏（键鼠不受影响）。 */
+.app-titlebar-controls { display: flex; align-items: stretch; height: 100%; }
+.app-titlebar-button {
+  width: 46px;
+  height: var(--app-titlebar-height);
+  border-radius: 0;
+}
+.app-titlebar-close:hover { background: #e5484d !important; color: #fff !important; }
+
+.app-titlebar-name {
+  color: var(--app-muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .2px;
+}
+
 .app-sidebar {
+  /* 显式定位到第二行：第一行被标题栏跨列占用。写死行号也让「标题栏不渲染时」侧栏仍落在第二行。 */
+  grid-column: 1;
+  grid-row: 2;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -64,7 +109,6 @@ body {
 .brand-mark svg { width: 29px; height: 29px; }
 .brand-copy { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-copy strong { font-size: 15px; letter-spacing: -.1px; }
-.brand-copy span { margin-top: 5px; font-size: 11px; color: rgba(255,255,255,.56); }
 .nav-eyebrow { padding: 0 12px 8px; color: rgba(255,255,255,.37) !important; font-size: 10px !important; font-weight: 700; letter-spacing: 1.5px; }
 
 .side-nav { display: flex; flex-direction: column; gap: 6px; }
@@ -91,7 +135,7 @@ body {
 .theme-dot { width: 15px; height: 15px; padding: 0; border: 2px solid rgba(255,255,255,.25); border-radius: 50%; cursor: pointer; }
 .theme-dot.active { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.18); }
 
-.app-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.app-main { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .app-header {
   height: 76px; flex: 0 0 76px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between;
   background: rgba(255,255,255,.93); border-bottom: 1px solid var(--app-border); backdrop-filter: blur(14px);
@@ -341,4 +385,9 @@ body {
 @media (max-width: 900px) {
   .mcp-form-grid { grid-template-columns: 1fr; }
   .mcp-toolbar > * { flex: 1 1 180px; }
+}
+.feature-help-principle {
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  background: var(--mantine-color-default-hover);
 }

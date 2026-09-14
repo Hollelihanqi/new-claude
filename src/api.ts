@@ -54,11 +54,35 @@ export interface ProfileRuntimeInfo {
   sharedDirsOk: boolean;
 }
 
-export interface ExtensionGroup {
-  kind: "skills" | "plugins" | "agents" | "commands";
+export type ResourceKind = "skills" | "agents";
+export type ResourceTargetStatus = "inherited" | "override" | "excluded" | "missing" | "local" | "unavailable" | "target";
+
+export interface ResourceTargetState {
+  target: string;
   label: string;
-  path: string;
-  items: string[];
+  state: ResourceTargetStatus;
+  reason: string;
+  issues: string[];
+}
+
+export interface ResourceItem {
+  name: string;
+  inShared: boolean;
+  inDefaultClaude: boolean;
+  targets: ResourceTargetState[];
+}
+
+export interface ResourceOverview {
+  kind: ResourceKind;
+  label: string;
+  sharedPath: string;
+  items: ResourceItem[];
+  targets: ResourceTargetState[];
+  autoImportEnabled: boolean;
+  lastAutoImportAt?: number;
+  lastAutoImportAdded: number;
+  lastAutoImportSkipped: number;
+  lastAutoImportFailures: string[];
 }
 
 // ---------------- MCP 服务管理 ----------------
@@ -185,6 +209,10 @@ export interface PluginEnvState {
   inherited: boolean;
   /** 覆盖原因（继承时为空） */
   reason: string;
+  installed?: boolean;
+  version?: string;
+  storageIndependent?: boolean;
+  excluded?: boolean;
 }
 
 /** 插件启用状态总览的一行 */
@@ -194,7 +222,23 @@ export interface PluginRow {
   shared?: boolean | null;
   /** 默认 Claude 的值 —— 只展示，不可编辑 */
   defaultClaude?: boolean | null;
+  defaultInstalled?: boolean;
+  defaultVersion?: string;
   envs: PluginEnvState[];
+}
+
+export type PluginAction = "install" | "update" | "uninstall" | "enable" | "disable";
+export interface PluginActionOutcome {
+  env: string;
+  ok: boolean;
+  detail: string;
+}
+export interface PluginActionReport {
+  action: PluginAction;
+  plugin: string;
+  results: PluginActionOutcome[];
+  reloadHint: string;
+  policyWarning?: string;
 }
 
 export interface McpSharedOverride {
@@ -422,13 +466,37 @@ export const api = {
     invoke("save_profile", { profile, token: token || null }),
   deleteProfile: (name: string): Promise<string> =>
     invoke("delete_profile", { name }),
-  // 刷新集成脚本 + 建齐共享链接 + 合并同步 MCP/插件启用状态
+  // 刷新终端集成，并把共享 Skills / Agents / MCP 单向分发到受管理环境
   syncAll: (): Promise<string> => invoke("sync_all"),
   environment: (): Promise<EnvInfo> => invoke("environment"),
   setClaudeExecutable: (path: string): Promise<ClaudeDetection> =>
     invoke("set_claude_executable", { path }),
   profileRuntimeInfo: (): Promise<ProfileRuntimeInfo[]> => invoke("profile_runtime_info"),
-  extensionOverview: (): Promise<ExtensionGroup[]> => invoke("extension_overview"),
+  resourceOverview: (kind: ResourceKind): Promise<ResourceOverview> =>
+    invoke("resource_overview", { kind }),
+  importDefaultResource: (kind: ResourceKind, name?: string, replace = false): Promise<string> =>
+    invoke("import_default_resource", { kind, name: name ?? null, replace }),
+  installResourceFromPath: (kind: ResourceKind, path: string, targetId?: string): Promise<string> =>
+    invoke("install_resource_from_path", { kind, path, targetId: targetId ?? null }),
+  setResourceExcluded: (
+    kind: ResourceKind,
+    targetId: string,
+    name: string,
+    excluded: boolean
+  ): Promise<string> => invoke("set_resource_excluded", { kind, targetId, name, excluded }),
+  restoreResourceInheritance: (
+    kind: ResourceKind,
+    targetId: string,
+    name: string
+  ): Promise<string> => invoke("restore_resource_inheritance", { kind, targetId, name }),
+  deleteSharedResource: (kind: ResourceKind, name: string): Promise<string> =>
+    invoke("delete_shared_resource", { kind, name }),
+  syncExtensionResources: (): Promise<string> => invoke("sync_extension_resources"),
+  setResourceAutoImport: (enabled: boolean): Promise<string> =>
+    invoke("set_resource_auto_import", { enabled }),
+  pluginTargets: (): Promise<string[]> => invoke("plugin_targets"),
+  setPluginExcluded: (env: string, plugin: string, excluded: boolean): Promise<string> =>
+    invoke("set_plugin_excluded", { env, plugin, excluded }),
   // MCP 服务管理
   listMcpServices: (): Promise<McpState> => invoke("list_mcp_services"),
   registerMcpProject: (path: string): Promise<McpState> =>
@@ -444,15 +512,11 @@ export const api = {
     invoke("restore_shared_mcp_entry", { env, name }),
   /** 插件启用状态总览（扩展 → Plugins） */
   pluginsOverview: (): Promise<PluginRow[]> => invoke("plugins_overview"),
-  /** 设置「所有环境」的共享启用状态 */
-  setSharedPlugin: (name: string, enabled: boolean): Promise<string> =>
-    invoke("set_shared_plugin", { name, enabled }),
-  /** 设置某个环境的独立启用状态（覆盖） */
-  setEnvPlugin: (env: string, name: string, enabled: boolean): Promise<string> =>
-    invoke("set_env_plugin", { env, name, enabled }),
-  /** 撤销该环境的独立设置，恢复继承共享值 */
+  /** 通过 Claude Code 官方命令撤销该环境的独立设置，再恢复共享策略 */
   restorePluginInheritance: (env: string, name: string): Promise<string> =>
     invoke("restore_plugin_inheritance", { env, name }),
+  managePlugin: (action: PluginAction, plugin: string, envs: string[], sharedScope: boolean): Promise<PluginActionReport> =>
+    invoke("manage_plugin", { action, plugin, envs, sharedScope }),
   testMcpServer: (request: McpTestRequest): Promise<McpTestResult> =>
     invoke("test_mcp_server", { request }),
   previewMcpTargetSync: (
