@@ -510,6 +510,12 @@ fn normalize(p: &Path) -> String {
 }
 
 fn link_points_to(dst: &Path, src: &Path) -> bool {
+    // Windows Runner 可能用 RUNNER~1 这类 8.3 短路径创建 Junction，而 read_link
+    // 返回同一目录的长路径。先比较两边的规范化真实路径，避免把同一目标误判为
+    // 链接失败；悬空链接无法 canonicalize 时再退回链接文本比较。
+    if let (Ok(actual), Ok(expected)) = (fs::canonicalize(dst), fs::canonicalize(src)) {
+        return normalize(&actual) == normalize(&expected);
+    }
     match fs::read_link(dst) {
         Ok(t) => normalize(&t) == normalize(src),
         Err(_) => false,
