@@ -15,7 +15,7 @@
   --app-muted: #74838c;
   --app-sidebar: #102b35;
   --app-sidebar-soft: rgba(255, 255, 255, 0.07);
-  /* 自绘标题栏高度。与 components/titleBarLayout.ts 的 TITLEBAR_HEIGHT_PX 由测试钉住一致。 */
+  /* Windows 自绘标题栏高度。与 titleBarLayout.ts 的常量由测试钉住一致。 */
   --app-titlebar-height: 44px;
 }
 
@@ -65,7 +65,7 @@ body {
   height: 100%;
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
-  /* 第一行给自绘标题栏。用 auto 而不是固定高度：非 Windows/macOS 平台标题栏不渲染时，
+  /* 第一行给 Windows 自绘标题栏。用 auto 而不是固定高度：macOS 和其他平台不渲染时，
      该行会塌成 0，不会在顶部留一条空白。第二行是侧栏 + 主区，见它们的 grid-row。 */
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -74,8 +74,7 @@ body {
 
 /* ---------------- 自绘标题栏 ---------------- */
 /* Windows 关掉了原生边框（tauri.windows.conf.json 的 decorations: false），由这一条补上：
-   既提供窗口拖动区域，也承载最小化 / 最大化 / 关闭。
-   macOS 用 titleBarStyle: "Overlay" 保留原生红黄绿灯，这里只占高度、并用内边距给灯让位。 */
+   既提供窗口拖动区域，也承载最小化 / 最大化 / 关闭。macOS 使用原生标题栏，不渲染此元素。 */
 .app-titlebar {
   grid-column: 1 / -1;
   grid-row: 1;

@@ -73,13 +73,10 @@ describe("自绘标题栏", () => {
     expect(draggable("app-titlebar-name")).toBe(true);
   });
 
-  it("macOS：不自绘窗口按钮（有原生红黄绿灯），左侧让出内边距", async () => {
+  it("macOS：完整使用原生标题栏，不渲染自绘空白栏", async () => {
     const renderer = await render("macos");
-    expect(labels(renderer)).toEqual([]);
+    expect(renderer.toJSON()).toBeNull();
     expect(appWindow.minimize).not.toHaveBeenCalled();
-
-    const bar = renderer.root.findByProps({ className: "app-titlebar" });
-    expect(bar.props.style.paddingLeft).toBeGreaterThan(40);
   });
 
   it("非 Windows/macOS：整体不渲染，避免与原生标题栏形成两条", async () => {

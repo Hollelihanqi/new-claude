@@ -6,24 +6,15 @@
  * `"windows" | "macos" | "other"`），前端不自行探测平台。
  */
 
-/** 标题栏高度（逻辑像素）。CSS 侧对应 `--app-titlebar-height`，两者由测试钉住一致。 */
+/** Windows 自绘标题栏高度（逻辑像素）。CSS 侧对应变量，两者由测试钉住一致。 */
 export const TITLEBAR_HEIGHT_PX = 44;
-
-/**
- * macOS 原生红黄绿灯占用的横向宽度。
- *
- * 红黄绿灯浮在 WebView 之上（`titleBarStyle: "Overlay"`），**不是我们画的**，
- * 所以只能靠内边距把内容推开，否则图标会被压在灯下面。
- */
-const MAC_TRAFFIC_LIGHT_INSET_PX = 78;
 
 export type TitleBarLayout = {
   /**
    * 是否渲染自绘标题栏。
    *
-   * 只有 Windows 的 `tauri.windows.conf.json` 去掉了原生边框；macOS 用的是 Overlay
-   * （原生标题栏变成透明浮层，需要我们自己占用这条高度）。其余平台保留原生边框，
-   * 渲染自绘条会变成「两条标题栏」。
+   * 只有 Windows 的 `tauri.windows.conf.json` 去掉了原生边框。macOS 与其他平台
+   * 使用原生标题栏；再渲染这一条会形成重复标题栏，并在 macOS 全屏时留下空白。
    */
   render: boolean;
   /**
@@ -34,19 +25,19 @@ export type TitleBarLayout = {
    * Alt+F4 / 任务栏可用；反过来 macOS 在 platform 到位前最多闪一下自绘按钮，且有原生灯兜底。
    */
   showWindowControls: boolean;
-  /** 是否显示应用名文字。macOS 平台惯例不显示标题文字。 */
+  /** 是否显示应用名文字。 */
   showAppName: boolean;
-  /** 左侧内边距，给 macOS 红黄绿灯让位。 */
+  /** 自绘栏左侧内边距；当前只供 Windows 使用。 */
   leftInsetPx: number;
 };
 
 export function titleBarLayout(platform: string | null | undefined): TitleBarLayout {
   if (platform === "macos") {
     return {
-      render: true,
+      render: false,
       showWindowControls: false,
       showAppName: false,
-      leftInsetPx: MAC_TRAFFIC_LIGHT_INSET_PX,
+      leftInsetPx: 0,
     };
   }
   if (platform === "other") {

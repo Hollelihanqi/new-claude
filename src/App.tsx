@@ -338,8 +338,8 @@ export default function App({
 
   return (
     <div className="app-shell">
-      {/* 自绘标题栏占 grid 第一行、横跨两列（含侧栏上方）。平台差异由后端 platform 决定，
-          见 components/titleBarLayout。非 Windows/macOS 平台它自己返回 null、不渲染。 */}
+      {/* Windows 自绘标题栏占 grid 第一行并横跨两列。macOS 使用原生标题栏；
+          平台差异由后端 platform 决定，见 components/titleBarLayout。 */}
       <TitleBar platform={env?.platform} />
 
       <aside className="app-sidebar">

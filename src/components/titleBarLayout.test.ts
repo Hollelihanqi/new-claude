@@ -9,7 +9,7 @@ describe("自绘标题栏的平台差异", () => {
   const cases: Array<[string, boolean, boolean, boolean]> = [
     // platform, render, showWindowControls, showAppName
     ["windows", true, true, true],
-    ["macos", true, false, false],
+    ["macos", false, false, false],
     ["other", false, false, false],
   ];
 
@@ -20,12 +20,16 @@ describe("自绘标题栏的平台差异", () => {
     expect(layout.showAppName).toBe(name);
   });
 
-  it("macOS 必须为原生红黄绿灯让出左侧内边距，Windows 不需要", () => {
-    const mac = titleBarLayout("macos").leftInsetPx;
-    const win = titleBarLayout("windows").leftInsetPx;
-    expect(mac).toBeGreaterThan(win);
-    // 三个灯加间距，太窄会把内容压在灯下面
-    expect(mac).toBeGreaterThanOrEqual(70);
+  it("macOS 使用原生标题栏，只有 Windows 保留自绘栏", () => {
+    expect(titleBarLayout("macos")).toMatchObject({
+      render: false,
+      showWindowControls: false,
+      leftInsetPx: 0,
+    });
+    expect(titleBarLayout("windows")).toMatchObject({
+      render: true,
+      showWindowControls: true,
+    });
   });
 
   it("平台未知时按「要画窗口按钮」处理", () => {
@@ -48,12 +52,12 @@ describe("自绘标题栏的平台差异", () => {
     expect(css).toContain(`--app-titlebar-height: ${TITLEBAR_HEIGHT_PX}px;`);
   });
 
-  it("macOS 原生红黄绿灯在自绘标题栏内垂直居中", () => {
+  it("macOS 配置使用原生可见标题栏，不再设置 Overlay 灯位", () => {
     const config = JSON.parse(
       readFileSync(resolve(process.cwd(), "src-tauri/tauri.macos.conf.json"), "utf8")
     );
-    const position = config.app.windows[0].trafficLightPosition;
-    const trafficLightDiameterPx = 14;
-    expect(position.y).toBe((TITLEBAR_HEIGHT_PX - trafficLightDiameterPx) / 2);
+    const window = config.app.windows[0];
+    expect(window.titleBarStyle).toBe("Visible");
+    expect(window.trafficLightPosition).toBeUndefined();
   });
 });
