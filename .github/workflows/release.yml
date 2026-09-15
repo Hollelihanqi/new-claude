@@ -30,6 +30,10 @@ jobs:
   channel:
     # 纯 Node 逻辑，不涉及 Tauri 的 GTK/WebKit 系统依赖，用 ubuntu 最快
     runs-on: ubuntu-latest
+    # 手动晋级时需要读取尚未公开的 draft Release；只读 token 会让 gh 把草稿
+    # 误判为不存在。写权限也供后续 publish job 正式公开同一批产物。
+    permissions:
+      contents: write
     outputs:
       name: ${{ steps.resolve.outputs.name }}
       tag: ${{ steps.target.outputs.tag }}
