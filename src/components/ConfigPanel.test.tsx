@@ -182,3 +182,45 @@ describe("默认 Claude 的模型钉死只告警、不提供一键修复", () =>
     expect(allText()).toContain("环境 a");
   });
 });
+
+// Windows RedirectionGuard 修复后的状态语义：扩展目录迁移没完成不再伪装成
+// “配置待完善”——那会误导用户去检查网关地址和 Key（实际两者都正常）。
+describe("运行状态按失败原因区分文案", () => {
+  let renderer: ReactTestRenderer;
+  const mount = async (claudeFound: boolean, sharedDirsOk: boolean) => {
+    vi.resetAllMocks();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.mocked(api.listProfiles).mockResolvedValue([profile("a")]);
+    vi.mocked(api.modelPinWarnings).mockResolvedValue([]);
+    vi.mocked(api.profileRuntimeInfo).mockResolvedValue([{
+      name: "a", configDir: "/x", settingsExists: true, hasProjectData: false,
+      lastUsed: null, authenticated: true, sharedDirsOk,
+    }] as never);
+    await act(async () => {
+      renderer = create(
+        <ConfigPanel env={claudeFound ? ({ claude_found: true } as never) : null} usageData={null} />,
+      );
+    });
+    act(() => renderer.root.findAllByType(NavLink)[0].props.onClick());
+    await act(async () => {});
+  };
+  afterEach(() => { act(() => renderer.unmount()); vi.unstubAllGlobals(); });
+  const statusText = () =>
+    renderer.root.findAllByType("strong").map((node) => node.children.join("")).join(" ");
+
+  it("扩展迁移未完成显示“扩展待迁移”，不再误报配置问题", async () => {
+    await mount(true, false);
+    expect(statusText()).toContain("扩展待迁移");
+    expect(statusText()).not.toContain("配置待完善");
+  });
+
+  it("扩展迁移完成且登录就绪才显示“环境正常”", async () => {
+    await mount(true, true);
+    expect(statusText()).toContain("环境正常");
+  });
+
+  it("Claude 未检测到时仍如实显示“配置待完善”", async () => {
+    await mount(false, false);
+    expect(statusText()).toContain("配置待完善");
+  });
+});

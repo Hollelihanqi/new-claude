@@ -326,9 +326,53 @@ fn remove_entry(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Windows 的 read_link 对 Junction 可能返回 `\??\C:\...` 或 `\\?\C:\...` 形式的
+/// 目标；去掉设备前缀，得到可以直接打开的普通绝对路径。
+fn strip_device_prefix(path: &Path) -> PathBuf {
+    let text = path.as_os_str().to_string_lossy();
+    let stripped = text
+        .strip_prefix(r"\??\")
+        .or_else(|| text.strip_prefix(r"\\?\"));
+    match stripped {
+        Some(rest) => PathBuf::from(rest.to_string()),
+        None => path.to_path_buf(),
+    }
+}
+
+/// 把路径末端的目录链接（Windows Junction / Unix symlink）解析成真实路径。
+/// 不能用 fs::canonicalize：它会**打开句柄穿越** reparse point，而进程可能带着
+/// Windows RedirectionGuard 缓解策略运行（新版安装器直接运行安装好的应用、或经
+/// WebView2 宿主启动时会启用/继承该策略），此时穿越非管理员创建的 Junction 会被
+/// 直接拒绝（os error 448，ERROR_UNTRUSTED_MOUNT_POINT）。这里只读取链接自身的
+/// reparse 数据（read_link 不穿越），再对解析出的真实目标路径继续操作。
+fn resolve_without_traversal(path: &Path) -> Result<PathBuf, String> {
+    let mut current = path.to_path_buf();
+    for _ in 0..16 {
+        let meta = fs::symlink_metadata(&current).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_symlink() {
+            return Ok(current);
+        }
+        let target = fs::read_link(&current).map_err(|e| e.to_string())?;
+        let target = strip_device_prefix(&target);
+        if target == current {
+            return Err(format!("检测到循环链接：{}", path.display()));
+        }
+        current = if target.is_absolute() {
+            target
+        } else {
+            current
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf()
+                .join(target)
+        };
+    }
+    Err(format!("链接层级过深：{}", path.display()))
+}
+
 fn copy_snapshot(src: &Path, dst: &Path, stack: &mut HashSet<PathBuf>) -> Result<(), String> {
-    let resolved =
-        fs::canonicalize(src).map_err(|e| format!("无法读取 {} 指向的内容：{e}", src.display()))?;
+    let resolved = resolve_without_traversal(src)
+        .map_err(|e| format!("无法读取 {} 指向的内容：{e}", src.display()))?;
     if !stack.insert(resolved.clone()) {
         return Err(format!("检测到循环链接：{}", src.display()));
     }
@@ -365,7 +409,7 @@ fn hash_entry(path: &Path) -> Result<String, String> {
         hasher: &mut Sha256,
         stack: &mut HashSet<PathBuf>,
     ) -> Result<(), String> {
-        let resolved = fs::canonicalize(path).map_err(|e| e.to_string())?;
+        let resolved = resolve_without_traversal(path).map_err(|e| e.to_string())?;
         if !stack.insert(resolved.clone()) {
             return Err(format!("检测到循环链接：{}", path.display()));
         }
@@ -2329,5 +2373,124 @@ mod tests {
             &claude.join("agents")
         )
         .is_empty());
+    }
+
+    // 用户手建的目录链接可能用 cmd mklink /J 这类原始方式创建（不经 PowerShell
+    // 校验），迁移器必须同样认得。
+    fn create_raw_directory_link(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "mklink 失败：{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    // Windows 进程带 RedirectionGuard 缓解策略时（安装器直接运行新装应用等场景），
+    // 穿越非管理员创建的 Junction 会得到 os error 448。迁移器必须改走
+    // “读链接目标 → 操作真实路径”，以下测试锁定该解析行为。
+    #[test]
+    fn resolve_without_traversal_resolves_links_to_real_paths() {
+        let temp = Temp::new("resolve-link");
+        let real = temp.0.join("real");
+        skill(&real, "demo", "body");
+        let link = temp.0.join("link");
+        create_raw_directory_link(&real, &link);
+        let resolved = resolve_without_traversal(&link).unwrap();
+        // 不能按文本断言相等：Windows Runner 的 8.3 短路径与 read_link 返回的
+        // 长路径可能写法不同，按“已是真实目录且内容可达”断言。
+        assert!(!fs::symlink_metadata(&resolved)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(resolved.join("demo").join("SKILL.md").is_file());
+        assert_eq!(
+            resolve_without_traversal(&real.join("demo")).unwrap(),
+            real.join("demo")
+        );
+    }
+
+    #[test]
+    fn resolve_without_traversal_follows_two_hop_links() {
+        let temp = Temp::new("resolve-chain");
+        let real = temp.0.join("real");
+        skill(&real, "demo", "body");
+        let second = temp.0.join("second");
+        let first = temp.0.join("first");
+        create_raw_directory_link(&real, &second);
+        create_raw_directory_link(&second, &first);
+        let resolved = resolve_without_traversal(&first).unwrap();
+        assert!(!fs::symlink_metadata(&resolved)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(resolved.join("demo").join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn resolve_without_traversal_rejects_dangling_links() {
+        let temp = Temp::new("resolve-dangling");
+        let dangling = temp.0.join("dangling");
+        create_raw_directory_link(&temp.0.join("missing"), &dangling);
+        assert!(resolve_without_traversal(&dangling).is_err());
+    }
+
+    #[test]
+    fn resolve_without_traversal_rejects_link_cycles() {
+        let temp = Temp::new("resolve-cycle");
+        let a = temp.0.join("a");
+        let b = temp.0.join("b");
+        create_raw_directory_link(&b, &a);
+        create_raw_directory_link(&a, &b);
+        let err = resolve_without_traversal(&a).unwrap_err();
+        assert!(err.contains("循环") || err.contains("层级过深"), "{err}");
+    }
+
+    #[test]
+    fn hash_entry_reads_linked_source_without_traversal() {
+        // 升级前的整目录链接迁移要求 copy_snapshot / hash_entry 都接受
+        // “源本身是目录链接”的输入。
+        let temp = Temp::new("hash-link");
+        let real = temp.0.join("real");
+        skill(&real, "demo", "body");
+        let link = temp.0.join("link");
+        create_raw_directory_link(&real, &link);
+        assert_eq!(hash_entry(&link).unwrap(), hash_entry(&real).unwrap());
+    }
+
+    #[test]
+    fn detach_converts_raw_user_made_junction_without_touching_source() {
+        // 复刻用户真实场景：plugins 是手建 Junction，且进程可能无法穿越它。
+        // 迁移后 link 位置变成真实目录，源目录内容原样保留。
+        let temp = Temp::new("detach-raw");
+        let real = temp.0.join("real-plugins");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("installed_plugins.json"), "{}").unwrap();
+        let link = temp.0.join("plugins");
+        create_raw_directory_link(&real, &link);
+        detach_directory_link(&link).unwrap();
+        assert!(!fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(link.join("installed_plugins.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read_to_string(real.join("installed_plugins.json")).unwrap(),
+            "{}",
+            "源目录必须原样保留"
+        );
     }
 }

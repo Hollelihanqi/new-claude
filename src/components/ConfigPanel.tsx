@@ -301,13 +301,18 @@ export default function ConfigPanel({
     if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`;
     return `${Math.floor(delta / 86_400_000)} 天前`;
   };
-  const profileHealthy = (profile: Profile) => {
+  const healthStatus = (profile: Profile): { ok: boolean; label: string; short: string } => {
     const info = runtime.find((item) => item.name === profile.name);
     const accessReady = profile.type === "router"
       ? !!profile.baseUrl && profile.hasToken
       : !!info?.authenticated;
-    return !!env?.claude_found && accessReady && info?.sharedDirsOk !== false;
+    // 网关地址、Key、登录态没就绪才叫“配置待完善”；扩展目录迁移没完成是
+    // 另一回事，混在一起会误导用户去改配置。
+    if (!env?.claude_found || !accessReady) return { ok: false, label: "配置待完善", short: "待完善" };
+    if (info?.sharedDirsOk === false) return { ok: false, label: "扩展待迁移", short: "待迁移" };
+    return { ok: true, label: "环境正常", short: "正常" };
   };
+  const profileHealthy = (profile: Profile) => healthStatus(profile).ok;
 
   return (
     <div className="config-panel">
@@ -431,7 +436,7 @@ export default function ConfigPanel({
                 key={p.name}
                 active={sel === p.name}
                 label={<Text fw={650} size="sm">{p.name}</Text>}
-                description={`${p.type === "router" ? "网关环境" : "独立登录环境"} · ${profileHealthy(p) ? "正常" : "待完善"}`}
+                description={`${p.type === "router" ? "网关环境" : "独立登录环境"} · ${healthStatus(p).short}`}
                 leftSection={
                   p.type === "router" ? (
                     <IconWorld size={16} />
@@ -497,7 +502,7 @@ export default function ConfigPanel({
 
             {sel && selProfile && (
               <div className="instance-overview">
-                <div><span>运行状态</span><strong className={profileHealthy(selProfile) ? "status-ok" : "status-warn"}>{profileHealthy(selProfile) ? "环境正常" : "配置待完善"}</strong></div>
+                <div><span>运行状态</span><strong className={healthStatus(selProfile).ok ? "status-ok" : "status-warn"}>{healthStatus(selProfile).label}</strong></div>
                 <div><span>最近使用</span><strong>{formatLastUsed(selRuntime?.lastUsed)}</strong></div>
                 <div><span>今日请求</span><strong>{selectedUsage.requests}</strong></div>
                 <div><span>今日 Token</span><strong>{fmtNumber(selectedUsage.tokens)}</strong></div>
