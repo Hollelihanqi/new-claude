@@ -3,10 +3,9 @@ name: release
 # 推送形如 v1.0.0 的 tag 时触发；也可在 Actions 页面手动运行
 #
 # 发布通道（P0-C#17）：Internal Preview / Public Preview / Stable 三条。
-# **tag 推送默认只产出 Internal Preview（draft + prerelease）**，不会自动公开 ——
-# 原先这里固定 releaseDraft:false + prerelease:false，打一次 tag 就直接对全量用户发稳定版。
-# 要发 public-preview 或 stable，必须手动运行并在 channel 里显式选择，
-# 且 .github/release-channel.json 的 p0Cleared 必须为 true（P0 全清 + 双平台验证通过）。
+# **tag 推送默认发布 Stable**：先创建 draft，双平台测试、构建和产物核验全部通过后，
+# publish job 才自动公开；任一平台失败都保持未发布状态。
+# 手动运行仍可显式选择 internal-preview / public-preview / stable。
 on:
   push:
     tags:
@@ -96,7 +95,8 @@ jobs:
         run: |
           set -euo pipefail
           channel='${{ github.event.inputs.channel }}'
-          if [ -z "$channel" ]; then channel="internal-preview"; fi
+          # tag push 没有 inputs：按正式版发布；手动运行使用显式选择的通道。
+          if [ -z "$channel" ]; then channel="stable"; fi
           echo "请求通道：$channel"
           node -e '
             const cfg = require("./.github/release-channel.json");

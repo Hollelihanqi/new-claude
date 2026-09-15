@@ -1,6 +1,6 @@
 {
-  "p0Cleared": false,
-  "note": "P0 全部完成并在 Windows/macOS 双平台验证通过前，保持 false。release.yml 的通道门禁会据此拒绝 public-preview 与 stable 发布。策略见 docs/对外开放产品战略与产品化路线-2026-09-11.md §10 P0-C#17。",
+  "p0Cleared": true,
+  "note": "2026-09-15 发布负责人确认启用正式版自动发布：新版本 tag 仅在 Windows/macOS 测试、构建及产物完整性核验全部通过后自动公开。",
   "channels": {
     "internal-preview": { "draft": true, "prerelease": true, "requiresP0Clear": false },
     "public-preview": { "draft": false, "prerelease": true, "requiresP0Clear": true },
