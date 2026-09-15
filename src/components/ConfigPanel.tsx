@@ -315,7 +315,13 @@ export default function ConfigPanel({
   const statusForProfile = (profile: Profile) => {
     const info = runtime.find((item) => item.name === profile.name);
     const gatewayDown = !!verification?.gatewayFails?.includes(profile.name);
-    return profileRuntimeStatus(profile, info, !!env?.claude_found, gatewayDown, healthChecking);
+    const status = profileRuntimeStatus(profile, info, !!env?.claude_found, gatewayDown, healthChecking);
+    // 「上次诊断」这种静态措辞会让刚跑完的检测看起来像陈年旧数据；
+    // 直接写明结论距离现在多久，用户自己判断新鲜度。
+    if (status.gatewayDown && verification) {
+      return { ...status, label: `网关未连通 · ${formatLastUsed(verification.at)}检测` };
+    }
+    return status;
   };
 
   // 网关不通是「环境当前不可用」，与本地配置未就绪（橙）区分：直接红。
