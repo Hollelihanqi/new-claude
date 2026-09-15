@@ -564,8 +564,12 @@ export const api = {
     invoke("fix_model_pin", { profile }),
   healthCheck: (): Promise<HealthItem[]> => invoke("health_check"),
   /** 最近一次完整健康检查。从未检测过 / 记录损坏 / 时间戳来自未来都返回 null */
-  lastVerification: (): Promise<{ at: number; problems: number } | null> =>
-    invoke("last_verification"),
+  lastVerification: (): Promise<
+    { at: number; problems: number; gatewayFails?: string[] } | null
+  > => invoke("last_verification"),
+  /** 单环境网关连通复测：只探测该环境并同步修正最近验证记录 */
+  probeGateway: (env: string): Promise<string> =>
+    invoke("probe_gateway", { env }),
   exportDiagnostics: (): Promise<string> => invoke("export_diagnostics"),
   // WorkBuddy 独立模型配置
   workBuddyState: (): Promise<WorkBuddyState> => invoke("workbuddy_state"),

@@ -13,6 +13,7 @@ vi.mock("./InstanceSettingsCard", () => ({ default: () => null }));
 vi.mock("../api", () => ({ api: {
   listProfiles: vi.fn(), modelPinWarnings: vi.fn(), profileRuntimeInfo: vi.fn(),
   detectModelsFor: vi.fn(), detectModels: vi.fn(), deleteProfile: vi.fn(),
+  lastVerification: vi.fn(), probeGateway: vi.fn(),
 } }));
 
 const profile = (name: string): Profile => ({
@@ -34,6 +35,7 @@ describe("环境模型检测", () => {
     vi.mocked(api.listProfiles).mockResolvedValue([profile("a"), profile("b")]);
     vi.mocked(api.modelPinWarnings).mockResolvedValue([]);
     vi.mocked(api.profileRuntimeInfo).mockResolvedValue([]);
+    vi.mocked(api.lastVerification).mockResolvedValue(null);
     vi.mocked(api.deleteProfile).mockResolvedValue("已彻底删除");
     await act(async () => { renderer = create(<ConfigPanel env={null} usageData={null} />); });
     act(() => renderer.root.findAllByType(NavLink)[0].props.onClick());
@@ -167,6 +169,7 @@ describe("默认 Claude 的模型钉死只告警、不提供一键修复", () =>
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(api.listProfiles).mockResolvedValue([profile("a")]);
     vi.mocked(api.profileRuntimeInfo).mockResolvedValue([]);
+    vi.mocked(api.lastVerification).mockResolvedValue(null);
     vi.mocked(api.modelPinWarnings).mockResolvedValue([
       { profile: "__main__", model: "glm-5.2", settingsPath: "/home/u/.claude/settings.json" },
       { profile: "a", model: "glm-4", settingsPath: "/home/u/.claude-split/a/.claude/settings.json" },
@@ -197,7 +200,7 @@ describe("默认 Claude 的模型钉死只告警、不提供一键修复", () =>
 // “配置待完善”——那会误导用户去检查网关地址和 Key（实际两者都正常）。
 describe("运行状态按失败原因区分文案", () => {
   let renderer: ReactTestRenderer;
-  const mount = async (claudeFound: boolean, sharedDirsOk: boolean) => {
+  const mount = async (claudeFound: boolean, sharedDirsOk: boolean, gatewayFails: string[] = []) => {
     vi.resetAllMocks();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(api.listProfiles).mockResolvedValue([profile("a")]);
@@ -206,6 +209,9 @@ describe("运行状态按失败原因区分文案", () => {
       name: "a", configDir: "/x", settingsExists: true, hasProjectData: false,
       lastUsed: null, authenticated: true, sharedDirsOk,
     }] as never);
+    vi.mocked(api.lastVerification).mockResolvedValue(
+      gatewayFails.length ? { at: Math.floor(Date.now() / 1000), problems: gatewayFails.length, gatewayFails } : null,
+    );
     await act(async () => {
       renderer = create(
         <ConfigPanel env={claudeFound ? ({ claude_found: true } as never) : null} usageData={null} />,
@@ -232,5 +238,28 @@ describe("运行状态按失败原因区分文案", () => {
   it("Claude 未检测到时显示 CLI 未就绪", async () => {
     await mount(false, false);
     expect(statusText()).toContain("Claude CLI 未就绪");
+  });
+
+  it("上次诊断网关不通的环境显示异常，并提供单环境复测", async () => {
+    await mount(true, true, ["a"]);
+    expect(statusText()).toContain("网关未连通");
+    vi.mocked(api.probeGateway).mockResolvedValue("网关连通正常，检测到 3 个可用模型。");
+    await act(async () => {
+      renderer.root.findAllByType(Button).find((b) => b.children.join("") === "检测")!.props.onClick();
+    });
+    expect(api.probeGateway).toHaveBeenCalledWith("a");
+    expect(statusText()).toContain("环境正常");
+    // 复测通过后按钮消失：异常态只在有结论支撑时展示
+    expect(renderer.root.findAllByType(Button).some((b) => b.children.join("") === "检测")).toBe(false);
+  });
+
+  it("单环境复测失败时如实展示失败原因", async () => {
+    await mount(true, true, ["a"]);
+    vi.mocked(api.probeGateway).mockRejectedValue(new Error("schannel: TLS 握手失败"));
+    await act(async () => {
+      renderer.root.findAllByType(Button).find((b) => b.children.join("") === "检测")!.props.onClick();
+    });
+    expect(statusText()).toContain("网关未连通");
+    expect(renderer.root.findAllByType(Alert).some((a) => a.children.join("").includes("TLS 握手失败"))).toBe(true);
   });
 });

@@ -80,6 +80,10 @@ export default function ConfigPanel({
   const [busyAction, setBusyAction] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [runtime, setRuntime] = useState<ProfileRuntimeInfo[]>([]);
+  // 最近一次完整诊断的结论（含网关失败名单）：列表页不做实时探测，
+  // 只消费这里的结论；单环境复测通过后本地立即摘除标记。
+  const [verification, setVerification] = useState<{ at: number; problems: number; gatewayFails?: string[] } | null>(null);
+  const [probeBusy, setProbeBusy] = useState("");
 
   // 当前连接的检测结果；切换连接后清空。
   const [detected, setDetected] = useState<string[]>([]);
@@ -112,6 +116,7 @@ export default function ConfigPanel({
       .catch((e) => setStatus({ type: "error", msg: String(e) }));
     loadPins();
     api.profileRuntimeInfo().then(setRuntime).catch(() => {});
+    api.lastVerification().then(setVerification).catch(() => {});
   };
   useEffect(load, [refreshRevision]);
   usePageActivation(load);
@@ -306,7 +311,28 @@ export default function ConfigPanel({
   };
   const statusForProfile = (profile: Profile) => {
     const info = runtime.find((item) => item.name === profile.name);
-    return profileRuntimeStatus(profile, info, !!env?.claude_found);
+    const gatewayDown = !!verification?.gatewayFails?.includes(profile.name);
+    return profileRuntimeStatus(profile, info, !!env?.claude_found, gatewayDown);
+  };
+
+  // 单环境网关复测：与诊断页同一套判定；结论由后端写回最近验证记录
+  const onProbeGateway = async (name: string) => {
+    setProbeBusy(name);
+    try {
+      const msg = await api.probeGateway(name);
+      setStatus({ type: "success", msg: `环境 ${name}：${msg}` });
+      if (verification?.gatewayFails?.includes(name)) {
+        setVerification({
+          ...verification,
+          problems: Math.max(0, verification.problems - 1),
+          gatewayFails: verification.gatewayFails.filter((item) => item !== name),
+        });
+      }
+    } catch (e) {
+      setStatus({ type: "error", msg: `环境 ${name}：${String(e)}` });
+    } finally {
+      setProbeBusy("");
+    }
   };
 
   return (
@@ -497,7 +523,22 @@ export default function ConfigPanel({
 
             {sel && selProfile && (
               <div className="instance-overview">
-                <div><span>运行状态</span><strong className={statusForProfile(selProfile).healthy ? "status-ok" : "status-warn"}>{statusForProfile(selProfile).label}</strong></div>
+                <div>
+                  <span>运行状态</span>
+                  <strong className={statusForProfile(selProfile).healthy ? "status-ok" : "status-warn"}>{statusForProfile(selProfile).label}</strong>
+                  {statusForProfile(selProfile).gatewayDown && (
+                    // 不用 Mantine loading（会隐藏文字），与诊断页同步按钮同一约定
+                    <Button
+                      size="compact-xs"
+                      variant="light"
+                      color="orange"
+                      disabled={probeBusy === selProfile.name}
+                      onClick={() => { void onProbeGateway(selProfile.name); }}
+                    >
+                      {probeBusy === selProfile.name ? "检测中" : "检测"}
+                    </Button>
+                  )}
+                </div>
                 <div><span>最近使用</span><strong>{formatLastUsed(selRuntime?.lastUsed)}</strong></div>
                 <div><span>今日请求</span><strong>{selectedUsage.requests}</strong></div>
                 <div><span>今日 Token</span><strong>{fmtNumber(selectedUsage.tokens)}</strong></div>

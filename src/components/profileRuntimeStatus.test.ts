@@ -50,4 +50,21 @@ describe("environment runtime status", () => {
     });
     expect(profileRuntimeStatus(profile(), runtime(), false).label).toBe("Claude CLI 未就绪");
   });
+
+  it("reports gateway unreachable from the last full verification", () => {
+    expect(profileRuntimeStatus(profile(), runtime(), true, true)).toEqual({
+      healthy: false,
+      gatewayDown: true,
+      label: "网关未连通（上次诊断）",
+      shortLabel: "网关异常",
+    });
+  });
+
+  it("local config problems rank above the stale gateway conclusion", () => {
+    // 本地配置没就绪时先报配置问题；网关结论只在其余全部正常时才浮出
+    expect(profileRuntimeStatus(profile(), runtime({ sharedDirsOk: false }), true, true).label)
+      .toBe("扩展迁移未完成");
+    expect(profileRuntimeStatus(profile({ hasToken: false }), runtime(), true, true).label)
+      .toBe("连接配置待完善");
+  });
 });

@@ -2984,6 +2984,45 @@ fn detect_models_for_blocking(name: String) -> Result<Vec<String>, String> {
     detect_models_blocking(p.name.clone(), p.base_url.clone(), token)
 }
 
+// ---------------- 单环境网关连通复测（环境管理页「检测」按钮） ----------------
+// 只测这一个环境并把结论同步进最近验证记录；不跑全量健康检查。
+// 与诊断页的网关项同一套判定（解 Key + 探测），失败口径保持一致。
+fn probe_gateway_blocking(env: String) -> Result<String, String> {
+    let list = load();
+    let p = list
+        .iter()
+        .find(|x| x.name == env)
+        .ok_or_else(|| "未找到该环境".to_string())?;
+    if p.type_ != "router" {
+        return Err("该环境不是网关环境，没有可检测的网关".into());
+    }
+    if p.base_url.is_empty() {
+        return Err("该环境未配置网关地址".into());
+    }
+    let probe = decrypt_token(p)
+        .and_then(|token| detect_models_blocking(p.name.clone(), p.base_url.clone(), token));
+    match probe {
+        Ok(models) => {
+            let _ = health::update_gateway_in_record(&env, true);
+            Ok(format!(
+                "网关连通正常，检测到 {} 个可用模型。",
+                models.len()
+            ))
+        }
+        Err(e) => {
+            let _ = health::update_gateway_in_record(&env, false);
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+async fn probe_gateway(env: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || probe_gateway_blocking(env))
+        .await
+        .map_err(|e| format!("网关检测任务失败：{e}"))?
+}
+
 // ---------------- 用量统计 ----------------
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -3449,6 +3488,7 @@ fn main() {
             health::health_check,
             health::last_verification,
             health::export_diagnostics,
+            probe_gateway,
             workbuddy::workbuddy_state,
             workbuddy::set_workbuddy_executable,
             workbuddy::save_workbuddy_gateway,

@@ -682,7 +682,12 @@ pub async fn health_check() -> Result<Vec<HealthItem>, String> {
     // 否则用户看到的永远是"刚刚"，分不清手里的结论是不是陈的。
     // 记录失败不影响检测结果本身。
     let problems = items.iter().filter(|item| item.status != "ok").count();
-    let _ = record_verification(problems);
+    let gateway_fails = items
+        .iter()
+        .filter(|item| item.status == "fail" && item.id.starts_with("gateway:"))
+        .map(|item| item.id.trim_start_matches("gateway:").to_string())
+        .collect::<Vec<_>>();
+    let _ = record_verification(problems, gateway_fails);
     Ok(items)
 }
 
@@ -695,21 +700,56 @@ pub struct VerificationRecord {
     pub at: u64,
     /// 当次检测中 status != ok 的条数
     pub problems: usize,
+    /// 当次检测里网关连通失败的环境名。环境管理页据此把对应环境标成
+    /// 「网关异常」——列表页不做实时探测，只消费这里的最近结论。
+    #[serde(default)]
+    pub gateway_fails: Vec<String>,
 }
 
 fn verification_path() -> PathBuf {
     crate::cfg_dir().join("last-verification.json")
 }
 
-fn record_verification(problems: usize) -> Result<(), String> {
+fn record_verification(problems: usize, gateway_fails: Vec<String>) -> Result<(), String> {
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let record = VerificationRecord { at, problems };
+    let record = VerificationRecord {
+        at,
+        problems,
+        gateway_fails,
+    };
     fs::create_dir_all(crate::cfg_dir()).map_err(|e| e.to_string())?;
     crate::sync::write_json_atomic(
         &verification_path(),
+        &serde_json::to_value(&record).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 单环境重新检测后更新记录：成功则移出失败名单，失败则加入。
+/// `at` 保持不变 —— 它的语义是「最近一次完整检测」，单点复测不该冒充全量。
+pub(crate) fn update_gateway_in_record(env: &str, ok: bool) -> Result<(), String> {
+    update_gateway_in_record_at(&verification_path(), env, ok)
+}
+
+fn update_gateway_in_record_at(path: &Path, env: &str, ok: bool) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|_| "尚无验证记录".to_string())?;
+    let mut record: VerificationRecord =
+        serde_json::from_str(&text).map_err(|e| format!("验证记录损坏：{e}"))?;
+    let contained = record.gateway_fails.iter().any(|name| name == env);
+    if ok {
+        if contained {
+            record.gateway_fails.retain(|name| name != env);
+            record.problems = record.problems.saturating_sub(1);
+        }
+    } else if !contained {
+        record.gateway_fails.push(env.to_string());
+        record.problems += 1;
+    }
+    crate::sync::write_json_atomic(
+        path,
         &serde_json::to_value(&record).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())
@@ -954,6 +994,38 @@ mod tests {
     fn health_check_command_remains_async() {
         fn assert_future<T: std::future::Future>(_: T) {}
         assert_future(health_check());
+    }
+
+    // 旧版记录没有 gatewayFails 字段（serde default 兜底）；单环境复测
+    // 增删失败名单时 problems 计数同步增减、at 不被冒充为全量检测时间。
+    #[test]
+    fn gateway_record_updates_are_idempotent_and_keep_full_check_time() {
+        let path = tmp_settings(r#"{"at":100,"problems":2}"#);
+        update_gateway_in_record_at(&path, "corp", false).unwrap();
+        let record: VerificationRecord =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(record.gateway_fails, ["corp".to_string()]);
+        assert_eq!(record.problems, 3);
+        assert_eq!(record.at, 100, "单点复测不得改写最近完整检测时间");
+
+        // 重复记失败不重复累计；复测通过则摘除并回退计数
+        update_gateway_in_record_at(&path, "corp", false).unwrap();
+        let record: VerificationRecord =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(record.problems, 3);
+
+        update_gateway_in_record_at(&path, "corp", true).unwrap();
+        let record: VerificationRecord =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(record.gateway_fails.is_empty());
+        assert_eq!(record.problems, 2);
+
+        // 对健康环境重复记成功也不会把计数扣成负数
+        update_gateway_in_record_at(&path, "corp", true).unwrap();
+        let record: VerificationRecord =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(record.problems, 2);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
