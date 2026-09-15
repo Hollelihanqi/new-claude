@@ -53,6 +53,16 @@ describe("环境模型检测", () => {
     expect(messages()).toContain("已彻底删除");
   });
 
+  it("启动同步完成后按修订号重新读取运行状态", async () => {
+    const before = vi.mocked(api.profileRuntimeInfo).mock.calls.length;
+    await act(async () => {
+      renderer.update(
+        <ConfigPanel env={null} usageData={null} refreshRevision={1} />
+      );
+    });
+    expect(api.profileRuntimeInfo).toHaveBeenCalledTimes(before + 1);
+  });
+
   it("检测候选去重且不混入旧模型，输入框保留原配置", async () => {
     vi.mocked(api.detectModelsFor).mockResolvedValue(["new", " new "]);
     await act(async () => { await detect().props.onClick(); });
@@ -208,9 +218,9 @@ describe("运行状态按失败原因区分文案", () => {
   const statusText = () =>
     renderer.root.findAllByType("strong").map((node) => node.children.join("")).join(" ");
 
-  it("扩展迁移未完成显示“扩展待迁移”，不再误报配置问题", async () => {
+  it("扩展迁移未完成显示准确原因，不再误报配置问题", async () => {
     await mount(true, false);
-    expect(statusText()).toContain("扩展待迁移");
+    expect(statusText()).toContain("扩展迁移未完成");
     expect(statusText()).not.toContain("配置待完善");
   });
 
@@ -219,8 +229,8 @@ describe("运行状态按失败原因区分文案", () => {
     expect(statusText()).toContain("环境正常");
   });
 
-  it("Claude 未检测到时仍如实显示“配置待完善”", async () => {
+  it("Claude 未检测到时显示 CLI 未就绪", async () => {
     await mount(false, false);
-    expect(statusText()).toContain("配置待完善");
+    expect(statusText()).toContain("Claude CLI 未就绪");
   });
 });

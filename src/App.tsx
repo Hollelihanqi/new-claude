@@ -147,6 +147,7 @@ export default function App({
   const [usageErr, setUsageErr] = useState("");
   const [usageBusy, setUsageBusy] = useState(false);
   const [envBusy, setEnvBusy] = useState(false);
+  const [configRefreshRevision, setConfigRefreshRevision] = useState(0);
 
   const checkUpdate = async (manual: boolean) => {
     try {
@@ -267,14 +268,22 @@ export default function App({
   // 首屏显示后异步执行一次完整启动同步。后端把扩展分发、MCP 分发和旧插件迁移
   // 串成同一个后台作业，避免多个启动任务争锁；失败不阻断应用，但必须明确告知。
   useEffect(() => {
-    api.syncAll().catch((e) => {
-      notifications.show({
-        color: "orange",
-        title: "环境同步未完成",
-        message: `${String(e)}。可打开右上角「健康检查」查看原因，修复后重启应用。`,
-        autoClose: false,
+    let alive = true;
+    api.syncAll()
+      .catch((e) => {
+        notifications.show({
+          color: "orange",
+          title: "环境同步未完成",
+          message: `${String(e)}。可打开右上角「健康检查」查看原因，修复后重启应用。`,
+          autoClose: false,
+        });
+      })
+      .finally(() => {
+        // 环境页可能在后台迁移完成前已经读过一次运行状态。无论完全成功还是
+        // 部分完成，都重读磁盘最终状态，不能让“扩展待迁移”的旧结果留在界面上。
+        if (alive) setConfigRefreshRevision((revision) => revision + 1);
       });
-    });
+    return () => { alive = false; };
   }, []);
 
   // silent=true 时不亮加载态（自动刷新在后台悄悄换数据，不闪按钮 spinner）；
@@ -418,6 +427,7 @@ export default function App({
           <Box className="view-stage">
             <PersistentPage active={view === "environment"} warmupDelay={0}>
               <ConfigPanel
+                refreshRevision={configRefreshRevision}
                 onChanged={() => {
                   void refreshEnv();
                   void refreshUsageProfiles();

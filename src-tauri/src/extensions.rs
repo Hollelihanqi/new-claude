@@ -262,14 +262,18 @@ fn item_names(root: &Path) -> Result<Vec<String>, String> {
 }
 
 fn validate_item(kind: Kind, path: &Path) -> Result<(), String> {
+    // Skill/Agent 本身允许是用户已有的链接。Windows RedirectionGuard 下不能通过
+    // 原路径跟随 Junction，先读取链接目标，再校验实体内容。
+    let resolved = resolve_without_traversal(path)
+        .map_err(|e| format!("无法读取 {} 指向的内容：{e}", path.display()))?;
     match kind {
         Kind::Skills => {
-            if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            if !resolved.is_dir() || !resolved.join("SKILL.md").is_file() {
                 return Err("Skill 必须是包含 SKILL.md 的目录".into());
             }
         }
         Kind::Agents => {
-            if !path.is_file()
+            if !resolved.is_file()
                 || !path
                     .extension()
                     .and_then(|v| v.to_str())
@@ -277,7 +281,8 @@ fn validate_item(kind: Kind, path: &Path) -> Result<(), String> {
             {
                 return Err("Agent 必须是 Markdown 文件".into());
             }
-            let text = fs::read_to_string(path).map_err(|e| format!("读取 Agent 失败：{e}"))?;
+            let text =
+                fs::read_to_string(&resolved).map_err(|e| format!("读取 Agent 失败：{e}"))?;
             let trimmed = text.trim_start();
             if !trimmed.starts_with("---") {
                 return Err("Agent 缺少开头的配置区（---）".into());
@@ -2466,6 +2471,22 @@ mod tests {
         let link = temp.0.join("link");
         create_raw_directory_link(&real, &link);
         assert_eq!(hash_entry(&link).unwrap(), hash_entry(&real).unwrap());
+    }
+
+    #[test]
+    fn validate_item_reads_linked_skill_without_traversal() {
+        let temp = Temp::new("validate-link");
+        let real = temp.0.join("real");
+        skill(&real, "demo", "body");
+        let link = temp.0.join("linked-skill");
+        create_raw_directory_link(&real.join("demo"), &link);
+
+        validate_item(Kind::Skills, &link).expect("链接形式的 Skill 应从真实目标校验");
+        assert_eq!(
+            fs::read_to_string(real.join("demo/SKILL.md")).unwrap(),
+            "body",
+            "校验不得修改链接目标"
+        );
     }
 
     #[test]
