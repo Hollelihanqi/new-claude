@@ -1,6 +1,6 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { Text, Alert } from "@mantine/core";
+import { Text, Alert, Button } from "@mantine/core";
 import DiagnosticsPanel from "./DiagnosticsPanel";
 import { api } from "../api";
 
@@ -13,6 +13,7 @@ vi.mock("../api", () => ({
   api: {
     healthCheck: vi.fn(),
     recentSyncLog: vi.fn(),
+    syncAll: vi.fn(),
     listProfiles: vi.fn().mockResolvedValue([]),
     profileRuntimeInfo: vi.fn().mockResolvedValue([]),
     lastVerification: vi.fn().mockResolvedValue(null),
@@ -53,4 +54,22 @@ it("空健康结果不能算检查成功", async () => {
   vi.mocked(api.recentSyncLog).mockResolvedValue([]);
   await mount();
   expect(text()).toContain("检测未完成");
+});
+
+// Mantine 的 loading 属性会把按钮文字换成纯转圈，用户看不出正在同步
+// （真机反馈：以为按钮坏了）。改显式 Loader + 文字切换后锁定该行为。
+it("同步期间按钮显示「正在同步」并禁用，完成后恢复", async () => {
+  vi.mocked(api.healthCheck).mockResolvedValue([{ id: "t", label: "t", status: "ok", detail: "d" }]);
+  vi.mocked(api.recentSyncLog).mockResolvedValue([]);
+  let release!: (value: string) => void;
+  vi.mocked(api.syncAll).mockReturnValue(new Promise<string>((res) => { release = res; }));
+  await mount();
+  const syncButton = () =>
+    renderer.root.findAllByType(Button).find((b) => b.children.join("").includes("同步"))!;
+  await act(async () => { syncButton().props.onClick(); await Promise.resolve(); });
+  expect(syncButton().props.disabled).toBe(true);
+  expect(syncButton().children.join("")).toContain("正在同步");
+  await act(async () => { release("done"); });
+  expect(syncButton().props.disabled).toBeFalsy();
+  expect(syncButton().children.join("")).toContain("同步并修复");
 });

@@ -75,7 +75,15 @@ export default function DiagnosticsPanel() {
           <div><Title order={3}>诊断中心</Title><Text size="sm" c="dimmed">集中检查、修复和导出环境状态。</Text></div>
           <Group gap="xs">
             <StableRefreshButton busy={busy} busyLabel="检测中…" label="重新检测" onClick={run} />
-            <Button leftSection={<IconTool size={15} />} onClick={sync} loading={action === "sync"}>同步并修复</Button>
+            {/* 不用 Mantine 的 loading 属性：它会隐藏按钮文字只剩转圈，用户看不出
+                正在同步。改成显式 Loader + 文字切换，忙碌状态一眼可辨。 */}
+            <Button
+              leftSection={action === "sync" ? <Loader size={15} /> : <IconTool size={15} />}
+              disabled={action === "sync"}
+              onClick={sync}
+            >
+              {action === "sync" ? "正在同步" : "同步并修复"}
+            </Button>
             <Button variant="default" leftSection={<IconFileDownload size={15} />} onClick={exportReport} loading={action === "export"}>导出诊断</Button>
           </Group>
         </Group>
