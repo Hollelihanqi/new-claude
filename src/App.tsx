@@ -149,6 +149,7 @@ export default function App({
   const [usageBusy, setUsageBusy] = useState(false);
   const [envBusy, setEnvBusy] = useState(false);
   const [configRefreshRevision, setConfigRefreshRevision] = useState(0);
+  const [healthChecking, setHealthChecking] = useState(false);
 
   const checkUpdate = async (manual: boolean) => {
     try {
@@ -285,6 +286,29 @@ export default function App({
         });
       }
     });
+    return () => { alive = false; };
+  }, []);
+
+  // 升级/安装后的首次启动自动跑一次完整检测（后端按版本判定是否跳过）。
+  // 检测期间环境页显示「正在检测」——绿色必须有探测结论背书，不能默认绿。
+  // 前端先比对版本：同版本关闭重开直接不触发，也不闪「正在检测」。
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([getVersion(), api.lastVerification()])
+      .then(([version, record]) => {
+        if (!alive || record?.appVersion === version) return;
+        setHealthChecking(true);
+        return api.startupHealthCheck()
+          .catch(() => {
+            // 启动自动检测失败不打扰用户；诊断页的手动检测仍然可用
+          })
+          .finally(() => {
+            if (!alive) return;
+            setHealthChecking(false);
+            setConfigRefreshRevision((revision) => revision + 1);
+          });
+      })
+      .catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -430,6 +454,7 @@ export default function App({
             <PersistentPage active={view === "environment"} warmupDelay={0}>
               <ConfigPanel
                 refreshRevision={configRefreshRevision}
+                healthChecking={healthChecking}
                 onChanged={() => {
                   void refreshEnv();
                   void refreshUsageProfiles();

@@ -67,4 +67,21 @@ describe("environment runtime status", () => {
     expect(profileRuntimeStatus(profile({ hasToken: false }), runtime(), true, true).label)
       .toBe("连接配置待完善");
   });
+
+  it("shows a neutral checking state instead of green while probing", () => {
+    expect(profileRuntimeStatus(profile(), runtime(), true, false, true)).toEqual({
+      healthy: false,
+      checking: true,
+      label: "正在检测",
+      shortLabel: "检测中",
+    });
+  });
+
+  it("keeps confirmed problems visible while re-checking", () => {
+    // 已有红色网关结论或本地配置问题时，重测中保持既有状态，不回退成「正在检测」
+    expect(profileRuntimeStatus(profile(), runtime(), true, true, true).label)
+      .toBe("网关未连通（上次诊断）");
+    expect(profileRuntimeStatus(profile(), runtime({ sharedDirsOk: false }), true, false, true).label)
+      .toBe("扩展迁移未完成");
+  });
 });

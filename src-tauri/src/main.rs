@@ -3486,6 +3486,7 @@ fn main() {
             health::model_pin_warnings,
             health::fix_model_pin,
             health::health_check,
+            health::startup_health_check,
             health::last_verification,
             health::export_diagnostics,
             probe_gateway,

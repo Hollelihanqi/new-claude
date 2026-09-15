@@ -674,7 +674,8 @@ fn run_health_checks() -> Vec<HealthItem> {
 }
 
 #[tauri::command]
-pub async fn health_check() -> Result<Vec<HealthItem>, String> {
+pub async fn health_check(app: tauri::AppHandle) -> Result<Vec<HealthItem>, String> {
+    let version = app.package_info().version.to_string();
     let items = tauri::async_runtime::spawn_blocking(run_health_checks)
         .await
         .map_err(|e| format!("健康检查任务异常：{e}"))?;
@@ -682,13 +683,37 @@ pub async fn health_check() -> Result<Vec<HealthItem>, String> {
     // 否则用户看到的永远是"刚刚"，分不清手里的结论是不是陈的。
     // 记录失败不影响检测结果本身。
     let problems = items.iter().filter(|item| item.status != "ok").count();
-    let gateway_fails = items
+    let gateway_fails = gateway_fail_names(&items);
+    let _ = record_verification_versioned(problems, gateway_fails, version);
+    Ok(items)
+}
+
+/// 升级/安装后的首次启动自动检测（前端在启动时调用一次）。
+/// 版本没变 → 跳过（返回 None，零网络请求）；版本变了/从未检测 →
+/// 跑全量检测并落盘带版本的记录。
+#[tauri::command]
+pub async fn startup_health_check(
+    app: tauri::AppHandle,
+) -> Result<Option<Vec<HealthItem>>, String> {
+    let version = app.package_info().version.to_string();
+    if !should_run_startup_check(last_verification().as_ref(), &version) {
+        return Ok(None);
+    }
+    let items = tauri::async_runtime::spawn_blocking(run_health_checks)
+        .await
+        .map_err(|e| format!("健康检查任务异常：{e}"))?;
+    let problems = items.iter().filter(|item| item.status != "ok").count();
+    let gateway_fails = gateway_fail_names(&items);
+    let _ = record_verification_versioned(problems, gateway_fails, version);
+    Ok(Some(items))
+}
+
+fn gateway_fail_names(items: &[HealthItem]) -> Vec<String> {
+    items
         .iter()
         .filter(|item| item.status == "fail" && item.id.starts_with("gateway:"))
         .map(|item| item.id.trim_start_matches("gateway:").to_string())
-        .collect::<Vec<_>>();
-    let _ = record_verification(problems, gateway_fails);
-    Ok(items)
+        .collect()
 }
 
 // ---------------- 最近验证记录（P1-1 环境证明卡） ----------------
@@ -704,13 +729,29 @@ pub struct VerificationRecord {
     /// 「网关异常」——列表页不做实时探测，只消费这里的最近结论。
     #[serde(default)]
     pub gateway_fails: Vec<String>,
+    /// 当次检测时的应用版本。升级/安装后第一次启动据此判定是否自动重测。
+    #[serde(default)]
+    pub app_version: Option<String>,
 }
 
 fn verification_path() -> PathBuf {
     crate::cfg_dir().join("last-verification.json")
 }
 
-fn record_verification(problems: usize, gateway_fails: Vec<String>) -> Result<(), String> {
+/// 升级/安装后的首次启动才自动检测：无记录，或记录里的版本与当前不一致。
+/// 普通重启（版本没变、检测过）零网络请求。
+pub(crate) fn should_run_startup_check(record: Option<&VerificationRecord>, current: &str) -> bool {
+    match record {
+        None => true,
+        Some(record) => record.app_version.as_deref() != Some(current),
+    }
+}
+
+fn record_verification_versioned(
+    problems: usize,
+    gateway_fails: Vec<String>,
+    app_version: String,
+) -> Result<(), String> {
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -719,6 +760,7 @@ fn record_verification(problems: usize, gateway_fails: Vec<String>) -> Result<()
         at,
         problems,
         gateway_fails,
+        app_version: Some(app_version),
     };
     fs::create_dir_all(crate::cfg_dir()).map_err(|e| e.to_string())?;
     crate::sync::write_json_atomic(
@@ -991,9 +1033,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn health_check_command_remains_async() {
-        fn assert_future<T: std::future::Future>(_: T) {}
-        assert_future(health_check());
+    fn gateway_fail_names_collects_failed_gateways_only() {
+        let item = |id: &str, status: &str| HealthItem {
+            id: id.to_string(),
+            label: String::new(),
+            status: status.to_string(),
+            detail: String::new(),
+        };
+        let items = vec![
+            item("gateway:jdw", "fail"),
+            item("gateway:hq", "ok"),
+            item("cert", "warn"),
+            item("env_entry", "fail"),
+        ];
+        assert_eq!(gateway_fail_names(&items), ["jdw".to_string()]);
+    }
+
+    // 升级/安装后的首次启动才自动检测；普通重启（同版本且已检测过）零网络请求
+    #[test]
+    fn startup_check_runs_only_when_version_changed() {
+        let record = |version: Option<&str>| VerificationRecord {
+            at: 1,
+            problems: 0,
+            gateway_fails: vec![],
+            app_version: version.map(str::to_string),
+        };
+        assert!(
+            should_run_startup_check(None, "3.0.8"),
+            "从未检测过必须补测"
+        );
+        let legacy = record(None);
+        assert!(
+            should_run_startup_check(Some(&legacy), "3.0.8"),
+            "老记录没有版本字段，视为未按当前版本检测"
+        );
+        let same = record(Some("3.0.8"));
+        assert!(
+            !should_run_startup_check(Some(&same), "3.0.8"),
+            "同版本重启不重复探测"
+        );
+        let older = record(Some("3.0.7"));
+        assert!(
+            should_run_startup_check(Some(&older), "3.0.8"),
+            "升级后必须自动重测"
+        );
     }
 
     // 旧版记录没有 gatewayFails 字段（serde default 兜底）；单环境复测
