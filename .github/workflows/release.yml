@@ -301,6 +301,13 @@ jobs:
             echo "::notice::$channel 保持 draft（不公开）。该 Tag 的产物已核验齐全（$mode）。"
             exit 0
           fi
-          # public-preview / stable：把 draft 公开
-          gh release edit "$tag" --draft=false --prerelease=$([ "$pre" = "true" ] && echo true || echo false)
+          # public-preview / stable：把 draft 公开。Stable 必须显式设为 Latest，
+          # 否则 /releases/latest 可能继续指向旧版本，客户端 updater 将检测不到新版本。
+          if [ "$channel" = "stable" ]; then
+            gh release edit "$tag" --draft=false --prerelease=false --latest \
+              --title "并路 PathMux $tag（stable）"
+          else
+            gh release edit "$tag" --draft=false --prerelease=true \
+              --title "并路 PathMux $tag（public-preview）"
+          fi
           echo "::notice::已晋级 $tag 到 $channel"
