@@ -1,6 +1,6 @@
 [package]
 name = "pathmux"
-version = "3.0.5"
+version = "3.0.6"
 description = "Claude Code 本地环境管理工具"
 edition = "2021"
 
