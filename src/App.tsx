@@ -30,6 +30,7 @@ import type { Update } from "@tauri-apps/plugin-updater";
 import { api } from "./api";
 import type { EnvInfo } from "./api";
 import type { UsageStats } from "./api";
+import { syncAllWithRetry } from "./startupSync";
 import ConfigPanel from "./components/ConfigPanel";
 import PersistentPage from "./components/PersistentPage";
 import TitleBar from "./components/TitleBar";
@@ -267,22 +268,23 @@ export default function App({
   };
   // 首屏显示后异步执行一次完整启动同步。后端把扩展分发、MCP 分发和旧插件迁移
   // 串成同一个后台作业，避免多个启动任务争锁；失败不阻断应用，但必须明确告知。
+  // 锁竞争（升级后首启撞上未过期的孤儿锁）静默重试，不打扰用户。
   useEffect(() => {
     let alive = true;
-    api.syncAll()
-      .catch((e) => {
+    void syncAllWithRetry(() => api.syncAll()).then((outcome) => {
+      if (!alive) return;
+      // 环境页可能在后台迁移完成前已经读过一次运行状态。无论完全成功还是
+      // 部分完成，都重读磁盘最终状态，不能让“扩展待迁移”的旧结果留在界面上。
+      setConfigRefreshRevision((revision) => revision + 1);
+      if (!outcome.ok) {
         notifications.show({
           color: "orange",
           title: "环境同步未完成",
-          message: `${String(e)}。可打开右上角「健康检查」查看原因，修复后重启应用。`,
+          message: `${String(outcome.error)}。可打开右上角「健康检查」查看原因，修复后重启应用。`,
           autoClose: false,
         });
-      })
-      .finally(() => {
-        // 环境页可能在后台迁移完成前已经读过一次运行状态。无论完全成功还是
-        // 部分完成，都重读磁盘最终状态，不能让“扩展待迁移”的旧结果留在界面上。
-        if (alive) setConfigRefreshRevision((revision) => revision + 1);
-      });
+      }
+    });
     return () => { alive = false; };
   }, []);
 
