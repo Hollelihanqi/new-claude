@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import type { MantineColorsTuple } from "@mantine/core";
@@ -8,6 +8,11 @@ import { Notifications } from "@mantine/notifications";
 import "./glass.css";
 import App from "./App";
 import { readStoredScheme, storeScheme, type Scheme } from "./themeScheme";
+import {
+  colorSchemeFromMedia,
+  SYSTEM_DARK_MODE_QUERY,
+  watchSystemColorScheme,
+} from "./systemColorScheme";
 
 // A 组：橘橙 #fd752c
 const brandA: MantineColorsTuple = [
@@ -22,9 +27,18 @@ const brandB: MantineColorsTuple = [
 
 function Root() {
   const [scheme, setSchemeState] = useState<Scheme>(() => readStoredScheme(window.localStorage));
+  const [colorScheme, setColorScheme] = useState(() =>
+    colorSchemeFromMedia(window.matchMedia(SYSTEM_DARK_MODE_QUERY))
+  );
   const setScheme = useCallback((value: Scheme) => {
     setSchemeState(value);
     storeScheme(window.localStorage, value);
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia(SYSTEM_DARK_MODE_QUERY);
+    setColorScheme(colorSchemeFromMedia(media));
+    return watchSystemColorScheme(media, setColorScheme);
   }, []);
 
   const theme = useMemo(
@@ -44,7 +58,7 @@ function Root() {
   );
 
   return (
-    <MantineProvider theme={theme} defaultColorScheme="light">
+    <MantineProvider theme={theme} forceColorScheme={colorScheme}>
       <Notifications position="top-right" />
       <App scheme={scheme} setScheme={setScheme} />
     </MantineProvider>

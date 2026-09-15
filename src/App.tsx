@@ -334,7 +334,7 @@ export default function App({
       <aside className="app-sidebar">
         <div className="brand-block">
           <div className="brand-mark"><BrandGlyph /></div>
-          <div className="brand-copy"><strong>并路 PathMux</strong></div>
+          <div className="brand-copy"><strong>PathMux</strong></div>
         </div>
         <Text className="nav-eyebrow">工作台</Text>
         <SideNav value={view} onChange={setView} />
@@ -343,9 +343,8 @@ export default function App({
           <IconHelpCircle size={17} /><span>使用帮助</span>
         </button>
         <div className="sidebar-footer">
-          {/* 与上方品牌区同名。界面文案统一用中文名；`PathMux` 是 tauri.conf.json
-              的 productName（装机产物 / 安装目录 / 窗口名），属于技术标识，不在界面里混用。 */}
-          <span>并路 PathMux</span>
+          {/* 与上方品牌区及 tauri.conf.json 的 productName 保持一致。 */}
+          <span>PathMux</span>
           <Badge variant="light" color="gray">v{appVersion || "--"}</Badge>
         </div>
       </aside>

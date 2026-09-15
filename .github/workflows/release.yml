@@ -237,7 +237,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ needs.channel.outputs.tag }}
-          releaseName: "并路 PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
+          releaseName: "PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
           releaseBody: "下载对应你系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。本应用未做代码签名，首次打开时系统会提示无法验证开发者，手动放行一次即可——具体步骤见仓库 README 的『安装说明』。"
           # **一律先建成 draft**：先完成的平台立刻公开的话，第二个平台失败时
           # 用户会看到一个缺一半安装包的公开版本。是否公开交给下面的 publish job 统一决定。
@@ -305,9 +305,9 @@ jobs:
           # 否则 /releases/latest 可能继续指向旧版本，客户端 updater 将检测不到新版本。
           if [ "$channel" = "stable" ]; then
             gh release edit "$tag" --draft=false --prerelease=false --latest \
-              --title "并路 PathMux $tag（stable）"
+              --title "PathMux $tag（stable）"
           else
             gh release edit "$tag" --draft=false --prerelease=true \
-              --title "并路 PathMux $tag（public-preview）"
+              --title "PathMux $tag（public-preview）"
           fi
           echo "::notice::已晋级 $tag 到 $channel"

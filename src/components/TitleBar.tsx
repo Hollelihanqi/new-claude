@@ -66,7 +66,7 @@ export default function TitleBar({ platform }: { platform?: string | null }) {
       {/* 子元素必须**各自**带 data-tauri-drag-region：该属性只在直接命中的元素上生效，
           不给这个 span 加的话，点应用名既不能拖窗口、也不能双击最大化。 */}
       {layout.showAppName && (
-        <span className="app-titlebar-name" data-tauri-drag-region>并路 PathMux</span>
+        <span className="app-titlebar-name" data-tauri-drag-region>PathMux</span>
       )}
 
       {/* 刻意**不挂 Tooltip**：原生窗口按钮从不弹提示，悬浮气泡在这里只会打扰。

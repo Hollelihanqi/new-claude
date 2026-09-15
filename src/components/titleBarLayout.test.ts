@@ -47,4 +47,13 @@ describe("自绘标题栏的平台差异", () => {
     const css = readFileSync(resolve(process.cwd(), "src/glass.css"), "utf8");
     expect(css).toContain(`--app-titlebar-height: ${TITLEBAR_HEIGHT_PX}px;`);
   });
+
+  it("macOS 原生红黄绿灯在自绘标题栏内垂直居中", () => {
+    const config = JSON.parse(
+      readFileSync(resolve(process.cwd(), "src-tauri/tauri.macos.conf.json"), "utf8")
+    );
+    const position = config.app.windows[0].trafficLightPosition;
+    const trafficLightDiameterPx = 14;
+    expect(position.y).toBe((TITLEBAR_HEIGHT_PX - trafficLightDiameterPx) / 2);
+  });
 });

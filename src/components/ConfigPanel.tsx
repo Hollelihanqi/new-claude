@@ -417,7 +417,7 @@ export default function ConfigPanel({
             <div className="main-account-icon"><IconUser size={16} /></div>
             {/* 默认 Claude**不是环境** —— 它是"没切环境"时的那个账户，本应用只读不写。
                 原先把这里写成「默认 Claude 环境」，等于把它当成了环境的一种。 */}
-            <div><Text fw={650} size="sm">默认 Claude</Text><Text size="xs" c="dimmed">没选环境时用的账户（本应用不修改它的配置）· {env?.claude_found ? "CLI 正常" : "CLI 未就绪"}</Text></div>
+            <div><Text fw={650} size="sm">默认 Claude</Text></div>
             <div className="main-account-usage"><strong>{mainUsage.requests}</strong><span>今日请求</span></div>
           </div>
           <Stack gap={4}>

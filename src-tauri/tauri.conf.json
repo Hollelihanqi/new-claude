@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "并路 PathMux",
+        "title": "PathMux",
         "width": 980,
         "height": 720,
         "minWidth": 800,

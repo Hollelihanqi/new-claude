@@ -8,17 +8,17 @@ import { join, resolve } from "node:path";
 //
 //   | 出现 | 性质 | 处理 |
 //   |---|---|---|
-//   | 界面里的产品名 | 用户可见文案 | **必须统一**为「并路 PathMux」 |
-//   | `PathMux` | `tauri.conf.json` 的 productName（装机产物/安装目录/窗口名） | 技术标识，与界面中文名**分开**，不混用 |
+//   | 界面里的产品名 | 用户可见文案 | **必须统一**为「PathMux」 |
+//   | `PathMux` | `tauri.conf.json` 的 productName（装机产物/安装目录/窗口名） | 与界面产品名保持一致 |
 //   | `~/.cc-manager` | 真实配置目录名 | **保留**，改了会断掉存量用户配置 |
 //   | `~/.claude-split` | 环境数据目录（含会话历史） | **保留**，改它等于搬走用户历史 |
 //   | `com.pathmux.desktop` | 应用标识（identifier） | 已随品牌改名（用户裁定；macOS 侧只有本人装过、可重装） |
 //   | `cc-switch` | 对**第三方项目**口径的引用（用量统计同口径） | 保留，那是署名不是自我命名 |
 //
-// 所以这里只钉「界面文案用中文产品名、且旧名不许回来」这两条，不是禁掉全部字符串。
+// 所以这里只钉「界面产品名统一、且旧名不许回来」这两条，不是禁掉全部字符串。
 
 /// 改名前的旧名。**不许出现在界面文案里** —— 它们是这次手术要切掉的东西。
-const RETIRED_NAMES = ["Claude 管理中心", "Claude Center"];
+const RETIRED_NAMES = ["Claude 管理中心", "Claude Center", "并路 PathMux"];
 
 const SCAN_ROOTS = ["src", "src-tauri/src"];
 
@@ -53,7 +53,7 @@ describe("品牌标识一致", () => {
     }
     expect(
       hits,
-      `界面里还留着改名前后的旧产品名（应统一为「并路 PathMux」）：\n${hits.join("\n")}`
+      `界面里还留着改名前后的旧产品名（应统一为「PathMux」）：\n${hits.join("\n")}`
     ).toEqual([]);
   });
 
