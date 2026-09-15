@@ -243,6 +243,10 @@ describe("运行状态按失败原因区分文案", () => {
   it("上次诊断网关不通的环境显示异常，并提供单环境复测", async () => {
     await mount(true, true, ["a"]);
     expect(statusText()).toContain("网关未连通");
+    // 网关不通 = 环境不可用，用红色与「配置待完善」的橙色区分
+    const gatewayStrong = () =>
+      renderer.root.findAllByType("strong").find((node) => node.children.join("").includes("网关未连通"));
+    expect(gatewayStrong()?.props.className).toContain("status-bad");
     vi.mocked(api.probeGateway).mockResolvedValue("网关连通正常，检测到 3 个可用模型。");
     await act(async () => {
       renderer.root.findAllByType(Button).find((b) => b.children.join("") === "检测")!.props.onClick();

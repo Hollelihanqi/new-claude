@@ -245,12 +245,14 @@ body {
 .instance-health-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 3px currentColor; opacity: .75; }
 .instance-health-dot.ok { color: rgba(24, 166, 116, .15); background: #18a674; }
 .instance-health-dot.warn { color: rgba(232, 154, 45, .17); background: #e89a2d; }
+.instance-health-dot.bad { color: rgba(250, 82, 82, .17); background: #fa5252; }
 .instance-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-border); }
 .instance-overview > div { padding: 13px 16px; display: flex; flex-direction: column; gap: 6px; background: var(--app-surface-subtle); }
 .instance-overview span { color: var(--app-secondary-text); font-size: 12px; font-weight: 500; line-height: 1.35; }
 .instance-overview strong { color: var(--app-strong-text); font-size: 16px; font-weight: 700; line-height: 1.35; letter-spacing: -.01em; }
 .instance-overview .status-ok { color: #16835f; }
 .instance-overview .status-warn { color: #b56a14; }
+.instance-overview .status-bad { color: #d64545; }
 .runtime-strip { padding: 9px 11px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-radius: 10px; background: var(--app-surface-soft); }
 .runtime-strip > span { color: #87949b; font-size: 9px; }
 .runtime-strip code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

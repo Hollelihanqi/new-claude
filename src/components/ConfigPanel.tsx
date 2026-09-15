@@ -315,6 +315,12 @@ export default function ConfigPanel({
     return profileRuntimeStatus(profile, info, !!env?.claude_found, gatewayDown);
   };
 
+  // 网关不通是「环境当前不可用」，与本地配置未就绪（橙）区分：直接红。
+  const healthClass = (profile: Profile) => {
+    const status = statusForProfile(profile);
+    return status.gatewayDown ? "bad" : status.healthy ? "ok" : "warn";
+  };
+
   // 单环境网关复测：与诊断页同一套判定；结论由后端写回最近验证记录
   const onProbeGateway = async (name: string) => {
     setProbeBusy(name);
@@ -468,7 +474,7 @@ export default function ConfigPanel({
                 rightSection={
                   pins.some((w) => w.profile === p.name) ? (
                     <IconAlertTriangle size={15} color="var(--mantine-color-orange-6)" />
-                  ) : <span className={`instance-health-dot ${statusForProfile(p).healthy ? "ok" : "warn"}`} />
+                  ) : <span className={`instance-health-dot ${healthClass(p)}`} />
                 }
                 onClick={() => pickProfile(p)}
               />
@@ -525,7 +531,7 @@ export default function ConfigPanel({
               <div className="instance-overview">
                 <div>
                   <span>运行状态</span>
-                  <strong className={statusForProfile(selProfile).healthy ? "status-ok" : "status-warn"}>{statusForProfile(selProfile).label}</strong>
+                  <strong className={`status-${healthClass(selProfile)}`}>{statusForProfile(selProfile).label}</strong>
                   {statusForProfile(selProfile).gatewayDown && (
                     // 不用 Mantine loading（会隐藏文字），与诊断页同步按钮同一约定
                     <Button
