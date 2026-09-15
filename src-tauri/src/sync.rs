@@ -711,7 +711,7 @@ pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<(
 /// Windows 分支不做事：威胁边界只到"同机其他普通用户"，用户目录的继承 ACL 已覆盖；
 /// 管理员/SYSTEM 不属于文件权限能可靠防御的范围 —— 见
 /// `docs/凭证分域清单-2026-09-12.md` 的威胁边界定义。
-fn restrict_credential_permissions(path: &Path) -> std::io::Result<()> {
+pub(crate) fn restrict_credential_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

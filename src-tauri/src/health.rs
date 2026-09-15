@@ -581,7 +581,7 @@ fn run_health_checks() -> Vec<HealthItem> {
             "cert",
             "CA 证书",
             "warn",
-            "未导入任何证书。若公司网关用自签名证书，需在右上角「CA 证书」导入。".into(),
+            "未导入任何证书。若公司网关用自签名证书，请到「设置 → CA 证书」导入。".into(),
         ));
     } else {
         items.push(item(

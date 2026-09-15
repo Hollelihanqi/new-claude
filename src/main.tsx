@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import type { MantineColorsTuple } from "@mantine/core";
@@ -7,8 +7,7 @@ import "@mantine/notifications/styles.css";
 import { Notifications } from "@mantine/notifications";
 import "./glass.css";
 import App from "./App";
-
-type Scheme = "a" | "b";
+import { readStoredScheme, storeScheme, type Scheme } from "./themeScheme";
 
 // A 组：橘橙 #fd752c
 const brandA: MantineColorsTuple = [
@@ -22,7 +21,11 @@ const brandB: MantineColorsTuple = [
 ];
 
 function Root() {
-  const [scheme, setScheme] = useState<Scheme>("b"); // 默认 B 组
+  const [scheme, setSchemeState] = useState<Scheme>(() => readStoredScheme(window.localStorage));
+  const setScheme = useCallback((value: Scheme) => {
+    setSchemeState(value);
+    storeScheme(window.localStorage, value);
+  }, []);
 
   const theme = useMemo(
     () =>

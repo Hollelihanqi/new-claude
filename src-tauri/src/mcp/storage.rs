@@ -133,6 +133,59 @@ fn safe_instance_id(id: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
+/// 收紧旧版本留下的 MCP 备份权限。
+///
+/// 只遍历应用自己的备份目录，且绝不跟随符号链接，避免权限修复越过受管边界。
+/// 返回实际被修正的普通文件数，供“同步并修复”给出可核对结果。
+pub(crate) fn repair_backup_permissions(paths: &McpPaths) -> Result<usize, String> {
+    let root = paths.backup_dir();
+    let root_meta = match fs::symlink_metadata(&root) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取 MCP 备份目录失败：{error}")),
+    };
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+        return Err("MCP 备份路径不是受信任的普通目录，已停止权限修复".into());
+    }
+
+    let mut repaired = 0usize;
+    let mut pending = vec![root];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).map_err(|e| format!("读取 MCP 备份目录失败：{e}"))?
+        {
+            let entry = entry.map_err(|e| format!("读取 MCP 备份项失败：{e}"))?;
+            let path = entry.path();
+            let meta =
+                fs::symlink_metadata(&path).map_err(|e| format!("检查 MCP 备份项失败：{e}"))?;
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o777 != 0o600 {
+                    crate::sync::restrict_credential_permissions(&path)
+                        .map_err(|e| format!("收紧 MCP 备份权限失败：{e}"))?;
+                    repaired += 1;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+            }
+        }
+    }
+    Ok(repaired)
+}
+
 /// canonicalize 目录：必须存在且是目录；去掉 Windows \\?\ 前缀以稳定 key。
 pub(crate) fn canonicalize_dir(path: &str) -> Result<PathBuf, String> {
     if path.is_empty() || path.contains("..") {
@@ -617,7 +670,16 @@ pub(crate) fn write_json_transactional(
     let text = serde_json::to_string_pretty(value).map_err(|e| format!("序列化失败：{e}"))?;
     let tmp = target.with_file_name(format!(".ccm-tmp-{}-{}", source_hash(target), uniq_token()));
     {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败：{e}"))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options
+            .open(&tmp)
+            .map_err(|e| format!("创建临时文件失败：{e}"))?;
         f.write_all(text.as_bytes())
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
         f.sync_all().map_err(|e| format!("同步临时文件失败：{e}"))?;
@@ -626,6 +688,8 @@ pub(crate) fn write_json_transactional(
     if target.exists() {
         let bak = backup_path(paths, target);
         fs::copy(target, &bak).map_err(|e| format!("备份失败：{e}"))?;
+        crate::sync::restrict_credential_permissions(&bak)
+            .map_err(|e| format!("收紧备份权限失败：{e}"))?;
         if let Some(dir) = bak.parent() {
             rotate_backups(dir);
         }
@@ -638,7 +702,8 @@ pub(crate) fn write_json_transactional(
     match fs::rename(&tmp, target) {
         Ok(()) => {
             let _ = fs::remove_file(&rollback);
-            Ok(())
+            crate::sync::restrict_credential_permissions(target)
+                .map_err(|e| format!("收紧配置权限失败：{e}"))
         }
         Err(e) => {
             if rollback.exists() {
@@ -805,7 +870,7 @@ where
     for s in vec {
         if s.existed {
             if let Some(bytes) = &s.bytes {
-                if let Err(e) = fs::write(&s.path, bytes) {
+                if let Err(e) = crate::sync::write_bytes_atomic(&s.path, bytes) {
                     errs.push(format!("恢复 {} 失败：{e}", s.path.display()));
                 }
             }
@@ -3000,6 +3065,68 @@ mod tests {
         assert_eq!(paths.main_claude_json(), paths.home.join(".claude.json"));
         assert!(paths.instance_claude_json("bad name").is_err());
         assert!(paths.instance_claude_json("..").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transactional_mcp_writes_and_backups_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (paths, _t) = setup();
+        let target = paths.shared_mcp_json();
+        write_json_transactional(&paths, &target, &json!({"secret": "first"})).unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        write_json_transactional(&paths, &target, &json!({"secret": "second"})).unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let backup_dir = paths.backup_dir().join(source_hash(&target));
+        let backups = fs::read_dir(backup_dir)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            backups[0].metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repair_backup_permissions_migrates_files_without_following_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let (paths, _t) = setup();
+        let backup_dir = paths.backup_dir().join("legacy");
+        fs::create_dir_all(&backup_dir).unwrap();
+        let legacy = backup_dir.join("mcp.json");
+        fs::write(&legacy, r#"{"secret":"legacy"}"#).unwrap();
+        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let outside = paths.home.join("outside.json");
+        fs::write(&outside, r#"{"secret":"outside"}"#).unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&outside, backup_dir.join("outside-link.json")).unwrap();
+
+        assert_eq!(repair_backup_permissions(&paths).unwrap(), 1);
+        assert_eq!(
+            fs::metadata(&legacy).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "权限迁移不得跟随符号链接修改目录外文件"
+        );
+        assert_eq!(repair_backup_permissions(&paths).unwrap(), 0);
     }
 
     /// 验收（用户指定）：**默认 Claude 的文件未被改写**。

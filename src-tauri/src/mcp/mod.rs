@@ -13,7 +13,9 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 pub(crate) use codex_sync::write_guard as target_write_guard;
-pub(crate) use storage::{environment_cleanup_files, forget_environment_records, McpPaths};
+pub(crate) use storage::{
+    environment_cleanup_files, forget_environment_records, repair_backup_permissions, McpPaths,
+};
 
 // ---------------- 领域类型 ----------------
 

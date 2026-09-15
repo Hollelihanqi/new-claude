@@ -250,7 +250,7 @@ export default function ConfigPanel({
       setStatus({
         type: "error",
         msg: isCertError(m)
-          ? "保存出错，疑似证书问题。可在右上角「CA 证书」导入证书后重试。原始错误：" + m
+          ? "保存出错，疑似证书问题。可到「设置 → CA 证书」导入证书后重试。原始错误：" + m
           : m,
       });
     } finally {

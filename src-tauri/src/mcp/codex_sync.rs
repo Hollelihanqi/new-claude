@@ -664,7 +664,16 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
         }
     }
     {
-        let mut file = fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败：{e}"))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&tmp)
+            .map_err(|e| format!("创建临时文件失败：{e}"))?;
         file.write_all(text.as_bytes())
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
         file.sync_all()
@@ -676,7 +685,8 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
     match fs::rename(&tmp, path) {
         Ok(()) => {
             let _ = fs::remove_file(&rollback);
-            Ok(())
+            crate::sync::restrict_credential_permissions(path)
+                .map_err(|e| format!("收紧目标权限失败：{e}"))
         }
         Err(error) => {
             if rollback.exists() {
@@ -700,7 +710,9 @@ fn backup_target(paths: &McpPaths, target: &Path) -> Result<(), String> {
         .unwrap_or("config.toml");
     let hash = target_hash(target);
     let backup = dir.join(format!("{}-{hash}-{file_name}", unique_suffix()));
-    fs::copy(target, backup).map_err(|e| format!("备份 OpenAI MCP 配置失败：{e}"))?;
+    fs::copy(target, &backup).map_err(|e| format!("备份 OpenAI MCP 配置失败：{e}"))?;
+    crate::sync::restrict_credential_permissions(&backup)
+        .map_err(|e| format!("收紧 OpenAI MCP 备份权限失败：{e}"))?;
     let mut backups: Vec<_> = fs::read_dir(&dir)
         .map_err(|e| format!("读取备份目录失败：{e}"))?
         .flatten()
@@ -1474,6 +1486,42 @@ default_tools_approval_mode = "prompt"
         assert!(error.contains("已恢复原配置"));
         assert_eq!(fs::read_to_string(&target).unwrap(), "original = true\n");
         assert!(!rollback.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_sync_writes_and_backups_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("ccm-openai-perm-{}", unique_suffix()));
+        fs::create_dir_all(&root).unwrap();
+        let paths = McpPaths::for_test(root.clone());
+        let target = root.join("config.toml");
+
+        write_text_atomic(&target, "token = \"first\"\n").unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        backup_target(&paths, &target).unwrap();
+        write_text_atomic(&target, "token = \"second\"\n").unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let backups = fs::read_dir(paths.backup_dir().join("openai"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            backups[0].metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

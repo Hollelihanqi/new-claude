@@ -1925,7 +1925,13 @@ fn sync_all_blocking() -> Result<String, String> {
         let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
         let list = load();
         let names = profile_names(&list);
-        let msg = install_integration(&list)?; // 内含 Skills / Agents 逐项分发
+        let mut msg = install_integration(&list)?; // 内含 Skills / Agents 逐项分发
+        let repaired_backups = mcp::repair_backup_permissions(&mcp::McpPaths::system())?;
+        if repaired_backups > 0 {
+            msg.push_str(&format!(
+                "\n已收紧 {repaired_backups} 个旧版 MCP 备份文件的访问权限。"
+            ));
+        }
         let outcome = sync::sync_configs_locked(&names)?;
         Ok(compose_sync_report(&msg, &outcome, &names))
     })();
@@ -2619,12 +2625,12 @@ impl ProbeError {
             } => {
                 if is_ca_import_likely_helpful(*exit_code) {
                     format!(
-                        "TLS 证书校验失败，claude 也会连不上。请在右上角「CA 证书」导入网关的 CA 根证书后重试。{}",
+                        "TLS 证书校验失败，claude 也会连不上。请到「设置 → CA 证书」导入网关的 CA 根证书后重试。{}",
                         tail(stderr)
                     )
                 } else {
                     format!(
-                        "TLS 握手失败（curl 退出码 {exit_code}），claude 也会连不上。若网关用自签证书，请先在右上角「CA 证书」导入其根证书；否则请检查网关的 TLS 配置。{}",
+                        "TLS 握手失败（curl 退出码 {exit_code}），claude 也会连不上。若网关用自签证书，请先到「设置 → CA 证书」导入其根证书；否则请检查网关的 TLS 配置。{}",
                         tail(stderr)
                     )
                 }
