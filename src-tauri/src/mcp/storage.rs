@@ -2304,7 +2304,7 @@ fn dead_raw(e: &DeadEntry) -> String {
 /// 删除 scan_dead_entries 枚举出的死条目。调用方（命令层）必须已持有 config 锁。
 ///
 /// 安全规则：
-/// - 删除前逐条**重新 probe**：scan 与写盘之间目录可能被重建（TOCTOU），重建则跳过；
+/// - 删除前逐条**重新 probe**：scan 与写盘之间目录可能被重建（TOCTOU），重建则保留；
 /// - 读不出来/格式异常的文件绝不写回（与 Workbench 的「拒绝覆盖异常文档」不变量一致）；
 /// - 每个被改写的文件走 write_json_transactional（备份 + 原子 rename）；
 /// - 单文件写失败只记录，不中断其余文件，且该文件的死键移入 blocked 保持报告 truthful。
@@ -2313,6 +2313,12 @@ pub(crate) fn cleanup_dead_entries(
     profile_names: &[String],
 ) -> Result<CleanupReport, String> {
     let scan = scan_dead_entries(paths, profile_names);
+    cleanup_dead_entries_scanned(paths, scan)
+}
+
+/// 与 [cleanup_dead_entries] 相同，但接受外部传入的 scan 快照 ——
+/// 生产路径扫描后立即执行；测试用它模拟「scan 与写盘之间目录被重建」的竞态。
+fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<CleanupReport, String> {
     let mut report = CleanupReport {
         removed: Vec::new(),
         blocked: scan.blocked,
@@ -2345,8 +2351,18 @@ pub(crate) fn cleanup_dead_entries(
                 DirProbe::Missing => {
                     removed_registry.push(DeadEntry::RegistryProject { raw_path: p })
                 }
-                DirProbe::Ok(_) => report.blocked.push((p, "目录现已存在，自动跳过".into())),
-                DirProbe::Other(e) => report.blocked.push((p, e)),
+                // 复活/无法确认死亡的条目**必须留在登记表**：
+                // 只报告不删除；漏 push 回 kept 会在同批有删除时被静默写丢。
+                DirProbe::Ok(_) => {
+                    report
+                        .blocked
+                        .push((p.clone(), "目录现已存在，自动跳过".into()));
+                    kept.push(p);
+                }
+                DirProbe::Other(e) => {
+                    report.blocked.push((p.clone(), e));
+                    kept.push(p);
+                }
             }
         }
         if !removed_registry.is_empty() {
@@ -5456,6 +5472,78 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
         assert!(doc.pointer("/projects").unwrap().get(&dead).is_none());
         assert_eq!(doc["mcpServers"]["shared"], json!({}), "其余字段不得丢");
+    }
+
+    /// 竞态回归：scan 判死、写盘前复核时目录被重建 → 登记表条目必须**保留**。
+    /// 曾有缺陷：复活条目没被 push 回 kept，同批有删除时被静默写丢（数据丢失）。
+    #[test]
+    fn cleanup_keeps_registry_entry_that_reappears_between_scan_and_write() {
+        let (paths, _t) = setup();
+        let gone = paths.home.join("race-gone").display().to_string();
+        let revived = paths.home.join("race-revived").display().to_string();
+        // 两个目录都不存在 → 直接落登记表（register_project 要求目录存在，故手写）
+        fs::write(
+            paths.project_registry(),
+            json!({"version": 1, "projects": [gone, revived.clone()]}).to_string(),
+        )
+        .unwrap();
+
+        let scan = scan_dead_entries(&paths, &[]);
+        assert_eq!(scan.dead.len(), 2, "scan 时两个目录都不存在，均应判死");
+        // 模拟竞态：scan 之后、清理写盘之前，revived 目录被重建
+        fs::create_dir_all(&revived).unwrap();
+
+        let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
+        assert_eq!(report.removed.len(), 1, "只应删除仍然死亡的 gone");
+        assert!(
+            report
+                .blocked
+                .iter()
+                .any(|(raw, reason)| norm_path(raw) == norm_path(&revived)
+                    && reason.contains("目录现已存在")),
+            "复活条目应入 blocked：{:?}",
+            report.blocked
+        );
+        let reg_doc: Value =
+            serde_json::from_str(&fs::read_to_string(paths.project_registry()).unwrap()).unwrap();
+        let remaining: Vec<String> = reg_doc["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(remaining.len(), 1, "登记表应只剩复活条目：{remaining:?}");
+        assert_eq!(
+            norm_path(&remaining[0]),
+            norm_path(&revived),
+            "复活条目必须保留在登记表里，不得被静默写丢"
+        );
+    }
+
+    /// 竞态回归（实例侧）：scan 判死、写盘前复核时目录被重建 → projects 键必须保留。
+    #[test]
+    fn cleanup_keeps_project_key_that_reappears_between_scan_and_write() {
+        let (paths, _t) = setup();
+        let gone = paths.home.join("race-key-gone").display().to_string();
+        let revived = paths.home.join("race-key-revived").display().to_string();
+        let file = write_instance_source(
+            &paths,
+            "hq",
+            json!({"projects": {gone.clone(): {}, revived.clone(): {}}}),
+        );
+
+        let scan = scan_dead_entries(&paths, &["hq".to_string()]);
+        assert_eq!(scan.dead.len(), 2);
+        fs::create_dir_all(&revived).unwrap();
+
+        let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
+        assert_eq!(report.removed.len(), 1, "只应删除仍然死亡的键");
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(
+            doc["projects"].get(&revived).is_some(),
+            "复活的键必须保留在 .claude.json 里"
+        );
+        assert!(doc["projects"].get(&gone).is_none(), "死亡键应被删除");
     }
 
     #[test]
