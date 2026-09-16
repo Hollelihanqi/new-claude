@@ -5158,6 +5158,9 @@ mod tests {
         let dead = paths.home.join("reg-dead");
         fs::create_dir_all(&live).unwrap();
         fs::create_dir_all(&dead).unwrap();
+        // CI 的临时目录带路径别名（Windows 8.3 短名 / macOS /var 符号链接），
+        // canonicalize 后字符串与 home 拼出的路径不同 —— 断言必须比较 canonical 形式。
+        let live_canon = canonicalize_dir(&live.display().to_string()).unwrap();
         register_project(&paths, &live.display().to_string()).unwrap();
         register_project(&paths, &dead.display().to_string()).unwrap();
         fs::remove_dir_all(&dead).unwrap();
@@ -5176,8 +5179,8 @@ mod tests {
             .collect();
         assert_eq!(remaining.len(), 1, "只保留活条目");
         assert_eq!(
-            norm_path(&remaining[0]),
-            norm_path(&live.display().to_string()),
+            canonicalize_dir(&remaining[0]).unwrap(),
+            live_canon,
             "保留的应是 canonical 化的活目录"
         );
     }
@@ -5338,6 +5341,13 @@ mod tests {
         let reg_dead = paths.home.join("drift-reg-dead");
         fs::create_dir_all(&reg_live).unwrap();
         fs::create_dir_all(&reg_dead).unwrap();
+        // 登记表存的是 canonical 路径；CI 的临时目录带别名（Windows 8.3 短名 /
+        // macOS /var 符号链接），canonical 串与 home 拼出的串不同，
+        // 必须在删除目录前捕获 canonical 形式再作比较。
+        let reg_dead_stored = canonicalize_dir(&reg_dead.display().to_string())
+            .unwrap()
+            .display()
+            .to_string();
         register_project(&paths, &reg_live.display().to_string()).unwrap();
         register_project(&paths, &reg_dead.display().to_string()).unwrap();
         fs::remove_dir_all(&reg_dead).unwrap();
@@ -5356,10 +5366,7 @@ mod tests {
         let expected: BTreeSet<(String, String)> = [
             (source_id::user(MAIN_INSTANCE), dead_shared),
             (source_id::user("hq"), dead_hq),
-            (
-                source_id::PROJECTS.to_string(),
-                reg_dead.display().to_string(),
-            ),
+            (source_id::PROJECTS.to_string(), reg_dead_stored),
         ]
         .into_iter()
         .collect();
