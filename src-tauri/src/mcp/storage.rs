@@ -209,10 +209,82 @@ pub(crate) enum DirProbe {
     Other(String),
 }
 
-pub(crate) fn probe_project_dir(path: &str) -> DirProbe {
+/// 「位置不确定」判定用的平台标识。纯函数参数而非 cfg!，任一开发平台
+/// 都能同时测试两个平台的分支（CLAUDE.md 双平台要求）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostPlatform {
+    Windows,
+    MacOs,
+    Other,
+}
+
+/// 网络/外置卷路径在磁盘离线时 `fs::metadata` 同样返回 NotFound，会被误判为
+/// "目录已删除"。这类位置**永不自动清理**，宁可留在 blocked 由人工处理：
+/// - Windows：UNC 路径（`\\server\share` 或 `//server/share`）可能是断连的映射盘；
+/// - macOS：`/Volumes/*` 下的外置卷可能只是未挂载（home 不在 /Volumes 下时判定）；
+/// - 任何平台：非绝对路径无法确认归属，一律不清理。
+fn uncertain_location_reason(path: &str, home_str: &str, platform: HostPlatform) -> Option<String> {
+    if !is_absolute_for(path, platform) {
+        return Some("非绝对路径，无法确认目录状态，不自动清理".into());
+    }
+    match platform {
+        HostPlatform::Windows => {
+            let p = path.replace('\\', "/");
+            if p.starts_with("//") {
+                return Some("网络路径（UNC）可能只是暂时离线，不自动清理".into());
+            }
+        }
+        HostPlatform::MacOs => {
+            if path.starts_with("/Volumes/") && !home_str.starts_with("/Volumes/") {
+                return Some("外置卷路径可能只是未挂载，不自动清理".into());
+            }
+        }
+        HostPlatform::Other => {}
+    }
+    None
+}
+
+/// 按目标平台判定绝对路径。不能用 `Path::is_absolute()` —— 它按**宿主**平台判定，
+/// 在 Windows 上跑测试时 `/Volumes/x` 会被误判为相对路径。
+fn is_absolute_for(path: &str, platform: HostPlatform) -> bool {
+    match platform {
+        HostPlatform::Windows => {
+            // 盘符绝对路径（C:\ 或 C:/）或 UNC（\\ 或 //）
+            let bytes = path.as_bytes();
+            if bytes.len() >= 3 {
+                let drive_abs = bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && (bytes[2] == b'\\' || bytes[2] == b'/');
+                if drive_abs {
+                    return true;
+                }
+            }
+            path.starts_with(r"\\") || path.starts_with("//")
+        }
+        HostPlatform::MacOs | HostPlatform::Other => path.starts_with('/'),
+    }
+}
+
+fn host_platform() -> HostPlatform {
+    if cfg!(windows) {
+        HostPlatform::Windows
+    } else if cfg!(target_os = "macos") {
+        HostPlatform::MacOs
+    } else {
+        HostPlatform::Other
+    }
+}
+
+pub(crate) fn probe_project_dir(path: &str, home: &Path) -> DirProbe {
     // 与 canonicalize_dir 同一合法性判据，先于任何 FS 访问，保证两处不会漂移。
     if path.is_empty() || path.contains("..") {
         return DirProbe::Other("项目路径非法".into());
+    }
+    // 网络/外置卷/非绝对路径：先于 metadata 判定，离线时不得误判为死亡
+    if let Some(reason) =
+        uncertain_location_reason(path, &home.display().to_string(), host_platform())
+    {
+        return DirProbe::Other(reason);
     }
     if let Err(e) = fs::metadata(path) {
         return if e.kind() == std::io::ErrorKind::NotFound {
@@ -2205,6 +2277,10 @@ pub(crate) struct DeadScan {
     pub dead: Vec<DeadEntry>,
     /// 疑似失效但**不满足 NotFound 判据**的条目：(raw, 原因)，只报告不删除
     pub blocked: Vec<(String, String)>,
+    /// scan 时各源文件的 revision（路径字符串 → 指纹）。清理写回前校验：
+    /// Claude Code 不经过配置锁直接写 .claude.json，指纹变了说明有人
+    /// 在 scan 与写盘之间改过文件 —— 该文件本轮不清理（防覆盖并发写入）。
+    pub file_revisions: BTreeMap<String, String>,
 }
 
 /// **唯一**的死条目枚举点：`collect_state`（展示 deadEntries）与
@@ -2218,11 +2294,16 @@ pub(crate) struct DeadScan {
 pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> DeadScan {
     let mut dead = Vec::new();
     let mut blocked = Vec::new();
+    let mut file_revisions: BTreeMap<String, String> = BTreeMap::new();
 
     let (reg, reg_issue) = read_registry(paths);
     if reg_issue.is_none() {
+        file_revisions.insert(
+            paths.project_registry().display().to_string(),
+            revision(&paths.project_registry()),
+        );
         for p in &reg.projects {
-            match probe_project_dir(p) {
+            match probe_project_dir(p, &paths.home) {
                 DirProbe::Missing => dead.push(DeadEntry::RegistryProject {
                     raw_path: p.clone(),
                 }),
@@ -2239,11 +2320,12 @@ pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> D
         let DocRead::Value(doc) = read_doc(&path) else {
             continue; // 缺失/读取失败/解析失败同样只走 issue
         };
+        file_revisions.insert(path.display().to_string(), revision(&path));
         let Some(projs) = doc.get("projects").and_then(|v| v.as_object()) else {
             continue;
         };
         for key in projs.keys() {
-            match probe_project_dir(key) {
+            match probe_project_dir(key, &paths.home) {
                 DirProbe::Missing => dead.push(DeadEntry::ProjectKey {
                     instance: inst.clone(),
                     raw_key: key.clone(),
@@ -2258,7 +2340,11 @@ pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> D
         }
     }
 
-    DeadScan { dead, blocked }
+    DeadScan {
+        dead,
+        blocked,
+        file_revisions,
+    }
 }
 
 /// 内部 DeadEntry → 前端展示模型。source_id 映射与 issues 完全一致：
@@ -2347,7 +2433,7 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
                 kept.push(p);
                 continue;
             }
-            match probe_project_dir(&p) {
+            match probe_project_dir(&p, &paths.home) {
                 DirProbe::Missing => {
                     removed_registry.push(DeadEntry::RegistryProject { raw_path: p })
                 }
@@ -2366,19 +2452,34 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
             }
         }
         if !removed_registry.is_empty() {
-            reg.projects = kept;
-            match write_registry(paths, reg) {
-                Ok(()) => report.removed.extend(removed_registry),
-                Err(e) => {
-                    // 写失败：登记表实际未变，条目移入 blocked
-                    report
-                        .write_errors
-                        .push((paths.project_registry().display().to_string(), e));
-                    report.blocked.extend(
-                        removed_registry
-                            .into_iter()
-                            .map(|e| (dead_raw(&e), "登记表写入失败，未清理".to_string())),
-                    );
+            // 写盘前 revision 校验（P1 防覆盖）：scan 之后登记表被外部改过 → 本轮不写。
+            // 配置锁拦不住外部进程（register/unregister 命令、手工编辑），指纹是唯一依据。
+            let current = revision(&paths.project_registry());
+            let scanned = scan
+                .file_revisions
+                .get(&paths.project_registry().display().to_string());
+            if scanned != Some(&current) {
+                report.blocked.extend(removed_registry.into_iter().map(|e| {
+                    (
+                        dead_raw(&e),
+                        "登记表在清理期间被外部修改，本轮未清理，请重试".to_string(),
+                    )
+                }));
+            } else {
+                reg.projects = kept;
+                match write_registry(paths, reg) {
+                    Ok(()) => report.removed.extend(removed_registry),
+                    Err(e) => {
+                        // 写失败：登记表实际未变，条目移入 blocked
+                        report
+                            .write_errors
+                            .push((paths.project_registry().display().to_string(), e));
+                        report.blocked.extend(
+                            removed_registry
+                                .into_iter()
+                                .map(|e| (dead_raw(&e), "登记表写入失败，未清理".to_string())),
+                        );
+                    }
                 }
             }
         }
@@ -2413,7 +2514,7 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
         let mut removed_now = Vec::new();
         for e in group {
             let raw = dead_raw(&e);
-            match probe_project_dir(&raw) {
+            match probe_project_dir(&raw, &paths.home) {
                 DirProbe::Missing => {
                     if projs.remove(&raw).is_some() {
                         removed_now.push(e);
@@ -2426,6 +2527,19 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
             }
         }
         if removed_now.is_empty() {
+            continue;
+        }
+        // 写盘前 revision 校验（P1 防覆盖）：Claude Code 不经过配置锁直接写
+        // .claude.json，scan 之后文件被改过 → 本轮放弃写回（doc 基于旧内容），
+        // 防止把外部刚写入的配置静默覆盖掉。
+        let current = revision(&file);
+        if scan.file_revisions.get(&file.display().to_string()) != Some(&current) {
+            report.blocked.extend(removed_now.into_iter().map(|e| {
+                (
+                    dead_raw(&e),
+                    "文件在清理期间被外部修改，本轮未清理，请重试".to_string(),
+                )
+            }));
             continue;
         }
         match write_json_transactional(paths, &file, &doc) {
@@ -5059,13 +5173,13 @@ mod tests {
         fs::write(&file_path, "x").unwrap();
 
         // 真目录 → Ok，且去掉了 Windows \\?\ 前缀
-        match probe_project_dir(live.display().to_string().as_str()) {
+        match probe_project_dir(live.display().to_string().as_str(), &paths.home) {
             DirProbe::Ok(c) => assert!(!c.display().to_string().contains(r"\\?\")),
             other => panic!("真目录应为 Ok，实际 {other:?}"),
         }
         // 不存在（含父目录不存在的深层路径）→ Missing
         let dead = paths.home.join("gone").display().to_string();
-        assert_eq!(probe_project_dir(&dead), DirProbe::Missing);
+        assert_eq!(probe_project_dir(&dead, &paths.home), DirProbe::Missing);
         let deep_dead = paths
             .home
             .join("no")
@@ -5073,18 +5187,180 @@ mod tests {
             .join("tree")
             .display()
             .to_string();
-        assert_eq!(probe_project_dir(&deep_dead), DirProbe::Missing);
+        assert_eq!(
+            probe_project_dir(&deep_dead, &paths.home),
+            DirProbe::Missing
+        );
         // 路径是文件 → Other（不是目录），不允许清理
-        match probe_project_dir(file_path.display().to_string().as_str()) {
+        match probe_project_dir(file_path.display().to_string().as_str(), &paths.home) {
             DirProbe::Other(e) => assert!(e.contains("不是目录"), "文案应含「不是目录」：{e}"),
             other => panic!("文件路径应为 Other，实际 {other:?}"),
         }
         // 路径非法（空串、含 ..）→ Other，先于任何 FS 访问
-        match probe_project_dir("bad/../x") {
+        match probe_project_dir("bad/../x", &paths.home) {
             DirProbe::Other(e) => assert!(e.contains("项目路径非法")),
             other => panic!("含 .. 应为 Other，实际 {other:?}"),
         }
-        assert!(matches!(probe_project_dir(""), DirProbe::Other(_)));
+        assert!(matches!(
+            probe_project_dir("", &paths.home),
+            DirProbe::Other(_)
+        ));
+    }
+
+    /// P2 回归：网络/外置卷/非绝对路径即使目录探测不到也**永不**判死 ——
+    /// 它们可能只是磁盘离线。纯函数两平台分支在任一开发平台都可测。
+    #[test]
+    fn uncertain_locations_are_never_auto_cleaned() {
+        // Windows：UNC（两种写法）不确定；本地盘确定
+        assert!(uncertain_location_reason(
+            r"\\server\share\proj",
+            r"C:\Users\u",
+            HostPlatform::Windows,
+        )
+        .is_some());
+        assert!(uncertain_location_reason(
+            "//server/share/proj",
+            "C:/Users/u",
+            HostPlatform::Windows,
+        )
+        .is_some());
+        assert!(
+            uncertain_location_reason(r"E:\projects\gone", r"C:\Users\u", HostPlatform::Windows,)
+                .is_none(),
+            "本地其他盘符不视为不确定"
+        );
+        // macOS：home 在系统卷时 /Volumes/* 视为外置卷；home 与路径同卷时不拦
+        assert!(
+            uncertain_location_reason("/Volumes/Backup/proj", "/Users/u", HostPlatform::MacOs,)
+                .is_some()
+        );
+        assert!(
+            uncertain_location_reason(
+                "/Volumes/Macintosh HD/Users/u/proj",
+                "/Volumes/Macintosh HD/Users/u",
+                HostPlatform::MacOs,
+            )
+            .is_none(),
+            "home 与路径同卷时不视为外置"
+        );
+        assert!(
+            uncertain_location_reason("/Users/u/proj", "/Users/u", HostPlatform::MacOs).is_none()
+        );
+        // 任何平台：非绝对路径一律不确定
+        for platform in [
+            HostPlatform::Windows,
+            HostPlatform::MacOs,
+            HostPlatform::Other,
+        ] {
+            assert!(
+                uncertain_location_reason("relative/proj", "/Users/u", platform).is_some(),
+                "相对路径在 {platform:?} 下必须判不确定"
+            );
+        }
+    }
+
+    /// P2 集成：不确定位置（UNC / 外置卷）不进 deadEntries。
+    /// 夹具按真实平台选择；跨平台矩阵由上面的纯函数测试覆盖。
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn scan_does_not_mark_uncertain_locations_as_dead() {
+        let (paths, _t) = setup();
+        let dead_local = paths.home.join("plain-dead").display().to_string();
+        // Windows：UNC；macOS：外置卷（测试 home 在临时目录，不在 /Volumes 下）
+        #[cfg(windows)]
+        let uncertain_key = "//file-server/share/proj";
+        #[cfg(target_os = "macos")]
+        let uncertain_key = "/Volumes/Offline/proj";
+        write_user_source(
+            &paths,
+            json!({"projects": {
+                dead_local: {},
+                uncertain_key: {}
+            }}),
+        );
+        let state = collect_state(&paths, &[]);
+        let raws: Vec<&str> = state
+            .dead_entries
+            .iter()
+            .map(|d| d.raw_path.as_str())
+            .collect();
+        assert_eq!(raws.len(), 1, "只有本地死键可清理：{raws:?}");
+        assert!(raws[0].contains("plain-dead"));
+        assert!(
+            state.issues.len() >= 2,
+            "两类问题仍要在 issues 里报告（不静默）：{:?}",
+            state.issues
+        );
+    }
+
+    /// P1 回归：scan 之后 .claude.json 被外部改写 → 清理必须放弃写回，
+    /// 不得用基于旧内容的文档覆盖新写入的配置。
+    #[test]
+    fn cleanup_refuses_to_overwrite_file_modified_after_scan() {
+        let (paths, _t) = setup();
+        let dead = paths.home.join("hot-dead").display().to_string();
+        let file = write_instance_source(&paths, "hq", json!({"projects": {dead.clone(): {}}}));
+
+        let scan = scan_dead_entries(&paths, &["hq".to_string()]);
+        assert_eq!(scan.dead.len(), 1);
+        // 模拟 Claude Code 在 scan 与写盘之间写入新内容（新字段 + 保留死键）
+        write_json_transactional(
+            &paths,
+            &file,
+            &json!({"freshField": 1, "projects": {dead.clone(): {}}}),
+        )
+        .unwrap();
+
+        let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
+        assert!(report.removed.is_empty(), "被外部改写的文件不得写回");
+        assert!(
+            report.blocked.iter().any(|(_, r)| r.contains("被外部修改")),
+            "应说明跳过原因：{:?}",
+            report.blocked
+        );
+        // 外部写入的内容必须原样保留
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(doc["freshField"], 1, "外部写入的字段不得被覆盖丢失");
+        assert!(
+            doc["projects"].get(&dead).is_some(),
+            "文件应保持外部写入后的原状（死键未清）"
+        );
+    }
+
+    /// P1 回归（登记表侧）：scan 之后登记表被外部改写 → 不写回。
+    #[test]
+    fn cleanup_refuses_to_overwrite_registry_modified_after_scan() {
+        let (paths, _t) = setup();
+        let gone = paths.home.join("reg-hot-dead").display().to_string();
+        fs::write(
+            paths.project_registry(),
+            json!({"version": 1, "projects": [gone.clone()]}).to_string(),
+        )
+        .unwrap();
+
+        let scan = scan_dead_entries(&paths, &[]);
+        assert_eq!(scan.dead.len(), 1);
+        // 外部并发登记了一个新项目（revision 已变）
+        fs::write(
+            paths.project_registry(),
+            json!({"version": 1, "projects": [gone, paths.home.join("newly-registered").display().to_string()]}).to_string(),
+        )
+        .unwrap();
+
+        let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
+        assert!(report.removed.is_empty());
+        assert!(
+            report.blocked.iter().any(|(_, r)| r.contains("被外部修改")),
+            "应说明跳过原因：{:?}",
+            report.blocked
+        );
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(paths.project_registry()).unwrap()).unwrap();
+        assert_eq!(
+            doc["projects"].as_array().unwrap().len(),
+            2,
+            "外部写入的登记必须原样保留"
+        );
     }
 
     #[test]

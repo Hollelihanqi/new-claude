@@ -54,7 +54,7 @@ import type {
 import McpImportModal from "./McpImportModal";
 import StableRefreshButton from "../StableRefreshButton";
 import McpServiceDrawer from "./McpServiceDrawer";
-import McpSourceIssuesCard from "./McpSourceIssuesCard";
+import McpSourceIssuesCard, { cleanupOutcomeView } from "./McpSourceIssuesCard";
 import McpSummaryGrid from "./McpSummaryGrid";
 import FeatureHelp from "../FeatureHelp";
 import { MCP_HELP, MCP_SCOPE_HELP } from "../featureHelpContent";
@@ -146,14 +146,21 @@ export default function McpPanel() {
     }
   };
 
-  // 「一键清理死条目」：返回 boolean 让 RiskConfirm 决定是否关闭（失败保持打开可重试）
+  // 「一键清理死条目」：返回 boolean 让 RiskConfirm 决定是否关闭。
+  // 部分失败（writeErrorCount>0）→ 橙色通知 + 弹窗保持打开可重试；
+  // 无事可做 → 中性灰；全部成功 → 绿色。绝不能把写失败伪装成成功。
   const onCleanupDeadEntries = async () => {
     setCleaningIssues(true);
     try {
-      const message = await api.cleanupDeadProjectEntries();
-      notifications.show({ message, color: "teal" });
+      const result = await api.cleanupDeadProjectEntries();
+      const view = cleanupOutcomeView(result);
+      notifications.show({
+        color: view.color,
+        title: view.title,
+        message: result.message,
+      });
       load(true);
-      return true;
+      return view.closeDialog;
     } catch (e) {
       notifications.show({ color: "red", title: "清理失败", message: String(e) });
       return false;

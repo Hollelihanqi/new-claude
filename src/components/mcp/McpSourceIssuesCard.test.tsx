@@ -1,8 +1,8 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import McpSourceIssuesCard from "./McpSourceIssuesCard";
+import McpSourceIssuesCard, { cleanupOutcomeView } from "./McpSourceIssuesCard";
 import { Button, Text } from "@mantine/core";
-import type { McpDeadEntry, McpSourceIssue } from "../../api";
+import type { McpCleanupResult, McpDeadEntry, McpSourceIssue } from "../../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
   "Alert", "Button", "Group", "Stack", "Text",
@@ -148,5 +148,37 @@ describe("McpSourceIssuesCard 配置来源问题卡", () => {
   it("busy 时清理按钮处于 loading", async () => {
     await mount([issue("x")], [dead("E:/gone")], { busy: true });
     expect(findButton("一键清理")!.props.loading).toBe(true);
+  });
+});
+
+describe("cleanupOutcomeView 清理结果的呈现分类", () => {
+  const result = (over: Partial<McpCleanupResult>): McpCleanupResult => ({
+    removedCount: 2,
+    blockedCount: 0,
+    writeErrorCount: 0,
+    complete: true,
+    message: "已清理 2 条",
+    ...over,
+  });
+
+  it("全部成功 → 绿色并关闭弹窗", () => {
+    expect(cleanupOutcomeView(result({}))).toEqual({ color: "teal", title: undefined, closeDialog: true });
+  });
+
+  it("有写失败 → 橙色、标注部分失败、弹窗保持打开", () => {
+    const view = cleanupOutcomeView(
+      result({ writeErrorCount: 1, complete: false, removedCount: 0, message: "…写入失败…" }),
+    );
+    expect(view.color).toBe("orange");
+    expect(view.title).toContain("部分清理失败");
+    expect(view.closeDialog).toBe(false);
+  });
+
+  it("无事可做（并发处理/全部跳过）→ 中性灰并关闭弹窗", () => {
+    const view = cleanupOutcomeView(
+      result({ removedCount: 0, blockedCount: 3, message: "没有清理任何条目；跳过 3 条：…" }),
+    );
+    expect(view.color).toBe("gray");
+    expect(view.closeDialog).toBe(true);
   });
 });

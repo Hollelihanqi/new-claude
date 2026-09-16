@@ -374,11 +374,25 @@ pub fn unregister_mcp_project(path: String) -> Result<McpState, String> {
     Ok(sync_targets::attach_sync_state(&paths, state))
 }
 
+/// 一键清理的结果。结构化返回（而非单个字符串）：前端需要区分
+/// 全部成功 / 无事可做 / 部分失败来决定通知颜色与是否关闭确认弹窗。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCleanupResult {
+    pub removed_count: usize,
+    pub blocked_count: usize,
+    pub write_error_count: usize,
+    /// true = 没有任何写失败（允许关闭弹窗）；部分失败应保持弹窗供重试
+    pub complete: bool,
+    /// 人类可读报告（清理分组、跳过原因、失败文件、备份位置）
+    pub message: String,
+}
+
 /// 一键清理两类"死条目"（目录确认不存在，fs::metadata == NotFound）：
 /// 1) 各环境用户级源文件 projects 下的死键；2) 登记表 mcp-projects.json 的死条目。
-/// 其他失败原因（权限不足/路径非法/不是目录）一律跳过并在返回消息里说明。
+/// 其他失败原因（权限不足/路径非法/不是目录/位置不确定/文件被并发修改）一律跳过并在消息里说明。
 #[tauri::command]
-pub fn cleanup_dead_project_entries() -> Result<String, String> {
+pub fn cleanup_dead_project_entries() -> Result<McpCleanupResult, String> {
     let paths = McpPaths::system();
     let instances = current_instances();
     // 写用户级源文件必须与 CLI --sync 串行化（先例 apply_mcp_change）；
@@ -388,7 +402,13 @@ pub fn cleanup_dead_project_entries() -> Result<String, String> {
         None => return Err("另一个同步正在进行，请稍后重试".into()),
     };
     let report = cleanup_dead_entries(&paths, &instances)?;
-    Ok(format_cleanup_report(&report, &paths))
+    Ok(McpCleanupResult {
+        removed_count: report.removed.len(),
+        blocked_count: report.blocked.len(),
+        write_error_count: report.write_errors.len(),
+        complete: report.write_errors.is_empty(),
+        message: format_cleanup_report(&report, &paths),
+    })
 }
 
 /// 把清理报告格式化为一条人类可读消息（前端 notifications.show 直接展示）。
@@ -1085,5 +1105,38 @@ mod tests {
             write_errors: vec![],
         };
         assert_eq!(format_cleanup_report(&empty, &paths), "没有可清理的死条目");
+    }
+
+    /// P3 回归：命令必须返回结构化结果，前端据此区分成功/部分失败，
+    /// 不得把「写失败但未中断」伪装成绿色成功。
+    #[test]
+    fn cleanup_result_exposes_counts_and_completeness() {
+        let (paths, _t) = setup();
+        let report = CleanupReport {
+            removed: vec![storage::DeadEntry::RegistryProject {
+                raw_path: "E:/gone".into(),
+            }],
+            blocked: vec![],
+            write_errors: vec![("f.json".to_string(), "boom".to_string())],
+        };
+        // 与命令尾部相同的映射逻辑
+        let result = McpCleanupResult {
+            removed_count: report.removed.len(),
+            blocked_count: report.blocked.len(),
+            write_error_count: report.write_errors.len(),
+            complete: report.write_errors.is_empty(),
+            message: format_cleanup_report(&report, &paths),
+        };
+        assert_eq!(result.removed_count, 1);
+        assert_eq!(result.write_error_count, 1);
+        assert!(!result.complete, "有写失败时 complete 必须为 false");
+        assert!(result.message.contains("写入失败"));
+
+        let clean = CleanupReport {
+            removed: report.removed,
+            blocked: vec![],
+            write_errors: vec![],
+        };
+        assert!(clean.write_errors.is_empty());
     }
 }

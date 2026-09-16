@@ -170,6 +170,17 @@ export interface McpDeadEntry {
   filePath: string;
 }
 
+/** 一键清理的结构化结果：前端据此区分成功/无事可做/部分失败 */
+export interface McpCleanupResult {
+  removedCount: number;
+  blockedCount: number;
+  writeErrorCount: number;
+  /** true = 无写失败（可关闭确认弹窗）；部分失败保持弹窗供重试 */
+  complete: boolean;
+  /** 人类可读报告 */
+  message: string;
+}
+
 export interface McpSummary {
   total: number;
   enabled: number;
@@ -522,8 +533,8 @@ export const api = {
   /** 撤销某个环境对被分发条目的覆盖，改回共享值（决策 7.2：必须用户显式触发） */
   restoreSharedMcpEntry: (env: string, name: string): Promise<string> =>
     invoke("restore_shared_mcp_entry", { env, name }),
-  /** 一键清理死条目（目录确认不存在的项目键/登记表条目），返回清理报告消息 */
-  cleanupDeadProjectEntries: (): Promise<string> =>
+  /** 一键清理死条目（目录确认不存在的项目键/登记表条目）的结果 */
+  cleanupDeadProjectEntries: (): Promise<McpCleanupResult> =>
     invoke("cleanup_dead_project_entries"),
   /** 插件启用状态总览（扩展 → Plugins） */
   pluginsOverview: (): Promise<PluginRow[]> => invoke("plugins_overview"),

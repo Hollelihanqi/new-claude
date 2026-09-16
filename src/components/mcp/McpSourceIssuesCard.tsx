@@ -1,8 +1,25 @@
 import { useState } from "react";
 import { Alert, Button, Group, Stack, Text } from "@mantine/core";
 import { IconAlertTriangle, IconTrash } from "@tabler/icons-react";
-import type { McpDeadEntry, McpSourceIssue } from "../../api";
+import type { McpCleanupResult, McpDeadEntry, McpSourceIssue } from "../../api";
 import RiskConfirm from "../RiskConfirm";
+
+/** 清理结果 → 通知呈现方式。部分失败必须橙色提示且**不关弹窗**（可重试），
+ *  不得把"有文件写失败"伪装成绿色成功。纯函数便于回归测试。 */
+export function cleanupOutcomeView(result: McpCleanupResult): {
+  color: "teal" | "orange" | "gray";
+  title?: string;
+  closeDialog: boolean;
+} {
+  if (result.writeErrorCount > 0) {
+    return { color: "orange", title: "部分清理失败", closeDialog: false };
+  }
+  if (result.removedCount === 0) {
+    // 无事可做（条目已被并发处理/全部跳过）：中性灰，关弹窗
+    return { color: "gray", closeDialog: true };
+  }
+  return { color: "teal", closeDialog: true };
+}
 
 interface Props {
   issues: McpSourceIssue[];
@@ -65,6 +82,7 @@ export default function McpSourceIssuesCard({
         consequences={[
           `将删除 ${deadEntries.length} 条记录（涉及 ${fileCount} 个配置文件）：各环境 .claude.json 里的失效项目键，以及项目登记表里的失效条目。`,
           "只删除「目录确认已不存在」的条目；目录仍存在但权限不足、路径非法或不是目录的一律保留。",
+          "网络路径（UNC）、外置卷与非绝对路径即使当前访问不到也不会清理 —— 它们可能只是磁盘暂时离线。",
           "被改写的文件会先自动备份到 ~/.cc-manager/mcp-backups（每个来源保留最近 5 份），恢复需手动用备份覆盖。",
           "正在运行的 Claude Code 会话可能同时写 .claude.json，建议先关闭相关会话再清理。",
         ]}
