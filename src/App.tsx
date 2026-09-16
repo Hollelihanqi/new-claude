@@ -337,7 +337,7 @@ export default function App({
   }, []);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell platform-${env?.platform ?? "unknown"}`}>
       {/* Windows 自绘标题栏占 grid 第一行并横跨两列。macOS 使用原生标题栏；
           平台差异由后端 platform 决定，见 components/titleBarLayout。 */}
       <TitleBar platform={env?.platform} />

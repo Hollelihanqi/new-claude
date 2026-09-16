@@ -15,6 +15,7 @@
   --app-muted: #74838c;
   --app-sidebar: #102b35;
   --app-sidebar-soft: rgba(255, 255, 255, 0.07);
+  --app-panel-shadow: 0 1px 2px rgba(20, 39, 48, .035), 0 12px 32px rgba(20, 39, 48, .055);
   /* Windows 自绘标题栏高度。与 titleBarLayout.ts 的常量由测试钉住一致。 */
   --app-titlebar-height: 44px;
 }
@@ -34,6 +35,7 @@ html[data-mantine-color-scheme="dark"] {
   --app-strong-text: #dce5e9;
   --app-secondary-text: #a9b7bd;
   --app-muted: #9aa8ae;
+  --app-panel-shadow: 0 1px 2px rgba(0, 0, 0, .18), 0 14px 36px rgba(0, 0, 0, .16);
 }
 
 html,
@@ -68,8 +70,22 @@ body {
   /* 第一行给 Windows 自绘标题栏。用 auto 而不是固定高度：macOS 和其他平台不渲染时，
      该行会塌成 0，不会在顶部留一条空白。第二行是侧栏 + 主区，见它们的 grid-row。 */
   grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
   overflow: hidden;
-  background: var(--app-bg);
+  background:
+    radial-gradient(circle at 82% -20%, color-mix(in srgb, var(--mantine-primary-color-1) 24%, transparent), transparent 34%),
+    var(--app-bg);
+}
+
+/* macOS/原生窗口只有一行应用内容；Windows 另留第一行给自绘标题栏。 */
+.app-shell.platform-macos,
+.app-shell.platform-other {
+  grid-template-rows: minmax(0, 1fr);
+}
+.app-shell.platform-windows,
+.app-shell.platform-unknown {
+  padding-top: 0;
 }
 
 /* ---------------- 自绘标题栏 ---------------- */
@@ -87,6 +103,10 @@ body {
   border-bottom: 1px solid var(--app-border);
   backdrop-filter: blur(14px);
   user-select: none;
+}
+.platform-windows .app-titlebar,
+.platform-unknown .app-titlebar {
+  margin-inline: -14px;
 }
 
 /* 拖拽只用 data-tauri-drag-region 属性，**刻意不加** app-region: drag。
@@ -120,8 +140,13 @@ body {
   background:
     radial-gradient(circle at 10% 0%, rgba(31, 180, 202, .20), transparent 34%),
     linear-gradient(165deg, #123541 0%, #0d2731 68%, #0a222b 100%);
-  border-right: 1px solid rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.075);
+  border-radius: 20px;
+  box-shadow: 0 14px 36px rgba(8, 31, 39, .16), inset 0 1px rgba(255,255,255,.04);
+  overflow: hidden;
 }
+.platform-macos .app-sidebar,
+.platform-other .app-sidebar { grid-row: 1; }
 
 .brand-block { display: flex; align-items: center; gap: 12px; padding: 0 8px 28px; }
 .brand-mark {
@@ -159,10 +184,17 @@ body {
 .theme-dot { width: 15px; height: 15px; padding: 0; border: 2px solid rgba(255,255,255,.25); border-radius: 50%; cursor: pointer; }
 .theme-dot.active { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.18); }
 
-.app-main { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.app-main { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+.platform-macos .app-main,
+.platform-other .app-main { grid-row: 1; }
 .app-header {
-  height: 76px; flex: 0 0 76px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between;
-  background: var(--app-chrome-bg); border-bottom: 1px solid var(--app-border); backdrop-filter: blur(14px);
+  height: 82px; flex: 0 0 82px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between;
+  background: var(--app-chrome-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  box-shadow: var(--app-panel-shadow);
+  backdrop-filter: blur(18px) saturate(1.1);
+  overflow: hidden;
 }
 .page-kicker { color: var(--mantine-primary-color-7) !important; font-size: 9px !important; font-weight: 800; letter-spacing: 1.7px; }
 .page-title { margin-top: 2px; color: var(--app-text); font-size: 21px !important; line-height: 1.15; font-weight: 720; letter-spacing: -.45px; }
@@ -195,7 +227,7 @@ body {
 .header-divider { width: 1px; height: 24px; background: var(--app-border); }
 .header-action { color: #63747d !important; }
 
-.app-content { flex: 1; min-height: 0; padding: 22px 28px 26px; display: flex; flex-direction: column; overflow: hidden; }
+.app-content { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .view-stage { flex: 1; min-height: 0; }
 .view-scroll { height: 100%; overflow-y: auto; padding-right: 6px; }
 
@@ -221,9 +253,9 @@ body {
 .instances-pane, .editor-scroll { min-height: 0; overflow-y: auto; }
 .instances-card, .editor-card {
   background: var(--app-surface) !important; border: 1px solid var(--app-border) !important;
-  box-shadow: 0 1px 2px rgba(20,39,48,.025), 0 8px 26px rgba(20,39,48,.035) !important;
+  box-shadow: var(--app-panel-shadow) !important;
 }
-.instances-card { min-height: 100%; }
+.instances-card { min-height: 100%; border-radius: 18px !important; }
 .instances-card .mantine-NavLink-root { margin-bottom: 5px; border-radius: 11px; border: 1px solid transparent; }
 .instances-card .mantine-NavLink-root[data-active] { color: var(--mantine-primary-color-8); background: var(--mantine-primary-color-0); border-color: var(--mantine-primary-color-1); }
 .main-account-card { margin-bottom: 9px; padding: 10px; display: flex; align-items: center; gap: 9px; border-radius: 11px; color: var(--app-strong-text); background: var(--app-surface-soft); border: 1px solid var(--app-border); }
@@ -232,10 +264,30 @@ body {
 .main-account-usage { display: flex; flex-direction: column; align-items: flex-end; }
 .main-account-usage strong { font-size: 12px; }
 .main-account-usage span { color: #93a0a6; font-size: 8px; }
-.editor-card { min-height: 100%; overflow: visible; }
+.editor-scroll {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  box-shadow: var(--app-panel-shadow);
+  overflow-x: hidden;
+  overflow-y: auto;
+  isolation: isolate;
+}
+.editor-card {
+  min-height: 100%;
+  overflow: visible;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 17px !important;
+  box-shadow: none !important;
+}
 .editor-toolbar {
-  position: sticky; top: -20px; z-index: 5; margin: -20px -20px 6px; padding: 18px 20px 15px;
-  background: var(--app-toolbar-bg); border-bottom: 1px solid var(--app-border); backdrop-filter: blur(12px);
+  position: sticky; top: 0; z-index: 5; margin: -20px -20px 6px; padding: 18px 20px 15px;
+  background: var(--app-toolbar-bg);
+  border-bottom: 1px solid var(--app-border);
+  border-radius: 17px 17px 0 0;
+  box-shadow: 0 5px 16px rgba(20, 39, 48, .035);
+  backdrop-filter: blur(16px) saturate(1.12);
 }
 .form-section-label { margin: 10px 0 2px; padding-top: 15px; display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--app-subtle-border); }
 .form-section-label > span { width: 26px; height: 26px; display: grid; place-items: center; color: var(--mantine-primary-color-7); background: var(--mantine-primary-color-0); border-radius: 8px; font-size: 9px; font-weight: 800; }
@@ -369,7 +421,6 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
 @media (max-width: 980px) {
   .app-shell { grid-template-columns: 196px minmax(0, 1fr); }
   .app-header { padding: 0 20px; }
-  .app-content { padding: 18px 20px 22px; }
   .env-status { display: none; }
   .config-grid { grid-template-columns: 220px minmax(0, 1fr); }
 }

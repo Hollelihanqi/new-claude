@@ -36,6 +36,12 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 describe("品牌标识一致", () => {
+  it("HTML 窗口标题只使用 PathMux", () => {
+    const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
+    expect(html).toContain("<title>PathMux</title>");
+    for (const retired of RETIRED_NAMES) expect(html).not.toContain(retired);
+  });
+
   it("界面文案里不出现旧产品名（改名要切干净，旧名不许回来）", () => {
     const hits: string[] = [];
     // 注释里需要解释这个决定，所以先剥掉注释再查。
