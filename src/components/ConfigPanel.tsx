@@ -490,8 +490,9 @@ export default function ConfigPanel({
       </div>
 
       {/* 右栏：环境设置表单（独立滚动） */}
-      <div className="editor-scroll">
-        <Card withBorder padding="lg" radius="lg" className="editor-card">
+      <div className="editor-pane">
+        <div className="editor-scroll">
+          <Card withBorder padding="lg" radius="lg" className="editor-card">
           <Stack gap="sm">
             <Group justify="space-between" className="editor-toolbar">
               <div>
@@ -702,7 +703,8 @@ export default function ConfigPanel({
               <Code>source ~/.zshrc</Code>、Windows 跑 <Code>. $PROFILE</Code>）即可生效。
             </Text>
           </Stack>
-        </Card>
+          </Card>
+        </div>
       </div>
       </div>
     </div>

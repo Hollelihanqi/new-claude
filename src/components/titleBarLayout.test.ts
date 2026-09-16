@@ -72,8 +72,13 @@ describe("自绘标题栏的平台差异", () => {
     expect(rule(".app-shell")).toContain("gap: 14px");
     expect(rule(".app-sidebar")).toContain("border-radius: 20px");
     expect(rule(".app-header")).toContain("border-radius: 18px");
-    expect(rule(".editor-scroll")).toContain("border-radius: 18px");
+    const environmentFrames = rule(".instances-pane, .editor-pane");
+    expect(environmentFrames).toContain("border-radius: 18px");
+    expect(environmentFrames).toContain("overflow: hidden");
     expect(rule(".editor-scroll")).toContain("overflow-y: auto");
+    expect(rule(".workbuddy-grid:not(.workbuddy-grid-empty)")).toContain("overflow: hidden");
+    expect(rule(".mcp-table-card")).toContain("overflow: hidden");
+    expect(rule(".extension-table-card")).toContain("overflow: hidden");
     expect(rule(".editor-toolbar")).toContain("top: 0");
     expect(rule(".editor-toolbar")).not.toMatch(/top:\s*-\d/);
   });
