@@ -2,6 +2,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Text, Alert, Button } from "@mantine/core";
 import DiagnosticsPanel from "./DiagnosticsPanel";
+import PersistentPage from "./PersistentPage";
 import { api } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
@@ -29,7 +30,7 @@ beforeEach(() => {
   vi.mocked(api.lastVerification).mockResolvedValue(null);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 });
-afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const text = () => renderer.root.findAllByType(Text).flatMap((item) => item.children).filter((item) => typeof item === "string").join(" ");
 const mount = async () => { await act(async () => { renderer = create(<DiagnosticsPanel />); }); };
 
@@ -72,4 +73,22 @@ it("同步期间按钮显示「正在同步」并禁用，完成后恢复", asyn
   await act(async () => { release("done"); });
   expect(syncButton().props.disabled).toBeFalsy();
   expect(syncButton().children.join("")).toContain("同步并修复");
+});
+
+it("后台预热诊断页不读取钥匙串，只有真正进入页面才检查", async () => {
+  vi.useFakeTimers();
+  vi.mocked(api.healthCheck).mockResolvedValue([{ id: "test", label: "test", status: "ok", detail: "ready" }]);
+  vi.mocked(api.recentSyncLog).mockResolvedValue([]);
+  const view = (active: boolean) => (
+    <PersistentPage active={active} warmupDelay={100}>
+      <DiagnosticsPanel />
+    </PersistentPage>
+  );
+
+  await act(async () => { renderer = create(view(false)); });
+  await act(async () => { vi.advanceTimersByTime(100); });
+  expect(api.healthCheck).not.toHaveBeenCalled();
+
+  await act(async () => { renderer.update(view(true)); });
+  expect(api.healthCheck).toHaveBeenCalledTimes(1);
 });

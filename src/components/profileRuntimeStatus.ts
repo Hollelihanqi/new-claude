@@ -6,16 +6,13 @@ export interface ProfileStatus {
   shortLabel: string;
   /** 网关异常态（来自最近一次完整诊断）：环境页要为它提供单环境「检测」按钮 */
   gatewayDown?: boolean;
-  /** 检测进行中且尚无探测结论：显示中性「正在检测」，绿色必须有结论背书 */
-  checking?: boolean;
 }
 
 export function profileRuntimeStatus(
   profile: Profile,
   runtime: ProfileRuntimeInfo | undefined,
   claudeFound: boolean,
-  gatewayDown = false,
-  checking = false
+  gatewayDown = false
 ): ProfileStatus {
   if (!claudeFound) {
     return { healthy: false, label: "Claude CLI 未就绪", shortLabel: "CLI 未就绪" };
@@ -44,12 +41,6 @@ export function profileRuntimeStatus(
       label: "网关未连通（上次诊断）",
       shortLabel: "网关异常",
     };
-  }
-
-  // 其余全部就绪、但探测还没出结论（升级/安装后首次自动检测进行中）：
-  // 绿色必须由探测结论背书，检测中显示中性态。
-  if (checking) {
-    return { healthy: false, checking: true, label: "正在检测", shortLabel: "检测中" };
   }
 
   return { healthy: true, label: "环境正常", shortLabel: "正常" };

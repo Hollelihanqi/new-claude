@@ -563,9 +563,6 @@ export const api = {
   fixModelPin: (profile: string): Promise<string> =>
     invoke("fix_model_pin", { profile }),
   healthCheck: (): Promise<HealthItem[]> => invoke("health_check"),
-  /** 升级/安装后首次启动的自动检测：版本没变返回 null（跳过），变了跑全量并记录 */
-  startupHealthCheck: (): Promise<HealthItem[] | null> =>
-    invoke("startup_health_check"),
   /** 最近一次完整健康检查。从未检测过 / 记录损坏 / 时间戳来自未来都返回 null */
   lastVerification: (): Promise<
     { at: number; problems: number; gatewayFails?: string[]; appVersion?: string | null } | null

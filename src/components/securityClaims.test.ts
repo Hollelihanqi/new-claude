@@ -49,4 +49,10 @@ describe("安全承诺与代码事实一致", () => {
     expect(guide).toContain("明文文件");
     expect(guide).toContain("同一登录用户下的其他程序");
   });
+
+  it("应用启动不自动读取钥匙串凭证", () => {
+    // 完整健康检查会解密每个网关 Key；若在 App 启动流程调用，就会在 macOS
+    // 每次升级或未完成检测后弹系统授权框。钥匙串读取只能由用户主动操作触发。
+    expect(read("src/App.tsx")).not.toContain("startupHealthCheck");
+  });
 });

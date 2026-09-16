@@ -5,7 +5,7 @@ import { api } from "../api";
 import type { HealthItem } from "../api";
 import StableRefreshButton from "./StableRefreshButton";
 import EnvironmentProof from "./EnvironmentProof";
-import { usePageActivation } from "./PersistentPage";
+import { usePageActive } from "./PersistentPage";
 
 const STATUS = {
   ok: { color: "teal", Icon: IconCircleCheck },
@@ -14,6 +14,7 @@ const STATUS = {
 };
 
 export default function DiagnosticsPanel() {
+  const pageActive = usePageActive();
   const [items, setItems] = useState<HealthItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [healthState, setHealthState] = useState<"idle" | "loading" | "success" | "error">("idle");
@@ -24,6 +25,7 @@ export default function DiagnosticsPanel() {
   const [action, setAction] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string }>({ ok: true, text: "" });
   const inFlight = useRef(false);
+  const hasChecked = useRef(false);
   const run = (quiet = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -52,8 +54,18 @@ export default function DiagnosticsPanel() {
       .then((recentLogs) => { if (request === requestId.current) setLogs(recentLogs); })
       .catch((e) => { if (request === requestId.current) { setLogs([]); setLogError(String(e)); } });
   };
-  useEffect(() => { run(); return () => { requestId.current += 1; inFlight.current = false; }; }, []);
-  usePageActivation(() => run(true));
+  // PersistentPage 会在后台提前挂载诊断页以加快切换，但完整健康检查会读取每个
+  // 网关的钥匙串凭证。后台预热绝不能触发系统授权框；只有用户真正进入诊断页
+  // 时才检查，之后再次进入则静默刷新。
+  useEffect(() => {
+    if (!pageActive) return;
+    run(hasChecked.current);
+    hasChecked.current = true;
+    return () => {
+      requestId.current += 1;
+      inFlight.current = false;
+    };
+  }, [pageActive]);
   const sync = async () => {
     setAction("sync");
     try { setMessage({ ok: true, text: await api.syncAll() }); run(); }

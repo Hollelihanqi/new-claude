@@ -200,7 +200,7 @@ describe("默认 Claude 的模型钉死只告警、不提供一键修复", () =>
 // “配置待完善”——那会误导用户去检查网关地址和 Key（实际两者都正常）。
 describe("运行状态按失败原因区分文案", () => {
   let renderer: ReactTestRenderer;
-  const mount = async (claudeFound: boolean, sharedDirsOk: boolean, gatewayFails: string[] = [], healthChecking = false) => {
+  const mount = async (claudeFound: boolean, sharedDirsOk: boolean, gatewayFails: string[] = []) => {
     vi.resetAllMocks();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(api.listProfiles).mockResolvedValue([profile("a")]);
@@ -214,7 +214,7 @@ describe("运行状态按失败原因区分文案", () => {
     );
     await act(async () => {
       renderer = create(
-        <ConfigPanel env={claudeFound ? ({ claude_found: true } as never) : null} usageData={null} healthChecking={healthChecking} />,
+        <ConfigPanel env={claudeFound ? ({ claude_found: true } as never) : null} usageData={null} />,
       );
     });
     act(() => renderer.root.findAllByType(NavLink)[0].props.onClick());
@@ -238,12 +238,6 @@ describe("运行状态按失败原因区分文案", () => {
   it("Claude 未检测到时显示 CLI 未就绪", async () => {
     await mount(false, false);
     expect(statusText()).toContain("Claude CLI 未就绪");
-  });
-
-  it("启动自动检测进行中显示「正在检测」而非默认绿色", async () => {
-    await mount(true, true, [], true);
-    expect(statusText()).toContain("正在检测");
-    expect(statusText()).not.toContain("环境正常");
   });
 
   it("上次诊断网关不通的环境显示异常，并提供单环境复测", async () => {
