@@ -442,10 +442,61 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
 
 /* ---------------- MCP 服务页 ---------------- */
 .mcp-page { height: 100%; display: flex; flex-direction: column; gap: 16px; }
+.mcp-overview-card,
+.mcp-table-card,
+.extensions-nav-card,
+.extension-control-card,
+.extension-table-card {
+  background: var(--app-surface) !important;
+  border-color: var(--app-border) !important;
+  border-radius: 18px !important;
+  box-shadow: var(--app-panel-shadow) !important;
+}
+.mcp-overview-card { flex: 0 0 auto; padding: 18px 20px; }
 .mcp-summary-grid { flex: 0 0 auto; }
-.mcp-toolbar { flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-.mcp-table-card { flex: 1; min-height: 0; overflow: hidden; }
-.mcp-table-scroll { height: 100%; overflow: auto; }
+.mcp-overview-card .mcp-summary-grid .mantine-Card-root {
+  background: var(--app-surface-soft);
+  border-color: var(--app-subtle-border);
+  border-radius: 13px;
+  box-shadow: none;
+}
+.mcp-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--app-surface-subtle);
+  border-bottom: 1px solid var(--app-border);
+}
+.mcp-table-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.mcp-table-card[data-empty="true"] { flex: 0 0 auto; min-height: 300px; }
+.mcp-table-scroll { flex: 1; min-height: 0; overflow: auto; }
+.mcp-table-card .mantine-Table-thead,
+.extension-table-card .mantine-Table-thead { background: var(--app-surface-soft); }
+.mcp-empty-state,
+.extension-empty-state {
+  min-height: 190px;
+  padding: 28px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  text-align: center;
+}
+.extension-empty-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 3px;
+  display: grid;
+  place-items: center;
+  color: var(--mantine-primary-color-7);
+  background: var(--mantine-primary-color-0);
+  border: 1px solid var(--mantine-primary-color-1);
+  border-radius: 15px;
+}
 .mcp-name-cell { min-width: 180px; }
 .mcp-target-column { min-width: 130px; }
 .mcp-actions-column {
@@ -468,6 +519,50 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
 .mcp-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .mcp-kv-row { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(180px, 1.4fr) auto; gap: 8px; align-items: end; }
 .mcp-redacted { font-family: monospace; letter-spacing: 1px; }
+
+/* ---------------- 扩展中心 ---------------- */
+.extensions-scroll { padding-right: 0; }
+.extensions-tabs { min-height: 100%; display: flex; flex-direction: column; gap: 14px; }
+.extensions-nav-card { flex: 0 0 auto; padding: 16px 20px; }
+.extensions-tab-list {
+  padding: 4px;
+  gap: 3px;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 13px;
+}
+.extensions-tab-list::before { display: none; }
+.extensions-tab-list .mantine-Tabs-tab {
+  padding: 8px 14px;
+  color: var(--app-secondary-text);
+  border: 0;
+  border-radius: 9px;
+}
+.extensions-tab-list .mantine-Tabs-tab[data-active] {
+  color: var(--app-strong-text);
+  background: var(--app-surface);
+  box-shadow: 0 1px 3px rgba(20, 39, 48, .10);
+}
+.extension-manager { padding-bottom: 4px; }
+.extension-control-card { padding: 18px 20px; }
+.extension-toolbar { flex: 1 1 620px; justify-content: flex-end; }
+.extension-check-summary {
+  padding-top: 12px;
+  border-top: 1px solid var(--app-subtle-border);
+}
+.extension-table-card { overflow: hidden; }
+.extension-table-card .mantine-Table-th,
+.extension-table-card .mantine-Table-td { padding-inline: 16px; }
+
+html[data-mantine-color-scheme="dark"] .extension-empty-icon {
+  color: var(--mantine-primary-color-3);
+  background: color-mix(in srgb, var(--mantine-primary-color-9) 22%, var(--app-surface));
+  border-color: var(--app-border);
+}
+
+@media (max-width: 1100px) {
+  .extension-toolbar { justify-content: flex-start; }
+}
 .mcp-config-preview {
   margin: 4px 0 0; padding: 10px; max-height: 220px; overflow: auto;
   background: var(--app-bg); border: 1px solid var(--app-border); border-radius: 8px;

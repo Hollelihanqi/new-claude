@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePageActivation } from "./PersistentPage";
-import { Alert, Badge, Button, Card, Group, Modal, Select, Stack, Switch, Table, Tabs, Text, TextInput, Title, Tooltip } from "@mantine/core";
+import { Alert, Badge, Button, Card, Group, Modal, Select, Stack, Switch, Table, Tabs, Text, TextInput, Tooltip } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { open } from "@tauri-apps/plugin-dialog";
 import { IconBrain, IconPlugConnected, IconRefresh, IconRobot, IconTrash } from "@tabler/icons-react";
@@ -101,9 +101,12 @@ function ResourceManager({ kind }: { kind: ResourceKind }) {
     }
   };
 
+  const emptyIcon = kind === "skills" ? <IconBrain size={24} /> : <IconRobot size={24} />;
+
   return (
-    <Stack gap="md">
-      <Group justify="space-between" align="flex-start" wrap="wrap">
+    <Stack gap="md" className="extension-manager">
+      <Card withBorder radius="lg" className="extension-control-card">
+      <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
         <div>
           <Group gap={6}>
             <Text fw={700}>共享 {label}</Text>
@@ -111,7 +114,7 @@ function ResourceManager({ kind }: { kind: ResourceKind }) {
           </Group>
           <Text size="xs" c="dimmed">默认 Claude 只用于发现可导入项；共享更新不会覆盖目标自己的同名版本。</Text>
         </div>
-        <Group gap="xs">
+        <Group gap="xs" className="extension-toolbar">
           <Group gap={4}>
             <Switch
               size="xs"
@@ -148,14 +151,16 @@ function ResourceManager({ kind }: { kind: ResourceKind }) {
         </Group>
       </Group>
 
-      {err && <Alert color="red">{err}</Alert>}
-      {overview && <Text size="xs" c="dimmed">
+      {overview && <Text size="xs" c="dimmed" mt="md" className="extension-check-summary">
         最近自动检查：{lastAutoImport} · 新增 {overview.lastAutoImportAdded} 项 · 跳过 {overview.lastAutoImportSkipped} 项
       </Text>}
+      </Card>
+
+      {err && <Alert color="red">{err}</Alert>}
       {(overview?.lastAutoImportFailures.length ?? 0) > 0 && <Alert color="orange" title="最近自动导入有未完成项">
         {overview?.lastAutoImportFailures.map((failure) => <Text size="xs" key={failure}>{failure}</Text>)}
       </Alert>}
-      <Card withBorder padding={0} radius="md">
+      <Card withBorder padding={0} radius="lg" className="extension-table-card">
         <Table highlightOnHover verticalSpacing="sm">
           <Table.Thead><Table.Tr>
             <Table.Th>{label}</Table.Th><Table.Th w={115}>共享库</Table.Th><Table.Th w={125}>默认 Claude</Table.Th>
@@ -189,11 +194,17 @@ function ResourceManager({ kind }: { kind: ResourceKind }) {
                 </Group></Table.Td>
               </Table.Tr>;
             })}
-            {!busy && (overview?.items.length ?? 0) === 0 && <Table.Tr><Table.Td colSpan={5}><Text ta="center" c="dimmed" py="lg">暂未发现 {label}</Text></Table.Td></Table.Tr>}
+            {!busy && (overview?.items.length ?? 0) === 0 && <Table.Tr><Table.Td colSpan={5}>
+              <div className="extension-empty-state">
+                <div className="extension-empty-icon">{emptyIcon}</div>
+                <Text fw={650}>暂未发现 {label}</Text>
+                <Text size="xs" c="dimmed">可从默认 Claude 导入，或选择本地{kind === "skills" ? "目录" : "文件"}安装到共享库。</Text>
+              </div>
+            </Table.Td></Table.Tr>}
           </Table.Tbody>
         </Table>
       </Card>
-      {overview && <Text size="xs" c="dimmed">共享库：{overview.sharedPath}</Text>}
+      {overview && <Text size="xs" c="dimmed" px={4}>共享库：{overview.sharedPath}</Text>}
 
       <Modal opened={deleteItem !== null} onClose={() => setDeleteItem(null)} title={`删除共享 ${label}`} centered>
         <Stack>
@@ -288,11 +299,12 @@ function PluginSharing() {
     }
   };
 
-  return <Stack gap="md">
-    <Group justify="space-between" align="flex-start" wrap="wrap">
+  return <Stack gap="md" className="extension-manager">
+    <Card withBorder radius="lg" className="extension-control-card">
+    <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
       <div><Group gap={6}><Text fw={700}>插件管理</Text><FeatureHelp content={PLUGINS_HELP} /></Group>
         <Text size="xs" c="dimmed">插件在每个环境独立安装；“所有环境”会逐个调用官方命令，默认 Claude 只读。</Text></div>
-      <Group gap="xs">
+      <Group gap="xs" className="extension-toolbar">
         <Select size="xs" w={220} value={target} disabled={!!busy} onChange={(value) => value && setTarget(value)} allowDeselect={false}
           data={[{ value: ALL_ENVS, label: "所有环境" }, ...envNames.map((env) => ({ value: env, label: `环境 ${env}` }))]} />
         <Select size="xs" w={235} searchable clearable value={defaultPlugin} onChange={setDefaultPlugin}
@@ -307,6 +319,7 @@ function PluginSharing() {
           loading={busy === `install:${pluginName.trim()}`} onClick={() => void manage("install", pluginName)}>安装插件</Button>
       </Group>
     </Group>
+    </Card>
     <Alert color="blue" variant="light">安装、更新、启用、停用和卸载均由 Claude Code 官方命令逐环境执行；列表分别展示真实安装状态与启停策略。</Alert>
     {err && <Alert color="red">{err}</Alert>}
     {lastReport && <Alert color={lastReport.results.every((item) => item.ok) ? "teal" : "orange"} title={<Group gap={4}>插件操作结果<FeatureHelp content={PLUGIN_RESULT_HELP} /></Group>}>
@@ -314,7 +327,7 @@ function PluginSharing() {
       {lastReport.policyWarning && <Text size="xs" c="orange.9" mt={6}>{lastReport.policyWarning}</Text>}
       <Text size="xs" mt={6}>{lastReport.reloadHint}</Text>
     </Alert>}
-    <Card withBorder padding={0} radius="md"><Table verticalSpacing="xs" highlightOnHover>
+    <Card withBorder padding={0} radius="lg" className="extension-table-card"><Table verticalSpacing="xs" highlightOnHover>
       <Table.Thead><Table.Tr><Table.Th>插件</Table.Th><Table.Th w={140}>默认 Claude</Table.Th><Table.Th w={190}>{isAll ? "所有环境" : `环境 ${target}`}</Table.Th><Table.Th w={270}>操作</Table.Th></Table.Tr></Table.Thead>
       <Table.Tbody>{rows.map((row) => {
         const envState = row.envs.find((entry) => entry.env === target);
@@ -346,8 +359,14 @@ function PluginSharing() {
           </Group></Table.Td>
         </Table.Tr>;
       })}</Table.Tbody>
+      {rows.length === 0 && <Table.Tbody><Table.Tr><Table.Td colSpan={4}>
+        <div className="extension-empty-state">
+          <div className="extension-empty-icon"><IconPlugConnected size={24} /></div>
+          <Text fw={650}>还没有已知插件</Text>
+          <Text size="xs" c="dimmed">选择默认 Claude 中的插件，或输入 plugin@marketplace 开始安装。</Text>
+        </div>
+      </Table.Td></Table.Tr></Table.Tbody>}
     </Table></Card>
-    {rows.length === 0 && <Text size="xs" c="dimmed">还没有已知插件。</Text>}
     <Modal opened={!!removeName} onClose={() => setRemoveName("")} title="卸载插件" centered>
       <Stack><Text size="sm">将从{isAll ? "所有环境" : `环境 ${target}`}卸载“{removeName}”。每个环境会分别执行 Claude Code 官方卸载命令。</Text>
         <Group justify="flex-end"><Button variant="default" onClick={() => setRemoveName("")}>取消</Button>
@@ -358,17 +377,22 @@ function PluginSharing() {
 }
 
 export default function ExtensionsPanel() {
-  return <div className="view-scroll"><Stack gap="md">
-    <div><Title order={3}>扩展中心</Title><Text size="sm" c="dimmed">分别管理 Skills、Plugins 与 Agents。Commands 已退出独立管理。</Text></div>
-    <Tabs defaultValue="skills" keepMounted>
-      <Tabs.List>
-        <Tabs.Tab value="skills" leftSection={<IconBrain size={15} />}>Skills</Tabs.Tab>
-        <Tabs.Tab value="plugins" leftSection={<IconPlugConnected size={15} />}>Plugins</Tabs.Tab>
-        <Tabs.Tab value="agents" leftSection={<IconRobot size={15} />}>Agents</Tabs.Tab>
-      </Tabs.List>
-      <Tabs.Panel value="skills" pt="md"><ResourceManager kind="skills" /></Tabs.Panel>
-      <Tabs.Panel value="plugins" pt="md"><PluginSharing /></Tabs.Panel>
-      <Tabs.Panel value="agents" pt="md"><ResourceManager kind="agents" /></Tabs.Panel>
-    </Tabs>
-  </Stack></div>;
+  return <div className="view-scroll extensions-scroll"><Tabs defaultValue="skills" keepMounted className="extensions-tabs">
+    <Card withBorder radius="lg" className="extensions-nav-card">
+      <Group justify="space-between" align="center" wrap="wrap" gap="md">
+        <div>
+          <Text fw={700}>扩展类型</Text>
+          <Text size="xs" c="dimmed">Skills、Plugins 与 Agents 分开管理，Commands 已退出独立管理。</Text>
+        </div>
+        <Tabs.List className="extensions-tab-list">
+          <Tabs.Tab value="skills" leftSection={<IconBrain size={15} />}>Skills</Tabs.Tab>
+          <Tabs.Tab value="plugins" leftSection={<IconPlugConnected size={15} />}>Plugins</Tabs.Tab>
+          <Tabs.Tab value="agents" leftSection={<IconRobot size={15} />}>Agents</Tabs.Tab>
+        </Tabs.List>
+      </Group>
+    </Card>
+    <Tabs.Panel value="skills"><ResourceManager kind="skills" /></Tabs.Panel>
+    <Tabs.Panel value="plugins"><PluginSharing /></Tabs.Panel>
+    <Tabs.Panel value="agents"><ResourceManager kind="agents" /></Tabs.Panel>
+  </Tabs></div>;
 }

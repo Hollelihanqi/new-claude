@@ -21,7 +21,6 @@ import {
   Tabs,
   Text,
   TextInput,
-  Title,
   Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -381,10 +380,11 @@ export default function McpPanel() {
 
   return (
     <div className="mcp-page">
-      <Group justify="space-between" align="flex-start">
+      <Card withBorder radius="lg" className="mcp-overview-card">
+      <Group justify="space-between" align="flex-start" mb="md">
         <div>
           <Group gap={6} align="center">
-            <Title order={3}>MCP 服务</Title>
+            <Text fw={700}>服务概览</Text>
             <FeatureHelp content={MCP_HELP} />
           </Group>
           <Text size="sm" c="dimmed">
@@ -399,6 +399,7 @@ export default function McpPanel() {
         summary={summary}
         sharedOverrideCount={state?.sharedOverrides?.length}
       />
+      </Card>
 
       {/* 决策 7.2：同名时环境配置优先，但**必须显示冲突**。
           静默保留会让用户以为共享值已经生效，等到发现不一致时无从判断是哪一步的问题。 */}
@@ -477,6 +478,13 @@ export default function McpPanel() {
         </Alert>
       )}
 
+      <Card
+        withBorder
+        padding={0}
+        className="mcp-table-card"
+        radius="lg"
+        data-empty={!busy && filtered.length === 0}
+      >
       <div className="mcp-toolbar">
         <TextInput
           leftSection={<IconSearch size={15} />}
@@ -543,7 +551,6 @@ export default function McpPanel() {
         </Button>
       </div>
 
-      <Card withBorder padding={0} className="mcp-table-card" radius="md">
         <Box className="mcp-table-scroll">
           {busy && !state ? (
             <Group justify="center" p="xl"><Loader /></Group>
@@ -589,7 +596,15 @@ export default function McpPanel() {
                 {filtered.length === 0 && (
                   <Table.Tr>
                     <Table.Td colSpan={4 + syncTargetColumns.length}>
-                      <Text c="dimmed" ta="center" py="lg">没有匹配的 MCP 服务</Text>
+                      <div className="mcp-empty-state">
+                        <div className="extension-empty-icon"><IconPlus size={24} /></div>
+                        <Text fw={650}>{query || scopeFilter !== "all" || instanceFilter !== "all" || projectFilter !== "all" ? "没有符合筛选条件的 MCP 服务" : "还没有 MCP 服务"}</Text>
+                        <Text size="xs" c="dimmed">可以新建服务，也可以从现有 JSON 配置导入。</Text>
+                        <Group gap="xs" mt={4}>
+                          <Button size="xs" variant="default" onClick={() => setImportOpened(true)}>导入 JSON</Button>
+                          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setDrawerState({ mode: "create" })}>添加 MCP</Button>
+                        </Group>
+                      </div>
                     </Table.Td>
                   </Table.Tr>
                 )}

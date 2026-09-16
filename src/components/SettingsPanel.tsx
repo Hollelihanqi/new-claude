@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Badge, Button, Card, Group, SegmentedControl, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Alert, Badge, Button, Card, Group, SegmentedControl, SimpleGrid, Stack, Text, ThemeIcon } from "@mantine/core";
 import { IconArchive, IconCertificate, IconDownload, IconLock, IconPalette, IconShieldCheck } from "@tabler/icons-react";
 import { api } from "../api";
 import type { EnvInfo } from "../api";
@@ -19,7 +19,6 @@ export default function SettingsPanel({ env, scheme, setScheme, appVersion, onCh
   return (
     <div className="view-scroll">
       <Stack gap="md">
-        <div><Title order={3}>系统设置</Title><Text size="sm" c="dimmed">管理应用外观、更新、证书、备份与安全策略。</Text></div>
         {message.text && <Alert color={message.ok ? "teal" : "red"}>{message.text}</Alert>}
         <SimpleGrid cols={{ base: 1, md: 2 }}>
           <Card withBorder padding="lg" radius="lg"><Group mb="md"><ThemeIcon variant="light" size="lg"><IconPalette size={19} /></ThemeIcon><div><Text fw={700}>界面主题</Text><Text size="xs" c="dimmed">选择应用的强调色</Text></div></Group><SegmentedControl fullWidth value={scheme} onChange={(value) => setScheme(value as Scheme)} data={[{ value: "b", label: "深海蓝" }, { value: "a", label: "活力橙" }]} /></Card>

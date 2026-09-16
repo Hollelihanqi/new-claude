@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Badge, Button, Card, Code, Group, Loader, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { Alert, Badge, Button, Card, Code, Group, Loader, Stack, Text, ThemeIcon } from "@mantine/core";
 import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconFileDownload, IconTool } from "@tabler/icons-react";
 import { api } from "../api";
 import type { HealthItem } from "../api";
@@ -21,18 +21,24 @@ export default function DiagnosticsPanel() {
   const [healthError, setHealthError] = useState("");
   const [logError, setLogError] = useState("");
   const requestId = useRef(0);
+  const logRequestId = useRef(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [action, setAction] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string }>({ ok: true, text: "" });
   const inFlight = useRef(false);
-  const hasChecked = useRef(false);
+  const loadLogs = () => {
+    const request = ++logRequestId.current;
+    setLogError("");
+    void api.recentSyncLog()
+      .then((recentLogs) => { if (request === logRequestId.current) setLogs(recentLogs); })
+      .catch((e) => { if (request === logRequestId.current) { setLogs([]); setLogError(String(e)); } });
+  };
   const run = (quiet = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
     const request = ++requestId.current;
     if (!quiet) { setBusy(true); setHealthState("loading"); }
     setHealthError("");
-    setLogError("");
     void api.healthCheck()
       .then((health) => {
         if (request !== requestId.current) return;
@@ -50,20 +56,19 @@ export default function DiagnosticsPanel() {
         setHealthError(String(e));
       })
       .finally(() => { if (request === requestId.current) { inFlight.current = false; setBusy(false); } });
-    void api.recentSyncLog()
-      .then((recentLogs) => { if (request === requestId.current) setLogs(recentLogs); })
-      .catch((e) => { if (request === requestId.current) { setLogs([]); setLogError(String(e)); } });
+    loadLogs();
   };
-  // PersistentPage 会在后台提前挂载诊断页以加快切换，但完整健康检查会读取每个
-  // 网关的钥匙串凭证。后台预热绝不能触发系统授权框；只有用户真正进入诊断页
-  // 时才检查，之后再次进入则静默刷新。
+  // 进入诊断页只读取不含凭证的同步日志。完整健康检查会读取网关钥匙串凭证，
+  // 因此必须由用户明确点击「开始诊断」，不能由后台预热或页面切换自动触发。
   useEffect(() => {
     if (!pageActive) return;
-    run(hasChecked.current);
-    hasChecked.current = true;
+    loadLogs();
     return () => {
       requestId.current += 1;
+      logRequestId.current += 1;
       inFlight.current = false;
+      setBusy(false);
+      setHealthState((state) => state === "loading" ? "idle" : state);
     };
   }, [pageActive]);
   const sync = async () => {
@@ -83,10 +88,18 @@ export default function DiagnosticsPanel() {
   return (
     <div className="view-scroll">
       <Stack gap="md">
-        <Group justify="space-between">
-          <div><Title order={3}>诊断中心</Title><Text size="sm" c="dimmed">集中检查、修复和导出环境状态。</Text></div>
+        <Card withBorder padding="lg" radius="lg" className="diagnostic-summary diagnostic-overview-card">
+        <Group justify="space-between" align="center" wrap="wrap" gap="md">
+          <div>
+            <Text size="xs" c="dimmed" fw={700}>OVERALL HEALTH</Text>
+            <Group gap="xs" align="center">
+              <Text fw={750} size="xl">{healthState === "loading" ? "正在检测环境" : healthState === "error" ? "检测未完成，请重试" : healthState === "idle" ? "尚未诊断" : problems ? `${problems} 项需要处理` : "所有检查均正常"}</Text>
+              {!busy && <Badge size="lg" variant="light" color={healthState !== "success" ? "gray" : problems ? "orange" : "teal"}>{healthState !== "success" ? "暂无结论" : problems ? "需要关注" : "健康"}</Badge>}
+            </Group>
+            {healthState === "idle" && <Text size="xs" c="dimmed" mt={3}>进入页面不会自动读取凭证；点击“开始诊断”后才会检查环境。</Text>}
+          </div>
           <Group gap="xs">
-            <StableRefreshButton busy={busy} busyLabel="检测中…" label="重新检测" onClick={run} />
+            <StableRefreshButton busy={busy} busyLabel="检测中…" label={healthState === "idle" ? "开始诊断" : "重新检测"} onClick={run} />
             {/* 不用 Mantine 的 loading 属性：它会隐藏按钮文字只剩转圈，用户看不出
                 正在同步。改成显式 Loader + 文字切换，忙碌状态一眼可辨。 */}
             <Button
@@ -99,11 +112,6 @@ export default function DiagnosticsPanel() {
             <Button variant="default" leftSection={<IconFileDownload size={15} />} onClick={exportReport} loading={action === "export"}>导出诊断</Button>
           </Group>
         </Group>
-        <Card withBorder padding="lg" radius="lg" className="diagnostic-summary">
-          <Group justify="space-between">
-            <div><Text size="xs" c="dimmed" fw={700}>OVERALL HEALTH</Text><Text fw={750} size="xl">{healthState === "loading" ? "正在检测环境" : healthState === "error" ? "检测未完成，请重试" : healthState === "idle" ? "尚未检测" : problems ? `${problems} 项需要处理` : "所有检查均正常"}</Text></div>
-            {busy ? <Loader /> : <Badge size="xl" variant="light" color={healthState !== "success" ? "gray" : problems ? "orange" : "teal"}>{healthState !== "success" ? "暂无结论" : problems ? "需要关注" : "健康"}</Badge>}
-          </Group>
         </Card>
         {/* 环境证明卡：把散落各页的结论汇成一处，同事报障时先看这里 */}
         {healthState === "success" && <EnvironmentProof items={items} />}

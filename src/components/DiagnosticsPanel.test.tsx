@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Text, Alert, Button } from "@mantine/core";
 import DiagnosticsPanel from "./DiagnosticsPanel";
 import PersistentPage from "./PersistentPage";
+import StableRefreshButton from "./StableRefreshButton";
 import { api } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
@@ -33,11 +34,18 @@ beforeEach(() => {
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const text = () => renderer.root.findAllByType(Text).flatMap((item) => item.children).filter((item) => typeof item === "string").join(" ");
 const mount = async () => { await act(async () => { renderer = create(<DiagnosticsPanel />); }); };
+const diagnose = async () => {
+  await act(async () => {
+    renderer.root.findByType(StableRefreshButton).props.onClick();
+    await Promise.resolve();
+  });
+};
 
 it("首次健康检查失败不能显示健康结论", async () => {
   vi.mocked(api.healthCheck).mockRejectedValue(new Error("网络失败"));
   vi.mocked(api.recentSyncLog).mockResolvedValue([]);
   await mount();
+  await diagnose();
   expect(text()).toContain("检测未完成");
   expect(text()).not.toContain("所有检查均正常");
 });
@@ -46,6 +54,7 @@ it("日志失败不影响成功的健康结果", async () => {
   vi.mocked(api.healthCheck).mockResolvedValue([{ id: "test", label: "test", status: "ok", detail: "ready" }]);
   vi.mocked(api.recentSyncLog).mockRejectedValue(new Error("日志无法读取"));
   await mount();
+  await diagnose();
   expect(text()).toContain("所有检查均正常");
   expect(renderer.root.findAllByType(Alert).flatMap((item) => item.children)).toContain("日志读取失败：");
 });
@@ -54,6 +63,7 @@ it("空健康结果不能算检查成功", async () => {
   vi.mocked(api.healthCheck).mockResolvedValue([]);
   vi.mocked(api.recentSyncLog).mockResolvedValue([]);
   await mount();
+  await diagnose();
   expect(text()).toContain("检测未完成");
 });
 
@@ -75,7 +85,7 @@ it("同步期间按钮显示「正在同步」并禁用，完成后恢复", asyn
   expect(syncButton().children.join("")).toContain("同步并修复");
 });
 
-it("后台预热诊断页不读取钥匙串，只有真正进入页面才检查", async () => {
+it("后台预热和进入诊断页都不读取钥匙串，只有点击开始诊断才检查", async () => {
   vi.useFakeTimers();
   vi.mocked(api.healthCheck).mockResolvedValue([{ id: "test", label: "test", status: "ok", detail: "ready" }]);
   vi.mocked(api.recentSyncLog).mockResolvedValue([]);
@@ -90,5 +100,8 @@ it("后台预热诊断页不读取钥匙串，只有真正进入页面才检查"
   expect(api.healthCheck).not.toHaveBeenCalled();
 
   await act(async () => { renderer.update(view(true)); });
+  expect(api.healthCheck).not.toHaveBeenCalled();
+
+  await diagnose();
   expect(api.healthCheck).toHaveBeenCalledTimes(1);
 });
