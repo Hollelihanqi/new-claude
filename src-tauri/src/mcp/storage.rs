@@ -199,6 +199,35 @@ pub(crate) fn canonicalize_dir(path: &str) -> Result<PathBuf, String> {
     Ok(strip_verbatim(&canon))
 }
 
+/// 目录探测三态。`Missing` **只**对应 `fs::metadata` 返回 NotFound ——
+/// 这是「一键清理死条目」唯一的可删判据；权限不足/路径非法（空串、含 ..）/
+/// 不是目录等其他失败一律 `Other`，不允许清理（fail-safe）。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DirProbe {
+    Ok(PathBuf),
+    Missing,
+    Other(String),
+}
+
+pub(crate) fn probe_project_dir(path: &str) -> DirProbe {
+    // 与 canonicalize_dir 同一合法性判据，先于任何 FS 访问，保证两处不会漂移。
+    if path.is_empty() || path.contains("..") {
+        return DirProbe::Other("项目路径非法".into());
+    }
+    if let Err(e) = fs::metadata(path) {
+        return if e.kind() == std::io::ErrorKind::NotFound {
+            DirProbe::Missing
+        } else {
+            DirProbe::Other(format!("目录不存在或不可访问：{path}"))
+        };
+    }
+    // metadata 成功后只剩「不是目录」或 canonicalize 细节失败：文案直接复用 canonicalize_dir。
+    match canonicalize_dir(path) {
+        Ok(c) => DirProbe::Ok(c),
+        Err(e) => DirProbe::Other(e),
+    }
+}
+
 fn strip_verbatim(p: &Path) -> PathBuf {
     let s = p.display().to_string();
     PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
@@ -2156,6 +2185,249 @@ pub(crate) fn touches_user(action: &McpChangeAction) -> bool {
     }
 }
 
+// ---------------- 死条目（一键清理的判定与枚举） ----------------
+
+/// 内部死条目表示。清理与展示共用，删除时按 raw 原样定位。
+#[derive(Clone, Debug)]
+pub(crate) enum DeadEntry {
+    /// 某环境用户级源文件（.claude.json / 共享库）里 projects 下的死键
+    ProjectKey {
+        instance: String,
+        raw_key: String,
+        file: PathBuf,
+    },
+    /// 登记表 mcp-projects.json 里的死条目
+    RegistryProject { raw_path: String },
+}
+
+pub(crate) struct DeadScan {
+    /// 目录确认不存在（DirProbe::Missing），可被一键清理
+    pub dead: Vec<DeadEntry>,
+    /// 疑似失效但**不满足 NotFound 判据**的条目：(raw, 原因)，只报告不删除
+    pub blocked: Vec<(String, String)>,
+}
+
+/// **唯一**的死条目枚举点：`collect_state`（展示 deadEntries）与
+/// `cleanup_dead_entries`（删除清单）都走这里 —— 两套遍历必然漂移，
+/// 漂移的后果是"界面说能清、清理却清不掉（或反过来）"。
+///
+/// 遍历范围严格镜像 collect_state：read_registry 的 projects +
+/// all_instances × user_source_path 每个文档的 projects 键（含 __main__
+/// 共享库 —— 正常无 projects；有死键同样枚举，与展示口径一致）。
+/// 文档读取失败/格式异常不产死条目（由 issues 报告，不可清理）。
+pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> DeadScan {
+    let mut dead = Vec::new();
+    let mut blocked = Vec::new();
+
+    let (reg, reg_issue) = read_registry(paths);
+    if reg_issue.is_none() {
+        for p in &reg.projects {
+            match probe_project_dir(p) {
+                DirProbe::Missing => dead.push(DeadEntry::RegistryProject {
+                    raw_path: p.clone(),
+                }),
+                DirProbe::Other(e) => blocked.push((p.clone(), e)),
+                DirProbe::Ok(_) => {}
+            }
+        }
+    }
+
+    for inst in &all_instances(profile_names) {
+        let Ok(path) = user_source_path(paths, inst) else {
+            continue; // 路径解析失败由 collect_state 的 issue 报告
+        };
+        let DocRead::Value(doc) = read_doc(&path) else {
+            continue; // 缺失/读取失败/解析失败同样只走 issue
+        };
+        let Some(projs) = doc.get("projects").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for key in projs.keys() {
+            match probe_project_dir(key) {
+                DirProbe::Missing => dead.push(DeadEntry::ProjectKey {
+                    instance: inst.clone(),
+                    raw_key: key.clone(),
+                    file: path.clone(),
+                }),
+                // 文案与 collect_state 的 issue（项目键「X」无法规范化：…）保持一致
+                DirProbe::Other(e) => {
+                    blocked.push((key.clone(), format!("项目键「{key}」无法规范化：{e}")))
+                }
+                DirProbe::Ok(_) => {}
+            }
+        }
+    }
+
+    DeadScan { dead, blocked }
+}
+
+/// 内部 DeadEntry → 前端展示模型。source_id 映射与 issues 完全一致：
+/// ProjectKey → user:<instance>（对照 collect_state 的 issue 生成点），
+/// RegistryProject → manager:projects。
+fn dead_entry_view(e: &DeadEntry, paths: &McpPaths) -> McpDeadEntry {
+    match e {
+        DeadEntry::ProjectKey {
+            instance,
+            raw_key,
+            file,
+        } => McpDeadEntry {
+            source_id: source_id::user(instance),
+            raw_path: raw_key.clone(),
+            file_path: file.display().to_string(),
+        },
+        DeadEntry::RegistryProject { raw_path } => McpDeadEntry {
+            source_id: source_id::PROJECTS.to_string(),
+            raw_path: raw_path.clone(),
+            file_path: paths.project_registry().display().to_string(),
+        },
+    }
+}
+
+// ---------------- 死条目清理 ----------------
+
+#[derive(Debug)]
+pub(crate) struct CleanupReport {
+    pub removed: Vec<DeadEntry>,
+    /// 疑似失效但未清理的条目（含 scan 阶段的非 NotFound 与清理阶段的临时变化）
+    pub blocked: Vec<(String, String)>,
+    /// (文件, 错误)；部分失败不中断其余文件
+    pub write_errors: Vec<(String, String)>,
+}
+
+fn dead_raw(e: &DeadEntry) -> String {
+    match e {
+        DeadEntry::ProjectKey { raw_key, .. } => raw_key.clone(),
+        DeadEntry::RegistryProject { raw_path } => raw_path.clone(),
+    }
+}
+
+/// 删除 scan_dead_entries 枚举出的死条目。调用方（命令层）必须已持有 config 锁。
+///
+/// 安全规则：
+/// - 删除前逐条**重新 probe**：scan 与写盘之间目录可能被重建（TOCTOU），重建则跳过；
+/// - 读不出来/格式异常的文件绝不写回（与 Workbench 的「拒绝覆盖异常文档」不变量一致）；
+/// - 每个被改写的文件走 write_json_transactional（备份 + 原子 rename）；
+/// - 单文件写失败只记录，不中断其余文件，且该文件的死键移入 blocked 保持报告 truthful。
+pub(crate) fn cleanup_dead_entries(
+    paths: &McpPaths,
+    profile_names: &[String],
+) -> Result<CleanupReport, String> {
+    let scan = scan_dead_entries(paths, profile_names);
+    let mut report = CleanupReport {
+        removed: Vec::new(),
+        blocked: scan.blocked,
+        write_errors: Vec::new(),
+    };
+
+    // ---- 登记表 pass ----
+    let dead_registry: BTreeSet<String> = scan
+        .dead
+        .iter()
+        .filter_map(|e| match e {
+            DeadEntry::RegistryProject { raw_path } => Some(raw_path.clone()),
+            _ => None,
+        })
+        .collect();
+    if !dead_registry.is_empty() {
+        let (mut reg, issue) = read_registry(paths);
+        if let Some(i) = issue {
+            // 登记表损坏时绝不能按半懂的状态改写（先例：register_project 解析失败直接 Err）
+            return Err(format!("登记表无法解析，清理已中止：{}", i.detail));
+        }
+        let mut kept = Vec::new();
+        let mut removed_registry = Vec::new();
+        for p in reg.projects.drain(..) {
+            if !dead_registry.contains(&p) {
+                kept.push(p);
+                continue;
+            }
+            match probe_project_dir(&p) {
+                DirProbe::Missing => {
+                    removed_registry.push(DeadEntry::RegistryProject { raw_path: p })
+                }
+                DirProbe::Ok(_) => report.blocked.push((p, "目录现已存在，自动跳过".into())),
+                DirProbe::Other(e) => report.blocked.push((p, e)),
+            }
+        }
+        if !removed_registry.is_empty() {
+            reg.projects = kept;
+            match write_registry(paths, reg) {
+                Ok(()) => report.removed.extend(removed_registry),
+                Err(e) => {
+                    // 写失败：登记表实际未变，条目移入 blocked
+                    report
+                        .write_errors
+                        .push((paths.project_registry().display().to_string(), e));
+                    report.blocked.extend(
+                        removed_registry
+                            .into_iter()
+                            .map(|e| (dead_raw(&e), "登记表写入失败，未清理".to_string())),
+                    );
+                }
+            }
+        }
+    }
+
+    // ---- 实例 pass：死键按物理文件分组，逐文件读-删-写 ----
+    let mut by_file: BTreeMap<PathBuf, Vec<DeadEntry>> = BTreeMap::new();
+    for e in scan.dead {
+        if let DeadEntry::ProjectKey { file, .. } = &e {
+            by_file.entry(file.clone()).or_default().push(e);
+        }
+    }
+    for (file, group) in by_file {
+        let DocRead::Value(mut doc) = read_doc(&file) else {
+            report.blocked.extend(group.into_iter().map(|e| {
+                (
+                    dead_raw(&e),
+                    "配置文件读取失败或格式异常，未清理".to_string(),
+                )
+            }));
+            continue;
+        };
+        let Some(projs) = doc.get_mut("projects").and_then(|v| v.as_object_mut()) else {
+            report.blocked.extend(group.into_iter().map(|e| {
+                (
+                    dead_raw(&e),
+                    "projects 字段缺失或不是对象，未清理".to_string(),
+                )
+            }));
+            continue;
+        };
+        let mut removed_now = Vec::new();
+        for e in group {
+            let raw = dead_raw(&e);
+            match probe_project_dir(&raw) {
+                DirProbe::Missing => {
+                    if projs.remove(&raw).is_some() {
+                        removed_now.push(e);
+                    } else {
+                        report.blocked.push((raw, "该键已不在文件中，跳过".into()));
+                    }
+                }
+                DirProbe::Ok(_) => report.blocked.push((raw, "目录现已存在，自动跳过".into())),
+                DirProbe::Other(e2) => report.blocked.push((raw, e2)),
+            }
+        }
+        if removed_now.is_empty() {
+            continue;
+        }
+        match write_json_transactional(paths, &file, &doc) {
+            Ok(()) => report.removed.extend(removed_now),
+            Err(e) => {
+                report.write_errors.push((file.display().to_string(), e));
+                report.blocked.extend(
+                    removed_now
+                        .into_iter()
+                        .map(|e| (dead_raw(&e), "文件写入失败，本次未清理".to_string())),
+                );
+            }
+        }
+    }
+
+    Ok(report)
+}
+
 // ---------------- list / collect_state ----------------
 
 pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpState {
@@ -2759,6 +3031,11 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         projects: project_refs,
         revisions,
         issues,
+        dead_entries: scan_dead_entries(paths, profile_names)
+            .dead
+            .iter()
+            .map(|e| dead_entry_view(e, paths))
+            .collect(),
         summary,
         operation_warnings: Vec::new(),
         sync_targets: Vec::new(),
@@ -4722,6 +4999,456 @@ mod tests {
                     && i.detail.contains("无法规范化")),
             "不可访问的项目键应生成来源问题"
         );
+    }
+
+    // ---------------- 死条目：探测 / 扫描 / 清理 ----------------
+
+    /// 往指定实例的用户级源文件写整个文档，返回文件路径。
+    fn write_instance_source(paths: &McpPaths, inst: &str, v: Value) -> PathBuf {
+        let p = paths.instance_claude_json(inst).unwrap();
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        write_json_transactional(paths, &p, &v).unwrap();
+        p
+    }
+
+    fn count_backups(paths: &McpPaths) -> usize {
+        let mut n = 0;
+        if let Ok(entries) = fs::read_dir(paths.backup_dir()) {
+            for sub in entries.flatten() {
+                if let Ok(inner) = fs::read_dir(sub.path()) {
+                    n += inner.count();
+                }
+            }
+        }
+        n
+    }
+
+    /// 死条目的 (source_id, raw_path) 集合视图，供三方一致性比较。
+    fn dead_view_set(entries: &[DeadEntry], paths: &McpPaths) -> BTreeSet<(String, String)> {
+        entries
+            .iter()
+            .map(|e| {
+                let v = dead_entry_view(e, paths);
+                (v.source_id, v.raw_path)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn probe_classifies_dirs_into_three_states() {
+        let (paths, _t) = setup();
+        let live = paths.home.join("live-dir");
+        fs::create_dir_all(&live).unwrap();
+        let file_path = paths.home.join("a-file");
+        fs::write(&file_path, "x").unwrap();
+
+        // 真目录 → Ok，且去掉了 Windows \\?\ 前缀
+        match probe_project_dir(live.display().to_string().as_str()) {
+            DirProbe::Ok(c) => assert!(!c.display().to_string().contains(r"\\?\")),
+            other => panic!("真目录应为 Ok，实际 {other:?}"),
+        }
+        // 不存在（含父目录不存在的深层路径）→ Missing
+        let dead = paths.home.join("gone").display().to_string();
+        assert_eq!(probe_project_dir(&dead), DirProbe::Missing);
+        let deep_dead = paths
+            .home
+            .join("no")
+            .join("such")
+            .join("tree")
+            .display()
+            .to_string();
+        assert_eq!(probe_project_dir(&deep_dead), DirProbe::Missing);
+        // 路径是文件 → Other（不是目录），不允许清理
+        match probe_project_dir(file_path.display().to_string().as_str()) {
+            DirProbe::Other(e) => assert!(e.contains("不是目录"), "文案应含「不是目录」：{e}"),
+            other => panic!("文件路径应为 Other，实际 {other:?}"),
+        }
+        // 路径非法（空串、含 ..）→ Other，先于任何 FS 访问
+        match probe_project_dir("bad/../x") {
+            DirProbe::Other(e) => assert!(e.contains("项目路径非法")),
+            other => panic!("含 .. 应为 Other，实际 {other:?}"),
+        }
+        assert!(matches!(probe_project_dir(""), DirProbe::Other(_)));
+    }
+
+    #[test]
+    fn cleanup_removes_dead_project_keys_and_preserves_everything_else() {
+        let (paths, _t) = setup();
+        let live = paths.home.join("live-proj");
+        fs::create_dir_all(&live).unwrap();
+        let live_s = live.display().to_string();
+        let dead_s = paths.home.join("deleted-proj").display().to_string();
+        let file = write_instance_source(
+            &paths,
+            "hq",
+            json!({
+                "numStartups": 42,
+                "mcpServers": {"keep": {"command": "node"}},
+                "projects": {
+                    live_s.clone(): {"allowedTools": ["x"], "otherField": 1},
+                    dead_s.clone(): {"mcpServers": {"gone": {}}}
+                }
+            }),
+        );
+
+        let report = cleanup_dead_entries(&paths, &["hq".to_string()]).unwrap();
+        assert_eq!(report.removed.len(), 1, "应恰好清理 1 个死键");
+        match &report.removed[0] {
+            DeadEntry::ProjectKey {
+                instance, raw_key, ..
+            } => {
+                assert_eq!(instance, "hq");
+                assert_eq!(raw_key, &dead_s);
+            }
+            other => panic!("应为 ProjectKey，实际 {other:?}"),
+        }
+
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        // 死键被删、活键及其内容原样保留
+        assert!(doc["projects"].get(&dead_s).is_none(), "死键应被删除");
+        assert_eq!(doc["projects"][&live_s]["otherField"], 1);
+        assert_eq!(
+            doc["projects"][&live_s]["allowedTools"][0], "x",
+            "活键节点内容不得改动"
+        );
+        // 其余顶层字段不丢
+        assert_eq!(doc["numStartups"], 42);
+        assert_eq!(doc["mcpServers"]["keep"]["command"], "node");
+    }
+
+    #[test]
+    fn cleanup_skips_entries_failing_for_other_reasons() {
+        let (paths, _t) = setup();
+        let a_file = paths.home.join("plain-file");
+        fs::write(&a_file, "x").unwrap();
+        let file = write_instance_source(
+            &paths,
+            "hq",
+            json!({
+                "projects": {
+                    a_file.display().to_string(): {},
+                    "bad/../x": {}
+                }
+            }),
+        );
+        let before = fs::read_to_string(&file).unwrap();
+
+        let report = cleanup_dead_entries(&paths, &["hq".to_string()]).unwrap();
+        assert!(report.removed.is_empty(), "非 NotFound 原因一律不删");
+        assert!(
+            report.blocked.iter().any(|(_, r)| r.contains("不是目录")),
+            "文件路径应入 blocked：{:?}",
+            report.blocked
+        );
+        assert!(
+            report
+                .blocked
+                .iter()
+                .any(|(_, r)| r.contains("项目路径非法")),
+            "含 .. 的键应入 blocked：{:?}",
+            report.blocked
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), before, "文件不得被改写");
+    }
+
+    #[test]
+    fn cleanup_cleans_registry_dead_entries_and_keeps_live_ones() {
+        let (paths, _t) = setup();
+        let live = paths.home.join("reg-live");
+        let dead = paths.home.join("reg-dead");
+        fs::create_dir_all(&live).unwrap();
+        fs::create_dir_all(&dead).unwrap();
+        register_project(&paths, &live.display().to_string()).unwrap();
+        register_project(&paths, &dead.display().to_string()).unwrap();
+        fs::remove_dir_all(&dead).unwrap();
+
+        let report = cleanup_dead_entries(&paths, &[]).unwrap();
+        assert_eq!(report.removed.len(), 1, "应恰好清理 1 条登记表死条目");
+
+        let reg_doc: Value =
+            serde_json::from_str(&fs::read_to_string(paths.project_registry()).unwrap()).unwrap();
+        assert_eq!(reg_doc["version"], 1, "version 必须保持 1");
+        let remaining: Vec<String> = reg_doc["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(remaining.len(), 1, "只保留活条目");
+        assert_eq!(
+            norm_path(&remaining[0]),
+            norm_path(&live.display().to_string()),
+            "保留的应是 canonical 化的活目录"
+        );
+    }
+
+    #[test]
+    fn cleanup_writes_backup_for_each_rewritten_file() {
+        let (paths, _t) = setup();
+        let dead_a = paths.home.join("backup-dead-a").display().to_string();
+        let file_a = write_instance_source(&paths, "hq", json!({"projects": {dead_a.clone(): {}}}));
+        let dead_b = paths.home.join("backup-dead-b").display().to_string();
+        let file_b = write_instance_source(&paths, "ds", json!({"projects": {dead_b: {}}}));
+        let live_reg = paths.home.join("backup-reg-live");
+        let dead_reg = paths.home.join("backup-reg-dead");
+        fs::create_dir_all(&live_reg).unwrap();
+        fs::create_dir_all(&dead_reg).unwrap();
+        register_project(&paths, &live_reg.display().to_string()).unwrap();
+        register_project(&paths, &dead_reg.display().to_string()).unwrap();
+        fs::remove_dir_all(&dead_reg).unwrap();
+
+        let before = count_backups(&paths);
+        let report = cleanup_dead_entries(&paths, &["hq".to_string(), "ds".to_string()]).unwrap();
+        assert_eq!(report.removed.len(), 3, "两个实例死键 + 一条登记表死条目");
+        assert!(
+            count_backups(&paths) >= before + 3,
+            "每个被改写的文件都应有备份"
+        );
+        // 备份内容是清理前的原文：至少能从备份里找回死键
+        let mut found_dead_key_in_backup = false;
+        if let Ok(entries) = fs::read_dir(paths.backup_dir()) {
+            for sub in entries.flatten() {
+                if let Ok(inner) = fs::read_dir(sub.path()) {
+                    for f in inner.flatten() {
+                        if let Ok(text) = fs::read_to_string(f.path()) {
+                            if let Ok(doc) = serde_json::from_str::<Value>(&text) {
+                                if doc
+                                    .pointer("/projects")
+                                    .is_some_and(|p| p.get(&dead_a).is_some())
+                                {
+                                    found_dead_key_in_backup = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found_dead_key_in_backup,
+            "备份应包含清理前的死键原文（{file_a:?} / {file_b:?}）"
+        );
+    }
+
+    #[test]
+    fn cleanup_is_noop_when_nothing_is_dead() {
+        let (paths, _t) = setup();
+        let live = paths.home.join("noop-live");
+        fs::create_dir_all(&live).unwrap();
+        let file = write_instance_source(
+            &paths,
+            "hq",
+            json!({"mcpServers": {"a": {}}, "projects": {live.display().to_string(): {}}}),
+        );
+        let reg_before = {
+            register_project(&paths, &live.display().to_string()).unwrap();
+            fs::read(paths.project_registry()).unwrap()
+        };
+        let file_before = fs::read(&file).unwrap();
+        let backups_before = count_backups(&paths);
+
+        let report = cleanup_dead_entries(&paths, &["hq".to_string()]).unwrap();
+        assert!(report.removed.is_empty());
+        assert!(report.blocked.is_empty());
+        assert!(report.write_errors.is_empty());
+        assert_eq!(fs::read(&file).unwrap(), file_before, "实例文件不得被改写");
+        assert_eq!(
+            fs::read(paths.project_registry()).unwrap(),
+            reg_before,
+            "登记表不得被改写"
+        );
+        assert_eq!(count_backups(&paths), backups_before, "不应产生新备份");
+    }
+
+    #[test]
+    fn cleanup_skips_corrupt_registry_and_broken_claude_json() {
+        // 场景一：登记表损坏（version 非 1）→ scan 不会枚举它、清理绝不会改写它，
+        // 实例侧死键照常清理（登记表损坏已由 issues 单独报告）。
+        // cleanup 内部的 Err 分支只防御「scan 与写盘之间登记表被外部改坏」的竞态窗口。
+        let (paths, _t) = setup();
+        let dead_s = paths.home.join("abort-dead").display().to_string();
+        write_instance_source(&paths, "hq", json!({"projects": {dead_s.clone(): {}}}));
+        fs::write(
+            paths.project_registry(),
+            r#"{"version": 2, "projects": []}"#,
+        )
+        .unwrap();
+        let reg_before = fs::read(paths.project_registry()).unwrap();
+
+        let report = cleanup_dead_entries(&paths, &["hq".to_string()]).unwrap();
+        assert_eq!(report.removed.len(), 1, "实例死键应正常清理");
+        assert!(
+            report.write_errors.is_empty(),
+            "不应有写失败：{:?}",
+            report.write_errors
+        );
+        assert_eq!(
+            fs::read(paths.project_registry()).unwrap(),
+            reg_before,
+            "损坏的登记表必须原样保留，绝不被改写"
+        );
+
+        // 场景二：某实例文档是坏 JSON → 跳过它，其余实例正常清理
+        let (paths2, _t2) = setup();
+        let broken = paths2.instance_claude_json("alpha").unwrap();
+        fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        fs::write(&broken, "{oops").unwrap();
+        let broken_before = fs::read(&broken).unwrap();
+        let dead2 = paths2.home.join("mixed-dead").display().to_string();
+        write_instance_source(&paths2, "beta", json!({"projects": {dead2: {}}}));
+
+        let report =
+            cleanup_dead_entries(&paths2, &["alpha".to_string(), "beta".to_string()]).unwrap();
+        assert_eq!(report.removed.len(), 1, "beta 的死键应被清理");
+        assert_eq!(
+            fs::read(&broken).unwrap(),
+            broken_before,
+            "坏 JSON 文件必须原样保留"
+        );
+    }
+
+    /// 防漂移关键测试：collect_state 展示的 deadEntries、scan_dead_entries 的枚举、
+    /// cleanup_dead_entries 实际删除的三方 (source_id, raw_path) 集合必须完全一致。
+    /// 将来任何一处遍历单独改动都会在此爆红。
+    #[test]
+    fn collect_state_dead_entries_match_cleanup() {
+        let (paths, _t) = setup();
+        // 混合夹具：活/死/文件/非法 × 共享库与实例 × 登记表
+        let live = paths.home.join("drift-live");
+        fs::create_dir_all(&live).unwrap();
+        let live_s = live.display().to_string();
+        let dead_shared = paths.home.join("drift-dead-shared").display().to_string();
+        write_user_source(
+            &paths,
+            json!({"projects": {live_s.clone(): {}, dead_shared.clone(): {}}}),
+        );
+        let dead_hq = paths.home.join("drift-dead-hq").display().to_string();
+        let a_file = paths.home.join("drift-file");
+        fs::write(&a_file, "x").unwrap();
+        write_instance_source(
+            &paths,
+            "hq",
+            json!({"projects": {
+                dead_hq.clone(): {},
+                a_file.display().to_string(): {},
+                "bad/../x": {}
+            }}),
+        );
+        let reg_live = paths.home.join("drift-reg-live");
+        let reg_dead = paths.home.join("drift-reg-dead");
+        fs::create_dir_all(&reg_live).unwrap();
+        fs::create_dir_all(&reg_dead).unwrap();
+        register_project(&paths, &reg_live.display().to_string()).unwrap();
+        register_project(&paths, &reg_dead.display().to_string()).unwrap();
+        fs::remove_dir_all(&reg_dead).unwrap();
+
+        let profile = ["hq".to_string()];
+        let state = collect_state(&paths, &profile);
+        let shown: BTreeSet<(String, String)> = state
+            .dead_entries
+            .iter()
+            .map(|d| (d.source_id.clone(), d.raw_path.clone()))
+            .collect();
+        let scanned = dead_view_set(&scan_dead_entries(&paths, &profile).dead, &paths);
+        let report = cleanup_dead_entries(&paths, &profile).unwrap();
+        let cleaned = dead_view_set(&report.removed, &paths);
+
+        let expected: BTreeSet<(String, String)> = [
+            (source_id::user(MAIN_INSTANCE), dead_shared),
+            (source_id::user("hq"), dead_hq),
+            (
+                source_id::PROJECTS.to_string(),
+                reg_dead.display().to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(shown, expected, "collect_state 的 deadEntries 口径漂移");
+        assert_eq!(scanned, expected, "scan_dead_entries 口径漂移");
+        assert_eq!(cleaned, expected, "cleanup 实际删除口径漂移");
+        // 清理后展示清零：警告与按钮随刷新消失
+        assert!(
+            collect_state(&paths, &profile).dead_entries.is_empty(),
+            "清理后 deadEntries 应为空"
+        );
+    }
+
+    #[test]
+    fn collect_state_marks_dead_entries_not_blocked_ones() {
+        let (paths, _t) = setup();
+        let a_file = paths.home.join("mark-file");
+        fs::write(&a_file, "x").unwrap();
+        write_user_source(
+            &paths,
+            json!({"projects": {
+                paths.home.join("mark-dead").display().to_string(): {},
+                a_file.display().to_string(): {},
+                "bad/../x": {}
+            }}),
+        );
+
+        let state = collect_state(&paths, &[]);
+        let raws: Vec<&str> = state
+            .dead_entries
+            .iter()
+            .map(|d| d.raw_path.as_str())
+            .collect();
+        assert_eq!(raws.len(), 1, "只有 NotFound 的键进 deadEntries：{raws:?}");
+        assert!(raws[0].contains("mark-dead"));
+        // 非 NotFound 的两类仍出现在 issues（报告问题），但绝不可清理
+        assert!(
+            state.issues.iter().any(|i| i.detail.contains("不是目录")),
+            "文件路径应仍在 issues 里报告"
+        );
+        assert!(
+            state
+                .issues
+                .iter()
+                .any(|i| i.detail.contains("项目路径非法")),
+            "非法路径应仍在 issues 里报告"
+        );
+    }
+
+    #[test]
+    fn cleanup_leaves_shared_library_untouched_without_projects() {
+        let (paths, _t) = setup();
+        write_user_source(&paths, json!({"mcpServers": {"shared": {}}}));
+        let before = fs::read(paths.shared_mcp_json()).unwrap();
+
+        let report = cleanup_dead_entries(&paths, &[]).unwrap();
+        assert!(report.removed.is_empty(), "无 projects 的共享库无事可清");
+        assert_eq!(
+            fs::read(paths.shared_mcp_json()).unwrap(),
+            before,
+            "共享库不得被改写"
+        );
+    }
+
+    #[test]
+    fn cleanup_also_cleans_dead_keys_in_shared_library() {
+        // 边界文档化：__main__ 的用户级源是共享库 mcp.json；scan/cleanup 镜像
+        // collect_state 也会扫它 —— 若其中出现 projects 死键（非常规但可能），
+        // 同样枚举并清理，三端口径保持一致。
+        let (paths, _t) = setup();
+        let dead = paths.home.join("shared-dead").display().to_string();
+        write_user_source(
+            &paths,
+            json!({"mcpServers": {"shared": {}}, "projects": {dead.clone(): {}}}),
+        );
+
+        let state = collect_state(&paths, &[]);
+        assert_eq!(state.dead_entries.len(), 1);
+        assert_eq!(
+            state.dead_entries[0].source_id,
+            source_id::user(MAIN_INSTANCE)
+        );
+
+        let report = cleanup_dead_entries(&paths, &[]).unwrap();
+        assert_eq!(report.removed.len(), 1);
+        let doc: Value =
+            serde_json::from_str(&fs::read_to_string(paths.shared_mcp_json()).unwrap()).unwrap();
+        assert!(doc.pointer("/projects").unwrap().get(&dead).is_none());
+        assert_eq!(doc["mcpServers"]["shared"], json!({}), "其余字段不得丢");
     }
 
     #[test]

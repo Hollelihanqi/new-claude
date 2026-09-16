@@ -152,6 +152,19 @@ pub struct McpSourceIssue {
     pub detail: String,
 }
 
+/// 一条"死条目"：记录存在、目录已确认不存在（fs::metadata 返回 NotFound）。
+/// 只有这类条目允许「一键清理」；权限不足/路径非法/不是目录等一律不进此列表。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDeadEntry {
+    /// user:<instance>（.claude.json 的 projects 键）| manager:projects（登记表条目）
+    pub source_id: String,
+    /// 记录中的原始路径/键（清理时按它定位删除）
+    pub raw_path: String,
+    /// 所在文件（.claude.json 或 mcp-projects.json），用于展示
+    pub file_path: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpSyncStatus {
@@ -221,6 +234,9 @@ pub struct McpState {
     pub projects: Vec<McpProjectRef>,
     pub revisions: BTreeMap<String, String>,
     pub issues: Vec<McpSourceIssue>,
+    /// 可被「一键清理」安全删除的死条目（目录确认不存在）。
+    /// 与 issues 有意冗余：issues 负责"出了什么问题"，deadEntries 负责"哪些能清"。
+    pub dead_entries: Vec<McpDeadEntry>,
     pub summary: McpSummary,
     pub operation_warnings: Vec<String>,
     pub sync_targets: Vec<McpSyncTargetInfo>,
@@ -322,9 +338,9 @@ pub struct McpTestResult {
 // ---------------- 命令 ----------------
 
 use storage::{
-    affected_source_ids, apply_action_files_checked, check_revisions, collect_state,
-    read_locator_config, register_project, source_file, touches_user, touches_user_or_local,
-    unregister_project, validate_action_strict,
+    affected_source_ids, apply_action_files_checked, check_revisions, cleanup_dead_entries,
+    collect_state, read_locator_config, register_project, source_file, touches_user,
+    touches_user_or_local, unregister_project, validate_action_strict, CleanupReport,
 };
 use validation::{config_warnings, redact, sensitive_paths, test_basic, validate_name};
 
@@ -356,6 +372,87 @@ pub fn unregister_mcp_project(path: String) -> Result<McpState, String> {
     let instances = current_instances();
     let state = collect_state(&paths, &instances);
     Ok(sync_targets::attach_sync_state(&paths, state))
+}
+
+/// 一键清理两类"死条目"（目录确认不存在，fs::metadata == NotFound）：
+/// 1) 各环境用户级源文件 projects 下的死键；2) 登记表 mcp-projects.json 的死条目。
+/// 其他失败原因（权限不足/路径非法/不是目录）一律跳过并在返回消息里说明。
+#[tauri::command]
+pub fn cleanup_dead_project_entries() -> Result<String, String> {
+    let paths = McpPaths::system();
+    let instances = current_instances();
+    // 写用户级源文件必须与 CLI --sync 串行化（先例 apply_mcp_change）；
+    // 拿不到锁直接报错，不静默跳过。
+    let _guard = match crate::sync::acquire_config_lock() {
+        Some(g) => g,
+        None => return Err("另一个同步正在进行，请稍后重试".into()),
+    };
+    let report = cleanup_dead_entries(&paths, &instances)?;
+    Ok(format_cleanup_report(&report, &paths))
+}
+
+/// 把清理报告格式化为一条人类可读消息（前端 notifications.show 直接展示）。
+fn format_cleanup_report(report: &CleanupReport, paths: &McpPaths) -> String {
+    use std::fmt::Write;
+    if report.removed.is_empty() && report.blocked.is_empty() && report.write_errors.is_empty() {
+        return "没有可清理的死条目".into();
+    }
+    let mut msg = String::new();
+    if !report.removed.is_empty() {
+        let mut keys_by_env: BTreeMap<String, usize> = BTreeMap::new();
+        let mut registry_count = 0usize;
+        for e in &report.removed {
+            match e {
+                storage::DeadEntry::ProjectKey { instance, .. } => {
+                    *keys_by_env.entry(instance.clone()).or_default() += 1;
+                }
+                storage::DeadEntry::RegistryProject { .. } => registry_count += 1,
+            }
+        }
+        let mut parts = Vec::new();
+        if !keys_by_env.is_empty() {
+            let total: usize = keys_by_env.values().sum();
+            let detail = keys_by_env
+                .iter()
+                .map(|(env, n)| format!("{env}×{n}"))
+                .collect::<Vec<_>>()
+                .join("、");
+            parts.push(format!("项目键 {total} 条（{detail}）"));
+        }
+        if registry_count > 0 {
+            parts.push(format!("项目登记表 {registry_count} 条"));
+        }
+        let _ = write!(
+            msg,
+            "已清理 {}：{}；原文件已自动备份到 {}",
+            report.removed.len(),
+            parts.join("、"),
+            paths.backup_dir().display()
+        );
+    } else {
+        msg.push_str("没有清理任何条目");
+    }
+    if !report.blocked.is_empty() {
+        let _ = write!(msg, "；跳过 {} 条：", report.blocked.len());
+        let details = report
+            .blocked
+            .iter()
+            .map(|(raw, reason)| format!("{raw}（{reason}）"))
+            .collect::<Vec<_>>()
+            .join("、");
+        msg.push_str(&details);
+    }
+    if !report.write_errors.is_empty() {
+        let _ = write!(msg, "；注意：以下文件写入失败：");
+        let details = report
+            .write_errors
+            .iter()
+            .map(|(file, err)| format!("{file}：{err}"))
+            .collect::<Vec<_>>()
+            .join("、");
+        msg.push_str(&details);
+    }
+    msg
 }
 
 #[tauri::command]
@@ -941,5 +1038,52 @@ mod tests {
             disabled_bytes,
             "preview 不得修改 disabled store"
         );
+    }
+
+    #[test]
+    fn cleanup_report_message_lists_counts_and_caveats() {
+        let (paths, _t) = setup();
+        let report = CleanupReport {
+            removed: vec![
+                storage::DeadEntry::ProjectKey {
+                    instance: "hq".into(),
+                    raw_key: "E:/dead-hq".into(),
+                    file: PathBuf::from("f1"),
+                },
+                storage::DeadEntry::ProjectKey {
+                    instance: "ds".into(),
+                    raw_key: "E:/dead-ds".into(),
+                    file: PathBuf::from("f2"),
+                },
+                storage::DeadEntry::RegistryProject {
+                    raw_path: "E:/dead-reg".into(),
+                },
+            ],
+            blocked: vec![("E:/a-file".to_string(), "不是目录：E:/a-file".to_string())],
+            write_errors: vec![("f3.json".to_string(), "boom".to_string())],
+        };
+        let msg = format_cleanup_report(&report, &paths);
+        assert!(msg.contains("已清理 3"), "总数：{msg}");
+        assert!(msg.contains("项目键 2 条"), "项目键分组：{msg}");
+        assert!(
+            msg.contains("ds×1、hq×1"),
+            "按环境计数（BTreeMap 排序）：{msg}"
+        );
+        assert!(msg.contains("项目登记表 1 条"), "登记表分组：{msg}");
+        assert!(msg.contains("备份"), "备份提示：{msg}");
+        assert!(msg.contains("跳过 1 条"), "跳过计数：{msg}");
+        assert!(
+            msg.contains("E:/a-file（不是目录：E:/a-file）"),
+            "跳过明细：{msg}"
+        );
+        assert!(msg.contains("写入失败"), "写失败标题：{msg}");
+        assert!(msg.contains("f3.json：boom"), "写失败明细：{msg}");
+
+        let empty = CleanupReport {
+            removed: vec![],
+            blocked: vec![],
+            write_errors: vec![],
+        };
+        assert_eq!(format_cleanup_report(&empty, &paths), "没有可清理的死条目");
     }
 }

@@ -24,6 +24,7 @@ const emptyState: McpState = {
   projects: [],
   revisions: {},
   issues: [],
+  deadEntries: [],
   summary: {
     total: 0,
     enabled: 0,

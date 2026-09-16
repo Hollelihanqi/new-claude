@@ -54,6 +54,7 @@ import type {
 import McpImportModal from "./McpImportModal";
 import StableRefreshButton from "../StableRefreshButton";
 import McpServiceDrawer from "./McpServiceDrawer";
+import McpSourceIssuesCard from "./McpSourceIssuesCard";
 import McpSummaryGrid from "./McpSummaryGrid";
 import FeatureHelp from "../FeatureHelp";
 import { MCP_HELP, MCP_SCOPE_HELP } from "../featureHelpContent";
@@ -97,6 +98,8 @@ export default function McpPanel() {
   const [state, setState] = useState<McpState | null>(() => cachedMcpState);
   // 正在恢复哪一行（"环境:条目名"）—— 逐行 loading，不用整页的 busy
   const [restoringRow, setRestoringRow] = useState("");
+  // 「一键清理死条目」进行中（RiskConfirm 的确认按钮与卡内按钮共用）
+  const [cleaningIssues, setCleaningIssues] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [query, setQuery] = useState("");
@@ -140,6 +143,22 @@ export default function McpPanel() {
       setErr(String(e));
     } finally {
       setRestoringRow("");
+    }
+  };
+
+  // 「一键清理死条目」：返回 boolean 让 RiskConfirm 决定是否关闭（失败保持打开可重试）
+  const onCleanupDeadEntries = async () => {
+    setCleaningIssues(true);
+    try {
+      const message = await api.cleanupDeadProjectEntries();
+      notifications.show({ message, color: "teal" });
+      load(true);
+      return true;
+    } catch (e) {
+      notifications.show({ color: "red", title: "清理失败", message: String(e) });
+      return false;
+    } finally {
+      setCleaningIssues(false);
     }
   };
 
@@ -457,17 +476,14 @@ export default function McpPanel() {
         <Alert color="red" icon={<IconAlertTriangle size={16} />} title="加载失败">{err}</Alert>
       )}
 
-      {state && state.issues.length > 0 && (
-        <Alert color="orange" icon={<IconAlertTriangle size={16} />} title="配置来源问题">
-          <Stack gap={2}>
-            {state.issues.map((iss, i) => (
-              <Text size="xs" key={i}>
-                <Text span fw={600}>{iss.sourceId}</Text>
-                {iss.path ? ` · ${iss.path}` : ""}：{iss.detail}
-              </Text>
-            ))}
-          </Stack>
-        </Alert>
+      {state && (
+        <McpSourceIssuesCard
+          issues={state.issues}
+          deadEntries={state.deadEntries}
+          pageActive={pageActive}
+          busy={cleaningIssues}
+          onCleanup={onCleanupDeadEntries}
+        />
       )}
 
       {state && state.operationWarnings.length > 0 && (

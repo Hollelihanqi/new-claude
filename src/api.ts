@@ -160,6 +160,16 @@ export interface McpSourceIssue {
   detail: string;
 }
 
+/** 一条"死条目"：记录存在、目录已确认不存在，可被一键清理 */
+export interface McpDeadEntry {
+  /** user:<环境>（.claude.json 的 projects 键）| manager:projects（登记表条目） */
+  sourceId: string;
+  /** 记录中的原始路径/键 */
+  rawPath: string;
+  /** 所在文件（.claude.json 或 mcp-projects.json） */
+  filePath: string;
+}
+
 export interface McpSummary {
   total: number;
   enabled: number;
@@ -193,6 +203,8 @@ export interface McpState {
   projects: McpProjectRef[];
   revisions: Record<string, string>;
   issues: McpSourceIssue[];
+  /** 可被「一键清理」安全删除的死条目（目录确认不存在）；与 issues 有意冗余 */
+  deadEntries: McpDeadEntry[];
   summary: McpSummary;
   operationWarnings: string[];
   syncTargets: McpSyncTargetInfo[];
@@ -510,6 +522,9 @@ export const api = {
   /** 撤销某个环境对被分发条目的覆盖，改回共享值（决策 7.2：必须用户显式触发） */
   restoreSharedMcpEntry: (env: string, name: string): Promise<string> =>
     invoke("restore_shared_mcp_entry", { env, name }),
+  /** 一键清理死条目（目录确认不存在的项目键/登记表条目），返回清理报告消息 */
+  cleanupDeadProjectEntries: (): Promise<string> =>
+    invoke("cleanup_dead_project_entries"),
   /** 插件启用状态总览（扩展 → Plugins） */
   pluginsOverview: (): Promise<PluginRow[]> => invoke("plugins_overview"),
   /** 通过 Claude Code 官方命令撤销该环境的独立设置，再恢复共享策略 */

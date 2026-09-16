@@ -1188,6 +1188,7 @@ default_tools_approval_mode = "prompt"
             projects: vec![],
             revisions: BTreeMap::new(),
             issues: vec![],
+            dead_entries: vec![],
             summary: super::super::McpSummary {
                 total: 1,
                 enabled: 1,
@@ -1246,6 +1247,7 @@ default_tools_approval_mode = "prompt"
             projects: vec![],
             revisions: BTreeMap::new(),
             issues: vec![],
+            dead_entries: vec![],
             summary: super::super::McpSummary {
                 total: 1,
                 enabled: 1,
@@ -1326,6 +1328,7 @@ default_tools_approval_mode = "prompt"
             projects: vec![],
             revisions: BTreeMap::new(),
             issues: vec![],
+            dead_entries: vec![],
             summary: super::super::McpSummary {
                 total: 1,
                 enabled: 1,
@@ -1427,6 +1430,7 @@ default_tools_approval_mode = "prompt"
             projects: vec![],
             revisions: BTreeMap::new(),
             issues: vec![],
+            dead_entries: vec![],
             summary: super::super::McpSummary {
                 total: 1,
                 enabled: 1,

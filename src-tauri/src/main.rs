@@ -3468,6 +3468,7 @@ fn main() {
             mcp::preview_mcp_target_sync,
             mcp::apply_mcp_target_sync,
             mcp::disable_mcp_target,
+            mcp::cleanup_dead_project_entries,
             backup_config,
             recent_sync_log,
             restore_shared_mcp_entry,
