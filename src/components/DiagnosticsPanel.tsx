@@ -4,7 +4,7 @@ import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconFileDownload, Icon
 import { api } from "../api";
 import type { HealthItem } from "../api";
 import StableRefreshButton from "./StableRefreshButton";
-import EnvironmentProof from "./EnvironmentProof";
+import EnvironmentProof, { relativeTime } from "./EnvironmentProof";
 import { usePageActive } from "./PersistentPage";
 
 const STATUS = {
@@ -20,8 +20,13 @@ export default function DiagnosticsPanel() {
   const [healthState, setHealthState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [healthError, setHealthError] = useState("");
   const [logError, setLogError] = useState("");
+  const [verification, setVerification] = useState<{
+    at: number;
+    problems: number;
+  } | null | undefined>(undefined);
   const requestId = useRef(0);
   const logRequestId = useRef(0);
+  const verificationRequestId = useRef(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [action, setAction] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string }>({ ok: true, text: "" });
@@ -49,6 +54,7 @@ export default function DiagnosticsPanel() {
         }
         setItems(health);
         setHealthState("success");
+        void api.lastVerification().then(setVerification).catch(() => {});
       })
       .catch((e) => {
         if (request !== requestId.current) return;
@@ -58,14 +64,19 @@ export default function DiagnosticsPanel() {
       .finally(() => { if (request === requestId.current) { inFlight.current = false; setBusy(false); } });
     loadLogs();
   };
-  // 进入诊断页只读取不含凭证的同步日志。完整健康检查会读取网关钥匙串凭证，
-  // 因此必须由用户明确点击「开始诊断」，不能由后台预热或页面切换自动触发。
+  // 进入诊断页只读取不含凭证的同步日志和最近一次诊断记录。完整健康检查会读取
+  // 网关钥匙串凭证，因此必须由用户明确点击，不能由后台预热或页面切换自动触发。
   useEffect(() => {
     if (!pageActive) return;
     loadLogs();
+    const request = ++verificationRequestId.current;
+    void api.lastVerification()
+      .then((record) => { if (request === verificationRequestId.current) setVerification(record); })
+      .catch(() => { if (request === verificationRequestId.current) setVerification(null); });
     return () => {
       requestId.current += 1;
       logRequestId.current += 1;
+      verificationRequestId.current += 1;
       inFlight.current = false;
       setBusy(false);
       setHealthState((state) => state === "loading" ? "idle" : state);
@@ -84,6 +95,28 @@ export default function DiagnosticsPanel() {
     finally { setAction(""); }
   };
   const problems = items.filter((item) => item.status !== "ok").length;
+  const recordedProblems = verification?.problems ?? 0;
+  const overviewTitle = healthState === "loading"
+    ? "正在检测环境"
+    : healthState === "error"
+      ? "检测未完成，请重试"
+      : healthState === "success"
+        ? problems ? `${problems} 项需要处理` : "所有检查均正常"
+        : verification === undefined
+          ? "正在读取最近诊断"
+          : verification
+            ? recordedProblems ? `最近诊断有 ${recordedProblems} 项需要处理` : "最近一次诊断正常"
+            : "暂无诊断记录";
+  const overviewBadge = healthState === "success"
+    ? problems ? "需要关注" : "健康"
+    : verification
+      ? "历史结论"
+      : "暂无结论";
+  const overviewColor = healthState === "success"
+    ? problems ? "orange" : "teal"
+    : verification
+      ? recordedProblems ? "orange" : "teal"
+      : "gray";
 
   return (
     <div className="view-scroll">
@@ -93,13 +126,14 @@ export default function DiagnosticsPanel() {
           <div>
             <Text size="xs" c="dimmed" fw={700}>OVERALL HEALTH</Text>
             <Group gap="xs" align="center">
-              <Text fw={750} size="xl">{healthState === "loading" ? "正在检测环境" : healthState === "error" ? "检测未完成，请重试" : healthState === "idle" ? "尚未诊断" : problems ? `${problems} 项需要处理` : "所有检查均正常"}</Text>
-              {!busy && <Badge size="lg" variant="light" color={healthState !== "success" ? "gray" : problems ? "orange" : "teal"}>{healthState !== "success" ? "暂无结论" : problems ? "需要关注" : "健康"}</Badge>}
+              <Text fw={750} size="xl">{overviewTitle}</Text>
+              {!busy && <Badge size="lg" variant="light" color={overviewColor}>{overviewBadge}</Badge>}
             </Group>
-            {healthState === "idle" && <Text size="xs" c="dimmed" mt={3}>进入页面不会自动读取凭证；点击“开始诊断”后才会检查环境。</Text>}
+            {healthState === "idle" && verification && <Text size="xs" c="dimmed" mt={3}>最近一次完整诊断：{relativeTime(verification.at)}。进入页面只读取已有结论，不会再次读取凭证。</Text>}
+            {healthState === "idle" && verification === null && <Text size="xs" c="dimmed" mt={3}>首次安装或诊断记录丢失时才会出现；点击“开始诊断”可生成记录。</Text>}
           </div>
           <Group gap="xs">
-            <StableRefreshButton busy={busy} busyLabel="检测中…" label={healthState === "idle" ? "开始诊断" : "重新检测"} onClick={run} />
+            <StableRefreshButton busy={busy} busyLabel="检测中…" label={verification === null ? "开始诊断" : "重新检测"} onClick={run} />
             {/* 不用 Mantine 的 loading 属性：它会隐藏按钮文字只剩转圈，用户看不出
                 正在同步。改成显式 Loader + 文字切换，忙碌状态一眼可辨。 */}
             <Button

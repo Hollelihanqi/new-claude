@@ -85,10 +85,16 @@ it("同步期间按钮显示「正在同步」并禁用，完成后恢复", asyn
   expect(syncButton().children.join("")).toContain("同步并修复");
 });
 
-it("后台预热和进入诊断页都不读取钥匙串，只有点击开始诊断才检查", async () => {
+it("进入诊断页只展示历史结论，只有点击重新检测才读取钥匙串", async () => {
   vi.useFakeTimers();
   vi.mocked(api.healthCheck).mockResolvedValue([{ id: "test", label: "test", status: "ok", detail: "ready" }]);
   vi.mocked(api.recentSyncLog).mockResolvedValue([]);
+  vi.mocked(api.lastVerification).mockResolvedValue({
+    at: Math.floor(Date.now() / 1000),
+    problems: 0,
+    gatewayFails: [],
+    appVersion: "3.0.9",
+  });
   const view = (active: boolean) => (
     <PersistentPage active={active} warmupDelay={100}>
       <DiagnosticsPanel />
@@ -101,6 +107,8 @@ it("后台预热和进入诊断页都不读取钥匙串，只有点击开始诊�
 
   await act(async () => { renderer.update(view(true)); });
   expect(api.healthCheck).not.toHaveBeenCalled();
+  expect(text()).toContain("最近一次诊断正常");
+  expect(text()).not.toContain("尚未诊断");
 
   await diagnose();
   expect(api.healthCheck).toHaveBeenCalledTimes(1);
