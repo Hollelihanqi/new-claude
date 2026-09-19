@@ -13,8 +13,8 @@ export type TitleBarLayout = {
   /**
    * 是否渲染自绘标题栏。
    *
-   * 只有 Windows 的 `tauri.windows.conf.json` 去掉了原生边框。macOS 与其他平台
-   * 使用原生标题栏；再渲染这一条会形成重复标题栏，并在 macOS 全屏时留下空白。
+   * Windows 用它承载窗口按钮；macOS 用一条无按钮的可拖拽区域承接透明标题栏，
+   * 让最顶部也能跟随当前主题。其他平台保留原生标题栏，不重复渲染。
    */
   render: boolean;
   /**
@@ -34,7 +34,7 @@ export type TitleBarLayout = {
 export function titleBarLayout(platform: string | null | undefined): TitleBarLayout {
   if (platform === "macos") {
     return {
-      render: false,
+      render: true,
       showWindowControls: false,
       showAppName: false,
       leftInsetPx: 0,

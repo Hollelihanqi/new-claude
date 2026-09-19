@@ -9,7 +9,7 @@ describe("自绘标题栏的平台差异", () => {
   const cases: Array<[string, boolean, boolean, boolean]> = [
     // platform, render, showWindowControls, showAppName
     ["windows", true, true, true],
-    ["macos", false, false, false],
+    ["macos", true, false, false],
     ["other", false, false, false],
   ];
 
@@ -20,9 +20,9 @@ describe("自绘标题栏的平台差异", () => {
     expect(layout.showAppName).toBe(name);
   });
 
-  it("macOS 使用原生标题栏，只有 Windows 保留自绘栏", () => {
+  it("macOS 使用无按钮拖拽栏，Windows 使用完整自绘栏", () => {
     expect(titleBarLayout("macos")).toMatchObject({
-      render: false,
+      render: true,
       showWindowControls: false,
       leftInsetPx: 0,
     });
@@ -52,13 +52,22 @@ describe("自绘标题栏的平台差异", () => {
     expect(css).toContain(`--app-titlebar-height: ${TITLEBAR_HEIGHT_PX}px;`);
   });
 
-  it("macOS 配置使用原生可见标题栏，不再设置 Overlay 灯位", () => {
+  it("macOS 使用透明 Overlay，让应用主题延伸到顶部，同时保留系统灯位", () => {
     const config = JSON.parse(
       readFileSync(resolve(process.cwd(), "src-tauri/tauri.macos.conf.json"), "utf8")
     );
     const window = config.app.windows[0];
-    expect(window.titleBarStyle).toBe("Visible");
+    expect(window.titleBarStyle).toBe("Overlay");
     expect(window.trafficLightPosition).toBeUndefined();
+  });
+
+  it("原生窗口底色随主题更新，并具备所需窗口权限", () => {
+    const main = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
+    const capability = JSON.parse(
+      readFileSync(resolve(process.cwd(), "src-tauri/capabilities/default.json"), "utf8")
+    );
+    expect(main).toContain("setBackgroundColor(chromeColor)");
+    expect(capability.permissions).toContain("core:window:allow-set-background-color");
   });
 
   it("工作区使用独立圆角模块，编辑标题固定在滚动容器顶端", () => {

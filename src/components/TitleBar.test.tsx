@@ -73,9 +73,11 @@ describe("自绘标题栏", () => {
     expect(draggable("app-titlebar-name")).toBe(true);
   });
 
-  it("macOS：完整使用原生标题栏，不渲染自绘空白栏", async () => {
+  it("macOS：渲染跟随主题的拖拽区，但不重复绘制系统按钮", async () => {
     const renderer = await render("macos");
-    expect(renderer.toJSON()).toBeNull();
+    const titlebar = renderer.root.findByProps({ className: "app-titlebar" });
+    expect(titlebar.props["data-tauri-drag-region"]).toBe(true);
+    expect(labels(renderer)).toHaveLength(0);
     expect(appWindow.minimize).not.toHaveBeenCalled();
   });
 

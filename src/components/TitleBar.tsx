@@ -12,8 +12,8 @@ import { titleBarLayout } from "./titleBarLayout";
  * （`tauri.windows.conf.json` 的 `decorations: false`），由本组件补上那条栏与窗口按钮。
  *
  * 平台差异**不在这里判断** —— 全部来自后端给的 platform，经 `titleBarLayout` 纯函数换算，
- * 使两个分支都能在任一开发平台上被测试。macOS 使用完整原生标题栏，本组件不渲染；
- * 红黄绿按钮、深浅外观和全屏收起均交给系统处理。
+ * 使两个分支都能在任一开发平台上被测试。macOS 只渲染透明可拖拽区域；
+ * 红黄绿按钮和全屏收起仍交给系统处理。
  *
  * 已知取舍：Windows 上关掉原生边框会失去「悬停最大化按钮弹出的贴靠布局浮层」，
  * 无法用 CSS/JS 补回（Windows 只把浮层给对 `WM_NCHITTEST` 回 `HTMAXBUTTON` 的窗口）。

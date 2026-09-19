@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SCHEME,
+  festivalSchemeForDate,
+  readInitialScheme,
   readStoredScheme,
   storeScheme,
+  THEME_DEFINITIONS,
   THEME_SCHEME_STORAGE_KEY,
 } from "./themeScheme";
 
@@ -16,18 +20,45 @@ function memoryStorage(initial?: string) {
 
 describe("theme scheme persistence", () => {
   it("restores the previously selected scheme", () => {
-    expect(readStoredScheme(memoryStorage("a"))).toBe("a");
-    expect(readStoredScheme(memoryStorage("b"))).toBe("b");
+    expect(readStoredScheme(memoryStorage("ocean"))).toBe("ocean");
+    expect(readStoredScheme(memoryStorage("sakura"))).toBe("sakura");
+    expect(readStoredScheme(memoryStorage("midautumn"))).toBe("midautumn");
+  });
+
+  it("migrates the previous two accent-only themes", () => {
+    expect(readStoredScheme(memoryStorage("a"))).toBe("sunset");
+    expect(readStoredScheme(memoryStorage("b"))).toBe("ocean");
   });
 
   it("falls back safely for missing or invalid values", () => {
-    expect(readStoredScheme(memoryStorage())).toBe("b");
-    expect(readStoredScheme(memoryStorage("unexpected"))).toBe("b");
+    expect(readStoredScheme(memoryStorage())).toBe(DEFAULT_SCHEME);
+    expect(readStoredScheme(memoryStorage("unexpected"))).toBe(DEFAULT_SCHEME);
   });
 
   it("stores a new selection", () => {
     const storage = memoryStorage();
-    storeScheme(storage, "a");
-    expect(readStoredScheme(storage)).toBe("a");
+    storeScheme(storage, "dragonboat");
+    expect(readStoredScheme(storage)).toBe("dragonboat");
+  });
+
+  it("offers eight daily styles and five Chinese festival skins", () => {
+    expect(THEME_DEFINITIONS.filter((theme) => theme.category === "daily")).toHaveLength(8);
+    expect(THEME_DEFINITIONS.filter((theme) => theme.category === "festival").map((theme) => theme.name))
+      .toEqual(["新春", "元宵", "端午", "中秋", "国庆"]);
+  });
+
+  it("maps Gregorian and Chinese-calendar festival dates to their skins", () => {
+    expect(festivalSchemeForDate(new Date(2026, 1, 17, 12))).toBe("spring");
+    expect(festivalSchemeForDate(new Date(2026, 2, 3, 12))).toBe("lantern");
+    expect(festivalSchemeForDate(new Date(2026, 5, 19, 12))).toBe("dragonboat");
+    expect(festivalSchemeForDate(new Date(2026, 8, 25, 12))).toBe("midautumn");
+    expect(festivalSchemeForDate(new Date(2026, 9, 1, 12))).toBe("national");
+    expect(festivalSchemeForDate(new Date(2026, 8, 19, 12))).toBeNull();
+  });
+
+  it("applies an automatic festival skin without replacing the stored preference", () => {
+    const storage = memoryStorage("sakura");
+    expect(readInitialScheme(storage, new Date(2026, 8, 25, 12))).toBe("midautumn");
+    expect(readStoredScheme(storage)).toBe("sakura");
   });
 });

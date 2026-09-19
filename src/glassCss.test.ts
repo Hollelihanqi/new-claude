@@ -140,6 +140,49 @@ describe("深色模式：选中态不得复用浅色第 0 阶（近乎白色）"
   });
 });
 
+describe("完整主题系统与提示语义", () => {
+  it("每套主题都能驱动背景、侧栏与氛围，而不是只改强调色", () => {
+    for (const theme of [
+      "glacier", "graphite", "pine", "sunset", "iris", "sakura", "sand",
+      "spring", "lantern", "dragonboat", "midautumn", "national",
+    ]) {
+      const selector = `html[data-theme="${theme}"]`;
+      const styles = rule(selector);
+      expect(styles).toContain("--theme-base");
+      expect(styles).toContain("--theme-deep");
+      expect(styles).toContain("--theme-sidebar-start");
+      expect(styles).toContain("--theme-sidebar-end");
+    }
+    expect(rule(".app-sidebar")).toContain("var(--theme-sidebar-start)");
+    expect(rule(".app-sidebar")).toContain("var(--theme-sidebar-end)");
+  });
+
+  it("设置页包含主题图例、实时预览和四级语义颜色", () => {
+    const panel = readFileSync(
+      resolve(process.cwd(), "src/components/SettingsPanel.tsx"),
+      "utf8"
+    );
+    expect(panel).toContain("theme-gallery");
+    expect(panel).toContain("theme-live-preview");
+    expect(panel).toContain("日常风格");
+    expect(panel).toContain("节日限定");
+    expect(panel).not.toContain("festival-legend");
+    expect(rule(".theme-gallery")).toContain("repeat(4");
+    expect(css).toContain("--semantic-info");
+    expect(css).toContain("--semantic-reminder");
+    expect(css).toContain("--semantic-success");
+    expect(css).toContain("--semantic-danger");
+  });
+
+  it("节日主题使用对应文化图形素材，而不是纯色换肤", () => {
+    for (const theme of ["spring", "lantern", "dragonboat", "midautumn", "national"]) {
+      expect(rule(`html[data-theme="${theme}"]`)).toContain(`festival-${theme}.png`);
+    }
+    expect(rule(".app-shell::before")).toContain("var(--theme-decoration)");
+    expect(rule(".app-sidebar::before")).toContain("var(--theme-decoration)");
+  });
+});
+
 describe("状态点呼吸动效", () => {
   it("ok/warn/bad 三态都呼吸，checking 保持脉冲", () => {
     expect(rule(".instance-health-dot.ok")).toContain(

@@ -19,6 +19,7 @@ import {
   IconSettings,
   IconHelpCircle,
   IconBrandOpenai,
+  IconInfoCircle,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -37,6 +38,7 @@ import TitleBar from "./components/TitleBar";
 import { USAGE_AUTO_OPTIONS } from "./components/usageAutoOptions";
 import StableRefreshButton from "./components/StableRefreshButton";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
+import type { Scheme } from "./themeScheme";
 
 const UsagePanel = lazy(() => import("./components/UsagePanel"));
 
@@ -53,7 +55,6 @@ const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
 const WorkBuddyPanel = lazy(() => import("./components/WorkBuddyPanel"));
 
 type ViewId = "environment" | "workbuddy" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
-type Scheme = "a" | "b";
 
 const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
 const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
@@ -338,8 +339,8 @@ export default function App({
 
   return (
     <div className={`app-shell platform-${env?.platform ?? "unknown"}`}>
-      {/* Windows 自绘标题栏占 grid 第一行并横跨两列。macOS 使用原生标题栏；
-          平台差异由后端 platform 决定，见 components/titleBarLayout。 */}
+      {/* Windows 自绘标题栏占 grid 第一行；macOS 以无按钮拖拽区承接透明原生标题栏，
+          让窗口最顶部也能跟随主题。平台差异见 components/titleBarLayout。 */}
       <TitleBar platform={env?.platform} />
 
       <aside className="app-sidebar">
@@ -383,8 +384,11 @@ export default function App({
           )}
           {env && !env.claude_found && view === "environment" && (
             <Alert
-              color="orange"
-              icon={<IconAlertTriangle size={16} />}
+              className={env.claude_detection.status === "unusable" ? "semantic-reminder" : "semantic-info"}
+              color={env.claude_detection.status === "unusable" ? "yellow" : "blue"}
+              icon={env.claude_detection.status === "unusable"
+                ? <IconAlertTriangle size={16} />
+                : <IconInfoCircle size={16} />}
               mb="md"
               title={env.claude_detection.status === "unusable"
                 ? "已找到 Claude Code，但暂时无法运行"
@@ -395,7 +399,7 @@ export default function App({
               <Group gap="xs" mt="sm">
                 <StableRefreshButton
                   size="xs"
-                  color="orange"
+                  color={env.claude_detection.status === "unusable" ? "yellow" : "blue"}
                   label="重新检测"
                   busyLabel="检测中…"
                   busy={envBusy}
