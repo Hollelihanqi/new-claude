@@ -4,18 +4,28 @@ import { IconAlertTriangle, IconTrash } from "@tabler/icons-react";
 import type { McpCleanupResult, McpDeadEntry, McpSourceIssue } from "../../api";
 import RiskConfirm from "../RiskConfirm";
 
-/** 清理结果 → 通知呈现方式。部分失败必须橙色提示且**不关弹窗**（可重试），
- *  不得把"有文件写失败"伪装成绿色成功。纯函数便于回归测试。 */
+/** 清理结果 → 通知呈现方式。未完成必须橙色提示且**不关弹窗**（可重试），
+ *  不得把"还有没清掉的条目"伪装成成功。纯函数便于回归测试。
+ *
+ *  判定只认后端给的 `complete`：写失败与并发冲突（scan 后被外部改写）都算未完成。
+ *  曾经这里用 `writeErrorCount > 0` 自行推导，而并发冲突只进 blocked、不改
+ *  writeErrors —— 结果是"一条都没清掉、消息里写着请重试"却显示成灰色成功。 */
 export function cleanupOutcomeView(result: McpCleanupResult): {
   color: "teal" | "orange" | "gray";
   title?: string;
   closeDialog: boolean;
 } {
-  if (result.writeErrorCount > 0) {
-    return { color: "orange", title: "部分清理失败", closeDialog: false };
+  if (!result.complete) {
+    const title =
+      result.writeErrorCount > 0 && result.retryableCount > 0
+        ? "部分清理失败，且有条目需重试"
+        : result.writeErrorCount > 0
+          ? "部分清理失败"
+          : "清理未完成，可重试";
+    return { color: "orange", title, closeDialog: false };
   }
   if (result.removedCount === 0) {
-    // 无事可做（条目已被并发处理/全部跳过）：中性灰，关弹窗
+    // 确实无事可做（条目已被并发处理/全是稳定跳过）：中性灰，关弹窗
     return { color: "gray", closeDialog: true };
   }
   return { color: "teal", closeDialog: true };

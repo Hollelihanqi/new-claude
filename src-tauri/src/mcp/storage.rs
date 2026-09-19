@@ -221,9 +221,20 @@ pub(crate) enum HostPlatform {
 /// 网络/外置卷路径在磁盘离线时 `fs::metadata` 同样返回 NotFound，会被误判为
 /// "目录已删除"。这类位置**永不自动清理**，宁可留在 blocked 由人工处理：
 /// - Windows：UNC 路径（`\\server\share` 或 `//server/share`）可能是断连的映射盘；
+///   盘符路径还要看盘符类型，只有 `DRIVE_FIXED(3)` 才算稳定的本地盘；
 /// - macOS：`/Volumes/*` 下的外置卷可能只是未挂载（home 不在 /Volumes 下时判定）；
 /// - 任何平台：非绝对路径无法确认归属，一律不清理。
-fn uncertain_location_reason(path: &str, home_str: &str, platform: HostPlatform) -> Option<String> {
+///
+/// `drive_type` 是 Windows 盘符类型（`GetDriveTypeW` 数值）。之所以作为参数传入
+/// 而不是在函数内直接调用系统 API，是为了让本函数保持纯函数：任一开发平台都能
+/// 同时覆盖两个平台的分支。`None` 表示不是盘符路径，或无法取得盘符类型——后者
+/// 按不确定处理，宁可漏清理也不误删。
+fn uncertain_location_reason(
+    path: &str,
+    home_str: &str,
+    platform: HostPlatform,
+    drive_type: Option<u32>,
+) -> Option<String> {
     if !is_absolute_for(path, platform) {
         return Some("非绝对路径，无法确认目录状态，不自动清理".into());
     }
@@ -232,6 +243,16 @@ fn uncertain_location_reason(path: &str, home_str: &str, platform: HostPlatform)
             let p = path.replace('\\', "/");
             if p.starts_with("//") {
                 return Some("网络路径（UNC）可能只是暂时离线，不自动清理".into());
+            }
+            if has_drive_letter(path) {
+                // DRIVE_FIXED(3) 是唯一能把 NotFound 当作稳定「不存在」的盘符类型。
+                // 可移动盘拔除、映射盘断连、光驱与 RAM disk 乃至无根目录的盘符
+                // 都会同样返回 NotFound，必须保守保留。
+                if drive_type != Some(DRIVE_FIXED) {
+                    return Some(
+                        "盘符当前不可用（可移动盘未插入或映射盘已断开），不自动清理".into(),
+                    );
+                }
             }
         }
         HostPlatform::MacOs => {
@@ -244,22 +265,48 @@ fn uncertain_location_reason(path: &str, home_str: &str, platform: HostPlatform)
     None
 }
 
+/// 盘符绝对路径（`C:\` 或 `C:/`）。`is_absolute_for` 与盘符类型判定共用同一判据，
+/// 保证「算作盘符路径」与「去查盘符类型」两处不会漂移。
+fn has_drive_letter(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// `GetDriveTypeW` 的 `DRIVE_FIXED`：唯一可把 NotFound 当作稳定「不存在」的盘符类型。
+const DRIVE_FIXED: u32 = 3;
+
+/// 取盘符类型；非盘符路径或非 Windows 宿主返回 `None`（`None` 一律按不确定处理）。
+#[cfg(windows)]
+fn windows_drive_type(path: &str) -> Option<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    if !has_drive_letter(path) {
+        return None;
+    }
+    let root = format!("{}:\\", path.chars().next()?);
+    let wide: Vec<u16> = std::ffi::OsStr::new(&root)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    Some(unsafe { GetDriveTypeW(wide.as_ptr()) })
+}
+
+#[cfg(not(windows))]
+fn windows_drive_type(_path: &str) -> Option<u32> {
+    None
+}
+
 /// 按目标平台判定绝对路径。不能用 `Path::is_absolute()` —— 它按**宿主**平台判定，
 /// 在 Windows 上跑测试时 `/Volumes/x` 会被误判为相对路径。
 fn is_absolute_for(path: &str, platform: HostPlatform) -> bool {
     match platform {
         HostPlatform::Windows => {
             // 盘符绝对路径（C:\ 或 C:/）或 UNC（\\ 或 //）
-            let bytes = path.as_bytes();
-            if bytes.len() >= 3 {
-                let drive_abs = bytes[0].is_ascii_alphabetic()
-                    && bytes[1] == b':'
-                    && (bytes[2] == b'\\' || bytes[2] == b'/');
-                if drive_abs {
-                    return true;
-                }
-            }
-            path.starts_with(r"\\") || path.starts_with("//")
+            has_drive_letter(path) || path.starts_with(r"\\") || path.starts_with("//")
         }
         HostPlatform::MacOs | HostPlatform::Other => path.starts_with('/'),
     }
@@ -281,9 +328,12 @@ pub(crate) fn probe_project_dir(path: &str, home: &Path) -> DirProbe {
         return DirProbe::Other("项目路径非法".into());
     }
     // 网络/外置卷/非绝对路径：先于 metadata 判定，离线时不得误判为死亡
-    if let Some(reason) =
-        uncertain_location_reason(path, &home.display().to_string(), host_platform())
-    {
+    if let Some(reason) = uncertain_location_reason(
+        path,
+        &home.display().to_string(),
+        host_platform(),
+        windows_drive_type(path),
+    ) {
         return DirProbe::Other(reason);
     }
     if let Err(e) = fs::metadata(path) {
@@ -492,6 +542,22 @@ fn write_registry(paths: &McpPaths, mut reg: ProjectRegistry) -> Result<(), Stri
         paths,
         &paths.project_registry(),
         &serde_json::to_value(&reg).map_err(|e| e.to_string())?,
+    )
+}
+
+fn write_registry_if_revision(
+    paths: &McpPaths,
+    mut reg: ProjectRegistry,
+    expected_revision: &str,
+) -> Result<ConditionalWrite, String> {
+    reg.version = 1;
+    reg.projects.sort_by_key(|a| norm_path(a));
+    reg.projects.dedup_by(|a, b| norm_path(a) == norm_path(b));
+    write_json_transactional_inner(
+        paths,
+        &paths.project_registry(),
+        &serde_json::to_value(&reg).map_err(|e| e.to_string())?,
+        Some(expected_revision),
     )
 }
 
@@ -748,6 +814,24 @@ pub(crate) fn write_json_transactional(
     target: &Path,
     value: &Value,
 ) -> Result<(), String> {
+    write_json_transactional_inner(paths, target, value, None).map(|_| ())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConditionalWrite {
+    Written,
+    RevisionConflict,
+}
+
+/// 与 [write_json_transactional] 相同，但在真正替换目标文件前再次核对 revision。
+/// 临时文件的序列化与落盘可能耗时，校验放在这些步骤之后，尽量把外部写入竞态窗口
+/// 缩到最后一次校验与 rename 之间；发现冲突时目标文件保持不变。
+fn write_json_transactional_inner(
+    paths: &McpPaths,
+    target: &Path,
+    value: &Value,
+    expected_revision: Option<&str>,
+) -> Result<ConditionalWrite, String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
     }
@@ -796,6 +880,11 @@ pub(crate) fn write_json_transactional(
         }
     }
 
+    if expected_revision.is_some_and(|expected| revision(target) != expected) {
+        let _ = fs::remove_file(&tmp);
+        return Ok(ConditionalWrite::RevisionConflict);
+    }
+
     if target.exists() {
         let _ = fs::remove_file(&rollback);
         fs::rename(target, &rollback).map_err(|e| format!("备份原文件失败：{e}"))?;
@@ -804,7 +893,8 @@ pub(crate) fn write_json_transactional(
         Ok(()) => {
             let _ = fs::remove_file(&rollback);
             crate::sync::restrict_credential_permissions(target)
-                .map_err(|e| format!("收紧配置权限失败：{e}"))
+                .map_err(|e| format!("收紧配置权限失败：{e}"))?;
+            Ok(ConditionalWrite::Written)
         }
         Err(e) => {
             if rollback.exists() {
@@ -2275,8 +2365,8 @@ pub(crate) enum DeadEntry {
 pub(crate) struct DeadScan {
     /// 目录确认不存在（DirProbe::Missing），可被一键清理
     pub dead: Vec<DeadEntry>,
-    /// 疑似失效但**不满足 NotFound 判据**的条目：(raw, 原因)，只报告不删除
-    pub blocked: Vec<(String, String)>,
+    /// 疑似失效但**不满足 NotFound 判据**的条目，只报告不删除
+    pub blocked: Vec<BlockedEntry>,
     /// scan 时各源文件的 revision（路径字符串 → 指纹）。清理写回前校验：
     /// Claude Code 不经过配置锁直接写 .claude.json，指纹变了说明有人
     /// 在 scan 与写盘之间改过文件 —— 该文件本轮不清理（防覆盖并发写入）。
@@ -2307,7 +2397,7 @@ pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> D
                 DirProbe::Missing => dead.push(DeadEntry::RegistryProject {
                     raw_path: p.clone(),
                 }),
-                DirProbe::Other(e) => blocked.push((p.clone(), e)),
+                DirProbe::Other(e) => blocked.push(BlockedEntry::stable(p.clone(), e)),
                 DirProbe::Ok(_) => {}
             }
         }
@@ -2332,9 +2422,10 @@ pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> D
                     file: path.clone(),
                 }),
                 // 文案与 collect_state 的 issue（项目键「X」无法规范化：…）保持一致
-                DirProbe::Other(e) => {
-                    blocked.push((key.clone(), format!("项目键「{key}」无法规范化：{e}")))
-                }
+                DirProbe::Other(e) => blocked.push(BlockedEntry::stable(
+                    key.clone(),
+                    format!("项目键「{key}」无法规范化：{e}"),
+                )),
                 DirProbe::Ok(_) => {}
             }
         }
@@ -2371,13 +2462,61 @@ fn dead_entry_view(e: &DeadEntry, paths: &McpPaths) -> McpDeadEntry {
 
 // ---------------- 死条目清理 ----------------
 
+/// 未清理条目的原因分类 —— 决定前端是否给用户留重试入口。
+///
+/// 只有 [BlockKind::Retryable]（scan 与写盘之间被外部改写的竞态）才是"本次没做成、
+/// 重试可能成功"；其余都是稳定状态（权限不足、路径非法、位置不确定、目录已重建、
+/// 键已被并发清掉），重试无意义，不该反复提示用户重试。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockKind {
+    Stable,
+    Retryable,
+}
+
+/// 一条未清理的条目：(原始路径, 原因, 分类)。
+#[derive(Debug)]
+pub(crate) struct BlockedEntry {
+    pub raw: String,
+    pub reason: String,
+    pub kind: BlockKind,
+}
+
+impl BlockedEntry {
+    pub(crate) fn stable(raw: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            raw: raw.into(),
+            reason: reason.into(),
+            kind: BlockKind::Stable,
+        }
+    }
+
+    pub(crate) fn retryable(raw: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            raw: raw.into(),
+            reason: reason.into(),
+            kind: BlockKind::Retryable,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct CleanupReport {
     pub removed: Vec<DeadEntry>,
     /// 疑似失效但未清理的条目（含 scan 阶段的非 NotFound 与清理阶段的临时变化）
-    pub blocked: Vec<(String, String)>,
+    pub blocked: Vec<BlockedEntry>,
     /// (文件, 错误)；部分失败不中断其余文件
     pub write_errors: Vec<(String, String)>,
+}
+
+impl CleanupReport {
+    /// 本轮留下多少条「重试可能成功」的未完成工作（并发冲突）。
+    /// 写失败不计入这里 —— 它由 `write_errors` 单独表达。
+    pub fn retryable_count(&self) -> usize {
+        self.blocked
+            .iter()
+            .filter(|b| b.kind == BlockKind::Retryable)
+            .count()
+    }
 }
 
 fn dead_raw(e: &DeadEntry) -> String {
@@ -2442,11 +2581,11 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
                 DirProbe::Ok(_) => {
                     report
                         .blocked
-                        .push((p.clone(), "目录现已存在，自动跳过".into()));
+                        .push(BlockedEntry::stable(p.clone(), "目录现已存在，自动跳过"));
                     kept.push(p);
                 }
                 DirProbe::Other(e) => {
-                    report.blocked.push((p.clone(), e));
+                    report.blocked.push(BlockedEntry::stable(p.clone(), e));
                     kept.push(p);
                 }
             }
@@ -2454,33 +2593,37 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
         if !removed_registry.is_empty() {
             // 写盘前 revision 校验（P1 防覆盖）：scan 之后登记表被外部改过 → 本轮不写。
             // 配置锁拦不住外部进程（register/unregister 命令、手工编辑），指纹是唯一依据。
-            let current = revision(&paths.project_registry());
-            let scanned = scan
+            if let Some(scanned) = scan
                 .file_revisions
-                .get(&paths.project_registry().display().to_string());
-            if scanned != Some(&current) {
-                report.blocked.extend(removed_registry.into_iter().map(|e| {
-                    (
-                        dead_raw(&e),
-                        "登记表在清理期间被外部修改，本轮未清理，请重试".to_string(),
-                    )
-                }));
-            } else {
+                .get(&paths.project_registry().display().to_string())
+            {
                 reg.projects = kept;
-                match write_registry(paths, reg) {
-                    Ok(()) => report.removed.extend(removed_registry),
+                match write_registry_if_revision(paths, reg, scanned) {
+                    Ok(ConditionalWrite::Written) => report.removed.extend(removed_registry),
+                    Ok(ConditionalWrite::RevisionConflict) => {
+                        report.blocked.extend(removed_registry.into_iter().map(|e| {
+                            BlockedEntry::retryable(
+                                dead_raw(&e),
+                                "登记表在清理期间被外部修改，本轮未清理，请重试",
+                            )
+                        }));
+                    }
                     Err(e) => {
                         // 写失败：登记表实际未变，条目移入 blocked
                         report
                             .write_errors
                             .push((paths.project_registry().display().to_string(), e));
                         report.blocked.extend(
-                            removed_registry
-                                .into_iter()
-                                .map(|e| (dead_raw(&e), "登记表写入失败，未清理".to_string())),
+                            removed_registry.into_iter().map(|e| {
+                                BlockedEntry::stable(dead_raw(&e), "登记表写入失败，未清理")
+                            }),
                         );
                     }
                 }
+            } else {
+                report.blocked.extend(removed_registry.into_iter().map(|e| {
+                    BlockedEntry::retryable(dead_raw(&e), "登记表缺少扫描版本，本轮未清理，请重试")
+                }));
             }
         }
     }
@@ -2495,19 +2638,16 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
     for (file, group) in by_file {
         let DocRead::Value(mut doc) = read_doc(&file) else {
             report.blocked.extend(group.into_iter().map(|e| {
-                (
+                BlockedEntry::retryable(
                     dead_raw(&e),
-                    "配置文件读取失败或格式异常，未清理".to_string(),
+                    "配置文件读取失败或格式异常，本轮未清理，请重试",
                 )
             }));
             continue;
         };
         let Some(projs) = doc.get_mut("projects").and_then(|v| v.as_object_mut()) else {
             report.blocked.extend(group.into_iter().map(|e| {
-                (
-                    dead_raw(&e),
-                    "projects 字段缺失或不是对象，未清理".to_string(),
-                )
+                BlockedEntry::stable(dead_raw(&e), "projects 字段缺失或不是对象，未清理")
             }));
             continue;
         };
@@ -2519,11 +2659,15 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
                     if projs.remove(&raw).is_some() {
                         removed_now.push(e);
                     } else {
-                        report.blocked.push((raw, "该键已不在文件中，跳过".into()));
+                        report
+                            .blocked
+                            .push(BlockedEntry::stable(raw, "该键已不在文件中，跳过"));
                     }
                 }
-                DirProbe::Ok(_) => report.blocked.push((raw, "目录现已存在，自动跳过".into())),
-                DirProbe::Other(e2) => report.blocked.push((raw, e2)),
+                DirProbe::Ok(_) => report
+                    .blocked
+                    .push(BlockedEntry::stable(raw, "目录现已存在，自动跳过")),
+                DirProbe::Other(e2) => report.blocked.push(BlockedEntry::stable(raw, e2)),
             }
         }
         if removed_now.is_empty() {
@@ -2532,24 +2676,28 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
         // 写盘前 revision 校验（P1 防覆盖）：Claude Code 不经过配置锁直接写
         // .claude.json，scan 之后文件被改过 → 本轮放弃写回（doc 基于旧内容），
         // 防止把外部刚写入的配置静默覆盖掉。
-        let current = revision(&file);
-        if scan.file_revisions.get(&file.display().to_string()) != Some(&current) {
+        let Some(scanned) = scan.file_revisions.get(&file.display().to_string()) else {
             report.blocked.extend(removed_now.into_iter().map(|e| {
-                (
-                    dead_raw(&e),
-                    "文件在清理期间被外部修改，本轮未清理，请重试".to_string(),
-                )
+                BlockedEntry::retryable(dead_raw(&e), "文件缺少扫描版本，本轮未清理，请重试")
             }));
             continue;
-        }
-        match write_json_transactional(paths, &file, &doc) {
-            Ok(()) => report.removed.extend(removed_now),
+        };
+        match write_json_transactional_inner(paths, &file, &doc, Some(scanned)) {
+            Ok(ConditionalWrite::Written) => report.removed.extend(removed_now),
+            Ok(ConditionalWrite::RevisionConflict) => {
+                report.blocked.extend(removed_now.into_iter().map(|e| {
+                    BlockedEntry::retryable(
+                        dead_raw(&e),
+                        "文件在清理期间被外部修改，本轮未清理，请重试",
+                    )
+                }));
+            }
             Err(e) => {
                 report.write_errors.push((file.display().to_string(), e));
                 report.blocked.extend(
                     removed_now
                         .into_iter()
-                        .map(|e| (dead_raw(&e), "文件写入失败，本次未清理".to_string())),
+                        .map(|e| BlockedEntry::stable(dead_raw(&e), "文件写入失败，本次未清理")),
                 );
             }
         }
@@ -5211,40 +5359,82 @@ mod tests {
     /// 它们可能只是磁盘离线。纯函数两平台分支在任一开发平台都可测。
     #[test]
     fn uncertain_locations_are_never_auto_cleaned() {
-        // Windows：UNC（两种写法）不确定；本地盘确定
+        // Windows：UNC（两种写法）不确定，盘符类型无关
         assert!(uncertain_location_reason(
             r"\\server\share\proj",
             r"C:\Users\u",
             HostPlatform::Windows,
+            None,
         )
         .is_some());
         assert!(uncertain_location_reason(
             "//server/share/proj",
             "C:/Users/u",
             HostPlatform::Windows,
+            None,
         )
         .is_some());
         assert!(
-            uncertain_location_reason(r"E:\projects\gone", r"C:\Users\u", HostPlatform::Windows,)
-                .is_none(),
-            "本地其他盘符不视为不确定"
+            uncertain_location_reason(
+                r"E:\projects\gone",
+                r"C:\Users\u",
+                HostPlatform::Windows,
+                Some(DRIVE_FIXED),
+            )
+            .is_none(),
+            "固定本地盘符上探测不到即视为已删除"
+        );
+        // Windows：只有 DRIVE_FIXED(3) 才把 NotFound 当作稳定「不存在」，
+        // 其余盘符类型（拔掉的 U 盘、断连的映射盘、光驱等）都要保留。
+        for (drive_type, label) in [
+            (2u32, "DRIVE_REMOVABLE"),
+            (4, "DRIVE_REMOTE"),
+            (5, "DRIVE_CDROM"),
+            (6, "DRIVE_RAMDISK"),
+            (1, "DRIVE_NO_ROOT_DIR"),
+        ] {
+            assert!(
+                uncertain_location_reason(
+                    r"Z:\projects\proj",
+                    r"C:\Users\u",
+                    HostPlatform::Windows,
+                    Some(drive_type),
+                )
+                .is_some(),
+                "{label} 盘符上探测不到不得判死"
+            );
+        }
+        assert!(
+            uncertain_location_reason(
+                r"Z:\projects\proj",
+                r"C:\Users\u",
+                HostPlatform::Windows,
+                None,
+            )
+            .is_some(),
+            "取不到盘符类型时必须保守保留"
         );
         // macOS：home 在系统卷时 /Volumes/* 视为外置卷；home 与路径同卷时不拦
-        assert!(
-            uncertain_location_reason("/Volumes/Backup/proj", "/Users/u", HostPlatform::MacOs,)
-                .is_some()
-        );
+        assert!(uncertain_location_reason(
+            "/Volumes/Backup/proj",
+            "/Users/u",
+            HostPlatform::MacOs,
+            None,
+        )
+        .is_some());
         assert!(
             uncertain_location_reason(
                 "/Volumes/Macintosh HD/Users/u/proj",
                 "/Volumes/Macintosh HD/Users/u",
                 HostPlatform::MacOs,
+                None,
             )
             .is_none(),
             "home 与路径同卷时不视为外置"
         );
         assert!(
-            uncertain_location_reason("/Users/u/proj", "/Users/u", HostPlatform::MacOs).is_none()
+            uncertain_location_reason("/Users/u/proj", "/Users/u", HostPlatform::MacOs, None)
+                .is_none()
         );
         // 任何平台：非绝对路径一律不确定
         for platform in [
@@ -5253,10 +5443,24 @@ mod tests {
             HostPlatform::Other,
         ] {
             assert!(
-                uncertain_location_reason("relative/proj", "/Users/u", platform).is_some(),
+                uncertain_location_reason("relative/proj", "/Users/u", platform, None).is_some(),
                 "相对路径在 {platform:?} 下必须判不确定"
             );
         }
+    }
+
+    /// `is_absolute_for` 与盘符类型判定共用 `has_drive_letter`，锁定其边界：
+    /// 只认「字母 + 冒号 + 分隔符」，避免把 UNC / 相对路径当成盘符去查类型。
+    #[test]
+    fn drive_letter_predicate_covers_both_separators_only() {
+        assert!(has_drive_letter(r"C:\proj"));
+        assert!(has_drive_letter("C:/proj"));
+        assert!(has_drive_letter("z:\\proj"), "盘符大小写均可");
+        assert!(!has_drive_letter(r"\\server\share"), "UNC 不是盘符路径");
+        assert!(!has_drive_letter("C:"), "只有盘符不算绝对路径");
+        assert!(!has_drive_letter("relative/proj"));
+        assert!(!has_drive_letter(""), "空路径不得越界读取");
+        assert!(!has_drive_letter("1:\\proj"), "非字母开头不是盘符");
     }
 
     /// P2 集成：不确定位置（UNC / 外置卷）不进 deadEntries。
@@ -5314,10 +5518,18 @@ mod tests {
         let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
         assert!(report.removed.is_empty(), "被外部改写的文件不得写回");
         assert!(
-            report.blocked.iter().any(|(_, r)| r.contains("被外部修改")),
+            report
+                .blocked
+                .iter()
+                .any(|b| b.reason.contains("被外部修改")),
             "应说明跳过原因：{:?}",
             report.blocked
         );
+        // 并发冲突必须标为可重试：这条路径**不进** write_errors，前端若只看
+        // writeErrorCount 会把「一条都没清掉」显示成灰色成功（见 mod.rs 的
+        // cleanup_result_treats_concurrent_conflict_as_incomplete）。
+        assert_eq!(report.retryable_count(), 1, "冲突条目应可重试");
+        assert!(report.write_errors.is_empty(), "冲突不是写失败");
         // 外部写入的内容必须原样保留
         let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(doc["freshField"], 1, "外部写入的字段不得被覆盖丢失");
@@ -5325,6 +5537,25 @@ mod tests {
             doc["projects"].get(&dead).is_some(),
             "文件应保持外部写入后的原状（死键未清）"
         );
+    }
+
+    /// scan 后文件变得暂时不可读/格式不完整时，本轮清理没有完成，必须保留重试入口。
+    #[test]
+    fn cleanup_treats_read_failure_after_scan_as_retryable() {
+        let (paths, _t) = setup();
+        let dead = paths.home.join("read-race-dead").display().to_string();
+        let file = write_instance_source(&paths, "hq", json!({"projects": {dead: {}}}));
+
+        let scan = scan_dead_entries(&paths, &["hq".to_string()]);
+        assert_eq!(scan.dead.len(), 1);
+        fs::write(&file, "{external-write-in-progress").unwrap();
+        let before = fs::read(&file).unwrap();
+
+        let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
+        assert!(report.removed.is_empty());
+        assert_eq!(report.retryable_count(), 1, "读取失败应保留重试入口");
+        assert!(report.write_errors.is_empty(), "尚未写入，不应报告为写失败");
+        assert_eq!(fs::read(&file).unwrap(), before, "外部内容不得被覆盖");
     }
 
     /// P1 回归（登记表侧）：scan 之后登记表被外部改写 → 不写回。
@@ -5350,10 +5581,14 @@ mod tests {
         let report = cleanup_dead_entries_scanned(&paths, scan).unwrap();
         assert!(report.removed.is_empty());
         assert!(
-            report.blocked.iter().any(|(_, r)| r.contains("被外部修改")),
+            report
+                .blocked
+                .iter()
+                .any(|b| b.reason.contains("被外部修改")),
             "应说明跳过原因：{:?}",
             report.blocked
         );
+        assert_eq!(report.retryable_count(), 1, "登记表冲突同样应可重试");
         let doc: Value =
             serde_json::from_str(&fs::read_to_string(paths.project_registry()).unwrap()).unwrap();
         assert_eq!(
@@ -5428,7 +5663,7 @@ mod tests {
         let report = cleanup_dead_entries(&paths, &["hq".to_string()]).unwrap();
         assert!(report.removed.is_empty(), "非 NotFound 原因一律不删");
         assert!(
-            report.blocked.iter().any(|(_, r)| r.contains("不是目录")),
+            report.blocked.iter().any(|b| b.reason.contains("不是目录")),
             "文件路径应入 blocked：{:?}",
             report.blocked
         );
@@ -5436,7 +5671,7 @@ mod tests {
             report
                 .blocked
                 .iter()
-                .any(|(_, r)| r.contains("项目路径非法")),
+                .any(|b| b.reason.contains("项目路径非法")),
             "含 .. 的键应入 blocked：{:?}",
             report.blocked
         );
@@ -5775,8 +6010,8 @@ mod tests {
             report
                 .blocked
                 .iter()
-                .any(|(raw, reason)| norm_path(raw) == norm_path(&revived)
-                    && reason.contains("目录现已存在")),
+                .any(|b| norm_path(&b.raw) == norm_path(&revived)
+                    && b.reason.contains("目录现已存在")),
             "复活条目应入 blocked：{:?}",
             report.blocked
         );

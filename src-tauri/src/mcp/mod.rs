@@ -380,9 +380,14 @@ pub fn unregister_mcp_project(path: String) -> Result<McpState, String> {
 #[serde(rename_all = "camelCase")]
 pub struct McpCleanupResult {
     pub removed_count: usize,
+    /// 全部未清理条目数（含稳定跳过与可重试的并发冲突）
     pub blocked_count: usize,
+    /// `blocked_count` 中「重试可能成功」的那部分（并发冲突），其余是稳定状态
+    pub retryable_count: usize,
     pub write_error_count: usize,
-    /// true = 没有任何写失败（允许关闭弹窗）；部分失败应保持弹窗供重试
+    /// true = 没有留下任何**未完成**的工作：既没有写失败，也没有可重试的冲突。
+    /// 前端的颜色/是否关闭弹窗一律以它为准，不再自行用 write_error_count 重新推导
+    /// （两处推导必然分叉：并发冲突不改 write_errors，只看写失败会把它误判成成功）。
     pub complete: bool,
     /// 人类可读报告（清理分组、跳过原因、失败文件、备份位置）
     pub message: String,
@@ -402,13 +407,24 @@ pub fn cleanup_dead_project_entries() -> Result<McpCleanupResult, String> {
         None => return Err("另一个同步正在进行，请稍后重试".into()),
     };
     let report = cleanup_dead_entries(&paths, &instances)?;
-    Ok(McpCleanupResult {
+    Ok(cleanup_result(&report, &paths))
+}
+
+/// [CleanupReport] → 前端消费的结构化结果。
+///
+/// 抽成函数是为了让测试直接跑**生产映射**：此前测试内联抄了一份同样的映射，
+/// 改 `complete` 语义时两边会静默分叉。
+fn cleanup_result(report: &CleanupReport, paths: &McpPaths) -> McpCleanupResult {
+    McpCleanupResult {
         removed_count: report.removed.len(),
         blocked_count: report.blocked.len(),
+        retryable_count: report.retryable_count(),
         write_error_count: report.write_errors.len(),
-        complete: report.write_errors.is_empty(),
-        message: format_cleanup_report(&report, &paths),
-    })
+        // 「未完成」= 有写失败，或留下重试可能成功的冲突。稳定跳过（目录已重建、
+        // 权限不足等）不算未完成，重试也改变不了结果。
+        complete: report.write_errors.is_empty() && report.retryable_count() == 0,
+        message: format_cleanup_report(report, paths),
+    }
 }
 
 /// 把清理报告格式化为一条人类可读消息（前端 notifications.show 直接展示）。
@@ -453,11 +469,16 @@ fn format_cleanup_report(report: &CleanupReport, paths: &McpPaths) -> String {
         msg.push_str("没有清理任何条目");
     }
     if !report.blocked.is_empty() {
+        // 有重试可能的先点名，否则用户只看到"跳过"会以为无事可做。
+        let retryable = report.retryable_count();
+        if retryable > 0 {
+            let _ = write!(msg, "；其中 {retryable} 条可在稍后重试");
+        }
         let _ = write!(msg, "；跳过 {} 条：", report.blocked.len());
         let details = report
             .blocked
             .iter()
-            .map(|(raw, reason)| format!("{raw}（{reason}）"))
+            .map(|b| format!("{}（{}）", b.raw, b.reason))
             .collect::<Vec<_>>()
             .join("、");
         msg.push_str(&details);
@@ -1079,7 +1100,10 @@ mod tests {
                     raw_path: "E:/dead-reg".into(),
                 },
             ],
-            blocked: vec![("E:/a-file".to_string(), "不是目录：E:/a-file".to_string())],
+            blocked: vec![storage::BlockedEntry::stable(
+                "E:/a-file",
+                "不是目录：E:/a-file",
+            )],
             write_errors: vec![("f3.json".to_string(), "boom".to_string())],
         };
         let msg = format_cleanup_report(&report, &paths);
@@ -1108,7 +1132,8 @@ mod tests {
     }
 
     /// P3 回归：命令必须返回结构化结果，前端据此区分成功/部分失败，
-    /// 不得把「写失败但未中断」伪装成绿色成功。
+    /// 不得把「写失败但未中断」伪装成绿色成功。用生产映射 [cleanup_result]，
+    /// 不内联抄一份，避免改语义时两边分叉。
     #[test]
     fn cleanup_result_exposes_counts_and_completeness() {
         let (paths, _t) = setup();
@@ -1119,24 +1144,64 @@ mod tests {
             blocked: vec![],
             write_errors: vec![("f.json".to_string(), "boom".to_string())],
         };
-        // 与命令尾部相同的映射逻辑
-        let result = McpCleanupResult {
-            removed_count: report.removed.len(),
-            blocked_count: report.blocked.len(),
-            write_error_count: report.write_errors.len(),
-            complete: report.write_errors.is_empty(),
-            message: format_cleanup_report(&report, &paths),
-        };
+        let result = cleanup_result(&report, &paths);
         assert_eq!(result.removed_count, 1);
         assert_eq!(result.write_error_count, 1);
         assert!(!result.complete, "有写失败时 complete 必须为 false");
         assert!(result.message.contains("写入失败"));
 
         let clean = CleanupReport {
-            removed: report.removed,
+            removed: vec![],
             blocked: vec![],
             write_errors: vec![],
         };
-        assert!(clean.write_errors.is_empty());
+        assert!(cleanup_result(&clean, &paths).complete);
+    }
+
+    /// 并发冲突（scan 与写盘之间文件被外部改写）只进 blocked、不改 write_errors：
+    /// 若 complete 仍按「无写失败」判定，用户会看到灰色"没有清理任何条目"，
+    /// 掩盖了"重试即可清掉"这一事实。回归锁定它必须为未完成且可重试。
+    #[test]
+    fn cleanup_result_treats_concurrent_conflict_as_incomplete() {
+        let (paths, _t) = setup();
+        let report = CleanupReport {
+            removed: vec![],
+            blocked: vec![storage::BlockedEntry::retryable(
+                "/gone",
+                "文件在清理期间被外部修改，本轮未清理，请重试",
+            )],
+            write_errors: vec![],
+        };
+        let result = cleanup_result(&report, &paths);
+        assert_eq!(result.retryable_count, 1);
+        assert_eq!(result.blocked_count, 1);
+        assert_eq!(result.write_error_count, 0);
+        assert!(
+            !result.complete,
+            "留下可重试的冲突时 complete 必须为 false，否则前端会误报成功"
+        );
+        assert!(
+            result.message.contains("1 条可在稍后重试"),
+            "消息应点名还有可重试的条目：{}",
+            result.message
+        );
+    }
+
+    /// 稳定跳过（目录已重建 / 权限不足）重试无意义，不得被当成"未完成"反复催用户重试。
+    #[test]
+    fn cleanup_result_keeps_stable_skips_complete() {
+        let (paths, _t) = setup();
+        let report = CleanupReport {
+            removed: vec![],
+            blocked: vec![storage::BlockedEntry::stable(
+                "/back",
+                "目录现已存在，自动跳过",
+            )],
+            write_errors: vec![],
+        };
+        let result = cleanup_result(&report, &paths);
+        assert_eq!(result.retryable_count, 0);
+        assert_eq!(result.blocked_count, 1);
+        assert!(result.complete, "稳定跳过不算未完成");
     }
 }

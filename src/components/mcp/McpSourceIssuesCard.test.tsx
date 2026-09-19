@@ -155,6 +155,7 @@ describe("cleanupOutcomeView 清理结果的呈现分类", () => {
   const result = (over: Partial<McpCleanupResult>): McpCleanupResult => ({
     removedCount: 2,
     blockedCount: 0,
+    retryableCount: 0,
     writeErrorCount: 0,
     complete: true,
     message: "已清理 2 条",
@@ -174,11 +175,60 @@ describe("cleanupOutcomeView 清理结果的呈现分类", () => {
     expect(view.closeDialog).toBe(false);
   });
 
-  it("无事可做（并发处理/全部跳过）→ 中性灰并关闭弹窗", () => {
+  it("无事可做（条目已被并发处理/全是稳定跳过）→ 中性灰并关闭弹窗", () => {
     const view = cleanupOutcomeView(
       result({ removedCount: 0, blockedCount: 3, message: "没有清理任何条目；跳过 3 条：…" }),
     );
     expect(view.color).toBe("gray");
     expect(view.closeDialog).toBe(true);
+  });
+
+  // 回归：并发冲突（scan 后被外部改写）只进 blocked、**不改** writeErrors。
+  // 曾经这里只认 writeErrorCount，于是"一条都没清掉、消息里写着请重试"
+  // 被显示成灰色成功，用户既看不到差异、弹窗也被关掉。
+  it("并发冲突导致一条未清 → 橙色、可重试、弹窗保持打开", () => {
+    const view = cleanupOutcomeView(
+      result({
+        removedCount: 0,
+        blockedCount: 1,
+        retryableCount: 1,
+        writeErrorCount: 0,
+        complete: false,
+        message: "没有清理任何条目；其中 1 条可在稍后重试；跳过 1 条：…",
+      }),
+    );
+    expect(view.color).toBe("orange");
+    expect(view.title).toContain("可重试");
+    expect(view.closeDialog).toBe(false);
+  });
+
+  it("部分成功但仍有可重试条目 → 橙色，不关闭弹窗", () => {
+    const view = cleanupOutcomeView(
+      result({
+        removedCount: 2,
+        blockedCount: 1,
+        retryableCount: 1,
+        complete: false,
+        message: "已清理 2：…；其中 1 条可在稍后重试；跳过 1 条：…",
+      }),
+    );
+    expect(view.color).toBe("orange");
+    expect(view.closeDialog).toBe(false);
+  });
+
+  it("写失败与可重试冲突并存 → 标题两者都点明", () => {
+    const view = cleanupOutcomeView(
+      result({
+        removedCount: 0,
+        blockedCount: 2,
+        retryableCount: 1,
+        writeErrorCount: 1,
+        complete: false,
+        message: "…",
+      }),
+    );
+    expect(view.title).toContain("部分清理失败");
+    expect(view.title).toContain("重试");
+    expect(view.closeDialog).toBe(false);
   });
 });

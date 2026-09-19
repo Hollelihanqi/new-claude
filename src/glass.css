@@ -53,10 +53,15 @@ body {
 }
 
 * { box-sizing: border-box; }
-* { scrollbar-width: thin; scrollbar-color: #cbd5da transparent; }
+/* 滚动条只用 -webkit- 伪元素定制，**不得**再设标准属性 scrollbar-width/scrollbar-color：
+   现代 WebKit（macOS WKWebView）一旦解析了标准属性就改用引擎自绘滚动条，
+   其双向滚动条的交汇角是引擎画的系统灰实心块（#8a9096 左右，深色下像"灰色直角"
+   贴在滚动容器右下角），::-webkit-scrollbar-corner 对它无效（真机踩过）。
+   只用 -webkit- 伪元素时引擎回落到 legacy 渲染，下面的 corner 透明才生效。 */
 *::-webkit-scrollbar { width: 6px; height: 6px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { background: #cbd5da; border-radius: 999px; }
+*::-webkit-scrollbar-corner { background: transparent; }
 
 .app-shell {
   /* 用 100% 而不是 100vh。
@@ -160,7 +165,9 @@ body {
 .brand-copy strong { font-size: 15px; letter-spacing: -.1px; }
 .nav-eyebrow { padding: 0 12px 8px; color: rgba(255,255,255,.37) !important; font-size: 10px !important; font-weight: 700; letter-spacing: 1.5px; }
 
-.side-nav { display: flex; flex-direction: column; gap: 6px; }
+/* min-height:0 允许在矮窗口里收缩并内部滚动（overflow 由滚动条隐藏组统一隐藏），
+   brand/帮助/ footer 保持可见；此前 overflow:hidden 的父级直接把溢出的菜单裁掉。 */
+.side-nav { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .side-nav-item {
   width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px;
   border: 1px solid transparent; border-radius: 12px; color: rgba(255,255,255,.66);
@@ -231,21 +238,36 @@ body {
 .view-stage { flex: 1; min-height: 0; }
 .view-scroll { height: 100%; overflow-y: auto; padding-right: 6px; }
 
-/* Keep every workspace scrollable while removing the visual scrollbar chrome. */
+/* Keep every workspace scrollable while removing the visual scrollbar chrome.
+   .mcp-table-scroll 的 6px 灰滚动条曾露出在圆角卡边缘，被用户当成"灰色直角"。 */
 .view-scroll,
 .instances-pane,
 .editor-scroll,
-.sync-log-block {
+.sync-log-block,
+.side-nav,
+.mcp-table-scroll {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 .view-scroll::-webkit-scrollbar,
 .instances-pane::-webkit-scrollbar,
 .editor-scroll::-webkit-scrollbar,
-.sync-log-block::-webkit-scrollbar {
+.sync-log-block::-webkit-scrollbar,
+.side-nav::-webkit-scrollbar,
+.mcp-table-scroll::-webkit-scrollbar {
   display: none;
   width: 0;
   height: 0;
+}
+/* 交汇角（纵向+横向滚动条相接的小方块）不随滚动条一起隐藏，
+   会以灰色矩形露出在圆角卡右下角 —— 真机矮窗口实测。 */
+.view-scroll::-webkit-scrollbar-corner,
+.instances-pane::-webkit-scrollbar-corner,
+.editor-scroll::-webkit-scrollbar-corner,
+.sync-log-block::-webkit-scrollbar-corner,
+.side-nav::-webkit-scrollbar-corner,
+.mcp-table-scroll::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .config-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -299,11 +321,18 @@ body {
 .form-section-label strong { color: var(--app-strong-text); font-size: 12px; }
 .form-section-label small { margin-top: 2px; color: #8a979e; font-size: 9px; }
 .instance-health-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 3px currentColor; opacity: .75; }
-.instance-health-dot.ok { color: rgba(24, 166, 116, .15); background: #18a674; }
-.instance-health-dot.warn { color: rgba(232, 154, 45, .17); background: #e89a2d; }
-.instance-health-dot.bad { color: rgba(250, 82, 82, .17); background: #fa5252; }
+/* 三态都呼吸：绿点节奏最快、红橙更沉稳（周期更长）；checking 保持更急促的脉冲。
+   呼吸 = 透明度回升 + 外圈光环缓慢扩散（box-shadow 半径 3px→6px）。 */
+.instance-health-dot.ok { color: rgba(24, 166, 116, .15); background: #18a674; animation: health-dot-breathe 2.2s ease-in-out infinite; }
+.instance-health-dot.warn { color: rgba(232, 154, 45, .17); background: #e89a2d; animation: health-dot-breathe 2.6s ease-in-out infinite; }
+.instance-health-dot.bad { color: rgba(250, 82, 82, .17); background: #fa5252; animation: health-dot-breathe 3s ease-in-out infinite; }
 .instance-health-dot.checking { color: rgba(125, 130, 136, .15); background: #7d8288; animation: health-dot-pulse 1.2s ease-in-out infinite; }
 @keyframes health-dot-pulse { 50% { opacity: .35; } }
+@keyframes health-dot-breathe { 50% { opacity: 1; box-shadow: 0 0 0 6px currentColor; } }
+/* 尊重系统「减弱动态效果」：状态提示不得依赖动画传达信息（点常亮即可辨色）。 */
+@media (prefers-reduced-motion: reduce) {
+  .instance-health-dot { animation: none; }
+}
 .instance-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-border); }
 .instance-overview > div { padding: 13px 16px; display: flex; flex-direction: column; gap: 6px; background: var(--app-surface-subtle); }
 .instance-overview span { color: var(--app-secondary-text); font-size: 12px; font-weight: 500; line-height: 1.35; }
@@ -418,8 +447,24 @@ html[data-mantine-color-scheme="dark"] .extension-items > span {
 }
 html[data-mantine-color-scheme="dark"] .workbuddy-status-icon.ready { color: #6dd7ad; background: #18352c; }
 html[data-mantine-color-scheme="dark"] .workbuddy-status-icon.warn { color: #efb866; background: #3b2d18; }
+/* 右侧编辑区与扩展中心/MCP 的卡片同源：纯 --app-surface。品牌第 9 阶深色混进来
+   会在 A 组（橘橙）下呈暗棕橙、与全应用深灰蓝底不一致；品牌色只留在边框/按钮/强调元素。 */
 html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
-  background: color-mix(in srgb, var(--mantine-primary-color-9) 18%, var(--app-surface));
+  background: var(--app-surface);
+}
+/* 选中态不得复用浅色规则里的 primary-color-0：色阶是固定数组、不随深色反转，
+   第 0 阶（#e7f3f7 / #fff2e9）在深色下近乎纯白，整行高亮会变"发白"。
+   深色改为：深品牌色（color-8）混入 app-surface 做低饱和底、亮品牌色（color-3）做文字、
+   半透明品牌边框 —— 与浅色的"浅底深字"形成同构对比。覆盖环境列表、WorkBuddy 列表、
+   WorkBuddy 模型勾选卡三处同一缺陷家族。 */
+html[data-mantine-color-scheme="dark"] .instances-card .mantine-NavLink-root[data-active],
+html[data-mantine-color-scheme="dark"] .workbuddy-list-card .mantine-NavLink-root[data-active] {
+  color: var(--mantine-primary-color-3);
+  background: color-mix(in srgb, var(--mantine-primary-color-8) 26%, var(--app-surface));
+  border-color: color-mix(in srgb, var(--mantine-primary-color-8) 50%, transparent);
+}
+html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-root:has(input:checked) {
+  background: color-mix(in srgb, var(--mantine-primary-color-8) 22%, var(--app-surface));
 }
 
 @media (max-width: 980px) {
@@ -445,7 +490,17 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
 }
 
 /* ---------------- MCP 服务页 ---------------- */
-.mcp-page { height: 100%; display: flex; flex-direction: column; gap: 16px; }
+/* 滚动方案与扩展页（.view-scroll.extensions-scroll）同一套：根部挂 view-scroll 兜底滚动。
+   有服务时表格卡 flex:1 收缩、由 .mcp-table-scroll 内部滚动，页面总高恒等于视口；
+   空服务态的表格卡 flex:0 + min-height:300px 不可收缩，概览+问题卡+工具栏叠加超出
+   视口时由 view-scroll 整页滚动 —— 否则底部（空状态的操作按钮）会被 .app-content
+   的 overflow:hidden 裁掉且无法到达。
+   注意不得覆盖 view-scroll 的 height:100%：滚动容器必须是确定高度，靠内容溢出驱动；
+   一旦改成 height:auto，页面高等于内容高、永不溢出，滚动随之失效（真机踩过）。 */
+.mcp-page { padding-right: 0; display: flex; flex-direction: column; gap: 16px; }
+/* 问题卡（Alert）默认 flex-shrink:1，矮窗口时会被压缩到文字被裁 —— 禁止收缩，
+   空间不足交给 view-scroll 整页滚动（与概览卡 flex:0 0 auto 同一口径）。 */
+.mcp-page > .mantine-Alert-root { flex: 0 0 auto; }
 .mcp-overview-card,
 .mcp-table-card,
 .extensions-nav-card,
@@ -476,6 +531,12 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
 }
 .mcp-table-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .mcp-table-card[data-empty="true"] { flex: 0 0 auto; min-height: 300px; }
+/* 空状态只有一行提示文案，不是可交互数据行；highlightOnHover 的整行灰底
+   会随鼠标扫过变色、误导用户以为可点 —— 关掉。 */
+.mcp-table-card[data-empty="true"] .mantine-Table-tr:hover,
+.mcp-table-card[data-empty="true"] .mantine-Table-tr[data-hover] {
+  background: transparent !important;
+}
 .mcp-table-scroll { flex: 1; min-height: 0; overflow: auto; }
 .mcp-table-card .mantine-Table-thead,
 .extension-table-card .mantine-Table-thead { background: var(--app-surface-soft); }
@@ -489,6 +550,12 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
   justify-content: center;
   gap: 7px;
   text-align: center;
+}
+/* 扩展页空状态行与 MCP 同源：不是数据行，hover 高亮误导（用户实测
+   「暂未发现 Skill」鼠标扫过会变色）。:has 在两平台 WebView 均已支持。 */
+.extension-table-card .mantine-Table-tr:has(.extension-empty-state):hover,
+.extension-table-card .mantine-Table-tr:has(.extension-empty-state)[data-hover] {
+  background: transparent !important;
 }
 .extension-empty-icon {
   width: 48px;
@@ -558,9 +625,12 @@ html[data-mantine-color-scheme="dark"] .workbuddy-organization-summary {
 .extension-table-card .mantine-Table-th,
 .extension-table-card .mantine-Table-td { padding-inline: 16px; }
 
+/* 空状态图标底与全应用深色底同源：品牌色只留给图标本身（color-3），
+   底色用低比例 color-8 混入（曾用 color-9 22%，A 组橘橙下呈暗棕橙方块，
+   与 WorkBuddy 编辑区旧缺陷同一家族）。扩展页与 MCP 页空状态共用此类。 */
 html[data-mantine-color-scheme="dark"] .extension-empty-icon {
   color: var(--mantine-primary-color-3);
-  background: color-mix(in srgb, var(--mantine-primary-color-9) 22%, var(--app-surface));
+  background: color-mix(in srgb, var(--mantine-primary-color-8) 16%, var(--app-surface));
   border-color: var(--app-border);
 }
 

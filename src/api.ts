@@ -170,12 +170,19 @@ export interface McpDeadEntry {
   filePath: string;
 }
 
-/** 一键清理的结构化结果：前端据此区分成功/无事可做/部分失败 */
+/** 一键清理的结构化结果：前端据此区分成功/无事可做/未完成（需重试） */
 export interface McpCleanupResult {
   removedCount: number;
+  /** 全部未清理条目数（含稳定跳过与可重试的并发冲突） */
   blockedCount: number;
+  /** blockedCount 中「重试可能成功」的部分（并发冲突） */
+  retryableCount: number;
   writeErrorCount: number;
-  /** true = 无写失败（可关闭确认弹窗）；部分失败保持弹窗供重试 */
+  /**
+   * true = 没有留下任何**未完成**的工作（无写失败、无重试型冲突）。
+   * 颜色与是否关闭弹窗一律以它为准 —— 不要自行用 writeErrorCount 重新推导：
+   * 并发冲突不改 writeErrors，只看写失败会把它误判成"清理成功"。
+   */
   complete: boolean;
   /** 人类可读报告 */
   message: string;

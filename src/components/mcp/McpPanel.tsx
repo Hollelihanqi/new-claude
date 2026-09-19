@@ -118,17 +118,24 @@ export default function McpPanel() {
   const [syncApplying, setSyncApplying] = useState(false);
   const [syncBusyKey, setSyncBusyKey] = useState("");
 
-  const inFlight = useRef(false);
+  const loadQueue = useRef<Promise<void>>(Promise.resolve());
   const load = useCallback((quiet = false) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    if (!quiet) setBusy(true);
-    setErr("");
-    api
-      .listMcpServices()
-      .then((nextState) => setState(rememberMcpState(nextState)))
-      .catch((e) => setErr(String(e)))
-      .finally(() => { inFlight.current = false; setBusy(false); });
+    // 刷新必须串行排队，不能在已有请求进行时静默丢弃。尤其是清理完成后的刷新：
+    // 若它被页面激活时的旧请求挡掉，旧请求会把清理前状态重新写回界面。
+    const task = loadQueue.current.catch(() => undefined).then(async () => {
+      if (!quiet) setBusy(true);
+      setErr("");
+      try {
+        const nextState = await api.listMcpServices();
+        setState(rememberMcpState(nextState));
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setBusy(false);
+      }
+    });
+    loadQueue.current = task;
+    return task;
   }, []);
 
   // 「恢复使用共享配置」：**只有用户显式点它**才会撤销覆盖（决策 7.2）。
@@ -147,8 +154,8 @@ export default function McpPanel() {
   };
 
   // 「一键清理死条目」：返回 boolean 让 RiskConfirm 决定是否关闭。
-  // 部分失败（writeErrorCount>0）→ 橙色通知 + 弹窗保持打开可重试；
-  // 无事可做 → 中性灰；全部成功 → 绿色。绝不能把写失败伪装成成功。
+  // 未完成（写失败或并发冲突，即 complete=false）→ 橙色通知 + 弹窗保持打开可重试；
+  // 无事可做 → 中性灰；全部成功 → 绿色。绝不能把"还有没清掉的"伪装成成功。
   const onCleanupDeadEntries = async () => {
     setCleaningIssues(true);
     try {
@@ -405,7 +412,7 @@ export default function McpPanel() {
   const summary = state?.summary;
 
   return (
-    <div className="mcp-page">
+    <div className="view-scroll mcp-page">
       <Card withBorder radius="lg" className="mcp-overview-card">
       <Group justify="space-between" align="flex-start" mb="md">
         <div>
