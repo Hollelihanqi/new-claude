@@ -666,7 +666,8 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
 .mcp-table-card,
 .extensions-nav-card,
 .extension-control-card,
-.extension-table-card {
+.extension-table-card,
+.plugin-list-card {
   background: var(--app-surface) !important;
   border-color: var(--app-border) !important;
   border-radius: 18px !important;
@@ -786,6 +787,190 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
 .extension-table-card .mantine-Table-th,
 .extension-table-card .mantine-Table-td { padding-inline: 16px; }
 
+.plugin-control-card { padding: 0; overflow: hidden; }
+.plugin-control-heading {
+  padding: 18px 20px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--app-subtle-border);
+}
+.plugin-control-icon,
+.plugin-identity-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--mantine-primary-color-6);
+  background: color-mix(in srgb, var(--theme-base) 12%, var(--app-surface-soft));
+  border: 1px solid color-mix(in srgb, var(--theme-base) 18%, var(--app-border));
+}
+.plugin-control-icon { width: 38px; height: 38px; border-radius: 12px; }
+.plugin-scope-panel {
+  padding: 16px 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  align-items: end;
+  gap: 24px;
+  background: color-mix(in srgb, var(--theme-base) 4%, var(--app-surface-soft));
+  border-bottom: 1px solid var(--app-subtle-border);
+}
+.plugin-scope-copy { display: flex; flex-direction: column; gap: 3px; }
+.plugin-scope-copy > .mantine-Text-root:first-child,
+.plugin-status-label,
+.plugin-action-label {
+  color: var(--app-muted);
+  font-size: 10px !important;
+  font-weight: 750;
+  letter-spacing: .65px;
+  text-transform: uppercase;
+}
+.plugin-install-disclosure > summary {
+  min-height: 56px;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.plugin-install-disclosure > summary::-webkit-details-marker { display: none; }
+.plugin-install-disclosure > summary > span {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.plugin-install-disclosure > summary > span > svg { color: var(--mantine-primary-color-6); }
+.plugin-install-chevron {
+  flex: 0 0 auto;
+  color: var(--app-muted);
+  transition: transform .18s ease;
+}
+.plugin-install-disclosure[open] .plugin-install-chevron { transform: rotate(180deg); }
+.plugin-install-disclosure[open] > summary { border-bottom: 1px solid var(--app-subtle-border); }
+.plugin-install-grid {
+  padding: 16px 20px 20px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.plugin-install-option {
+  min-width: 0;
+  padding: 14px;
+  background: var(--app-surface-subtle);
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+}
+.plugin-install-option-heading {
+  min-height: 42px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--mantine-primary-color-6);
+}
+.plugin-install-option-heading > div { color: var(--app-text); }
+.plugin-install-controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.plugin-install-controls .mantine-Button-root { min-height: 36px; white-space: nowrap; }
+.plugin-reading-guide {
+  min-height: 46px;
+  padding: 12px 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--app-secondary-text);
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-subtle-border);
+  border-radius: 14px;
+}
+.plugin-reading-guide > svg { flex: 0 0 auto; color: var(--mantine-primary-color-6); }
+
+.plugin-list-card { overflow: hidden; }
+.plugin-list-heading {
+  min-height: 70px;
+  padding: 15px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--app-surface-soft);
+  border-bottom: 1px solid var(--app-border);
+}
+.plugin-list { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.plugin-card {
+  overflow: hidden;
+  background: var(--app-surface-subtle);
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(20, 39, 48, .025);
+}
+.plugin-card-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.25fr) minmax(190px, .9fr) minmax(210px, 1fr);
+}
+.plugin-identity,
+.plugin-status-block { min-width: 0; padding: 17px 18px; }
+.plugin-identity { display: flex; align-items: flex-start; gap: 11px; }
+.plugin-identity-icon { width: 36px; height: 36px; border-radius: 11px; }
+.plugin-identity code {
+  display: block;
+  max-width: 100%;
+  margin-top: 7px;
+  color: var(--app-secondary-text);
+  font: 10px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.plugin-status-block {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  border-left: 1px solid var(--app-subtle-border);
+}
+.plugin-card-actions {
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+  background: color-mix(in srgb, var(--theme-base) 3%, var(--app-surface-soft));
+  border-top: 1px solid var(--app-subtle-border);
+}
+.plugin-action-main,
+.plugin-danger-action { display: flex; flex-direction: column; gap: 7px; }
+.plugin-danger-action {
+  min-width: 178px;
+  padding-left: 18px;
+  border-left: 1px solid var(--app-border);
+}
+.plugin-card-actions .mantine-Button-root { min-height: 34px; }
+.plugin-card-actions .mantine-Switch-root { min-height: 34px; display: flex; align-items: center; }
+.plugin-policy-row {
+  padding: 11px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--app-surface);
+  border-top: 1px solid var(--app-subtle-border);
+}
+
+html[data-theme="apple"] .plugin-control-card,
+html[data-theme="apple"] .plugin-list-card {
+  box-shadow: var(--app-panel-shadow), inset 0 1px rgba(255, 255, 255, .24) !important;
+  backdrop-filter: blur(24px) saturate(1.32);
+}
+html[data-theme="apple"] .plugin-install-option,
+html[data-theme="apple"] .plugin-card {
+  box-shadow: inset 0 1px rgba(255, 255, 255, .16);
+}
+
 /* 空状态图标底与全应用深色底同源：品牌色只留给图标本身（color-3），
    底色用低比例 color-8 混入（曾用 color-9 22%，A 组橘橙下呈暗棕橙方块，
    与 WorkBuddy 编辑区旧缺陷同一家族）。扩展页与 MCP 页空状态共用此类。 */
@@ -797,6 +982,22 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
 
 @media (max-width: 1100px) {
   .extension-toolbar { justify-content: flex-start; }
+  .plugin-install-grid { grid-template-columns: 1fr; }
+  .plugin-card-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plugin-identity { grid-column: 1 / -1; border-bottom: 1px solid var(--app-subtle-border); }
+  .plugin-status-block:nth-child(2) { border-left: 0; }
+  .plugin-card-actions { grid-template-columns: 1fr; align-items: stretch; }
+  .plugin-danger-action { min-width: 0; padding: 11px 0 0; border-top: 1px solid var(--app-border); border-left: 0; }
+}
+
+@media (max-width: 760px) {
+  .plugin-scope-panel { grid-template-columns: 1fr; align-items: stretch; gap: 12px; }
+  .plugin-install-controls { grid-template-columns: 1fr; }
+  .plugin-card-summary { grid-template-columns: 1fr; }
+  .plugin-identity { grid-column: auto; }
+  .plugin-status-block { border-top: 1px solid var(--app-subtle-border); border-left: 0; }
+  .plugin-list-heading,
+  .plugin-policy-row { align-items: flex-start; flex-direction: column; }
 }
 .mcp-config-preview {
   margin: 4px 0 0; padding: 10px; max-height: 220px; overflow: auto;
@@ -825,7 +1026,8 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
 .mcp-table-card,
 .extensions-nav-card,
 .extension-control-card,
-.extension-table-card {
+.extension-table-card,
+.plugin-list-card {
   transition: background-color .24s ease, border-color .24s ease, box-shadow .24s ease;
 }
 

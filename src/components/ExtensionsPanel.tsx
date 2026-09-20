@@ -3,7 +3,19 @@ import { usePageActivation } from "./PersistentPage";
 import { Alert, Badge, Button, Card, Group, Modal, Select, Stack, Switch, Table, Tabs, Text, TextInput, Tooltip } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { open } from "@tauri-apps/plugin-dialog";
-import { IconBrain, IconPlugConnected, IconRefresh, IconRobot, IconTrash } from "@tabler/icons-react";
+import {
+  IconBrain,
+  IconChevronDown,
+  IconDownload,
+  IconInfoCircle,
+  IconPackage,
+  IconPlayerPause,
+  IconPlayerPlay,
+  IconPlugConnected,
+  IconRefresh,
+  IconRobot,
+  IconTrash,
+} from "@tabler/icons-react";
 import { api } from "../api";
 import type { PluginAction, PluginActionReport, PluginRow, ResourceItem, ResourceKind, ResourceOverview } from "../api";
 import FeatureHelp from "./FeatureHelp";
@@ -264,6 +276,7 @@ function PluginSharing() {
   useEffect(() => { void load(); }, []);
   usePageActivation(() => { if (!mutating.current) void load(); });
   const isAll = target === ALL_ENVS;
+  const scopeLabel = isAll ? "所有环境" : `环境 ${target}`;
   const defaultPlugins = rows.filter((row) => row.defaultInstalled).map((row) => row.name);
   const apply = async (action: () => Promise<string>, key: string) => {
     if (mutating.current) return;
@@ -299,76 +312,236 @@ function PluginSharing() {
     }
   };
 
-  return <Stack gap="md" className="extension-manager">
-    <Card withBorder radius="lg" className="extension-control-card">
-    <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
-      <div><Group gap={6}><Text fw={700}>插件管理</Text><FeatureHelp content={PLUGINS_HELP} /></Group>
-        <Text size="xs" c="dimmed">插件在每个环境独立安装；“所有环境”会逐个调用官方命令，默认 Claude 只读。</Text></div>
-      <Group gap="xs" className="extension-toolbar">
-        <Select size="xs" w={220} value={target} disabled={!!busy} onChange={(value) => value && setTarget(value)} allowDeselect={false}
-          data={[{ value: ALL_ENVS, label: "所有环境" }, ...envNames.map((env) => ({ value: env, label: `环境 ${env}` }))]} />
-        <Select size="xs" w={235} searchable clearable value={defaultPlugin} onChange={setDefaultPlugin}
-          placeholder="默认 Claude 已安装的插件"
-          data={defaultPlugins.map((name) => ({ value: name, label: name }))} />
-        <Button size="xs" variant="default" disabled={!defaultPlugin || envNames.length === 0 || !!busy}
-          loading={!!defaultPlugin && busy === `install:${defaultPlugin}`}
-          onClick={() => defaultPlugin && void manage("install", defaultPlugin)}>安装默认 Claude 的插件</Button>
-        <TextInput size="xs" w={230} value={pluginName} onChange={(event) => setPluginName(event.currentTarget.value)}
-          placeholder="plugin@marketplace" aria-label="插件名称" />
-        <Button size="xs" disabled={!pluginName.trim() || envNames.length === 0 || !!busy}
-          loading={busy === `install:${pluginName.trim()}`} onClick={() => void manage("install", pluginName)}>安装插件</Button>
-      </Group>
-    </Group>
+  return <Stack gap="md" className="extension-manager plugin-manager">
+    <Card withBorder radius="lg" className="extension-control-card plugin-control-card">
+      <div className="plugin-control-heading">
+        <div className="plugin-control-icon"><IconPlugConnected size={20} /></div>
+        <div>
+          <Group gap={6}><Text fw={700}>插件管理</Text><FeatureHelp content={PLUGINS_HELP} /></Group>
+          <Text size="xs" c="dimmed">先选择要管理的环境，再安装或调整插件。默认 Claude 仅作为插件来源，不会被修改。</Text>
+        </div>
+      </div>
+
+      <div className="plugin-scope-panel">
+        <div className="plugin-scope-copy">
+          <Text size="xs" fw={700}>当前操作范围</Text>
+          <Text size="sm" fw={650}>{scopeLabel}</Text>
+          <Text size="xs" c="dimmed">
+            {isAll
+              ? `安装、更新或启停会依次作用于 ${envNames.length} 个环境。`
+              : `接下来的操作只会影响 ${target}，其他环境保持不变。`}
+          </Text>
+        </div>
+        <Select
+          size="sm"
+          label="选择管理范围"
+          aria-label="选择插件管理范围"
+          value={target}
+          disabled={!!busy}
+          onChange={(value) => value && setTarget(value)}
+          allowDeselect={false}
+          data={[{ value: ALL_ENVS, label: "所有环境（批量管理）" }, ...envNames.map((env) => ({ value: env, label: `仅环境 ${env}` }))]}
+        />
+      </div>
+
+      <details className="plugin-install-disclosure">
+        <summary>
+          <span>
+            <IconDownload size={18} />
+            <span>
+              <Text size="sm" fw={650}>安装新插件</Text>
+              <Text size="xs" c="dimmed">从默认 Claude 复制，或使用 Marketplace 插件标识。</Text>
+            </span>
+          </span>
+          <IconChevronDown size={18} className="plugin-install-chevron" />
+        </summary>
+      <div className="plugin-install-grid">
+        <section className="plugin-install-option" aria-label="从默认 Claude 复制插件">
+          <div className="plugin-install-option-heading">
+            <IconDownload size={18} />
+            <div>
+              <Text size="sm" fw={650}>从默认 Claude 复制</Text>
+              <Text size="xs" c="dimmed">选择已经安装过的插件，省去手动输入。</Text>
+            </div>
+          </div>
+          <div className="plugin-install-controls">
+            <Select
+              size="sm"
+              searchable
+              clearable
+              value={defaultPlugin}
+              onChange={setDefaultPlugin}
+              placeholder={defaultPlugins.length ? "选择一个插件" : "默认 Claude 暂无插件"}
+              aria-label="选择默认 Claude 中的插件"
+              data={defaultPlugins.map((name) => ({ value: name, label: name }))}
+            />
+            <Button
+              size="sm"
+              variant="default"
+              leftSection={<IconDownload size={15} />}
+              disabled={!defaultPlugin || envNames.length === 0 || !!busy}
+              loading={!!defaultPlugin && busy === `install:${defaultPlugin}`}
+              onClick={() => defaultPlugin && void manage("install", defaultPlugin)}
+            >安装到{scopeLabel}</Button>
+          </div>
+        </section>
+
+        <section className="plugin-install-option" aria-label="从 Marketplace 安装插件">
+          <div className="plugin-install-option-heading">
+            <IconPackage size={18} />
+            <div>
+              <Text size="sm" fw={650}>从 Marketplace 安装</Text>
+              <Text size="xs" c="dimmed">粘贴完整插件标识，例如 plugin@marketplace。</Text>
+            </div>
+          </div>
+          <div className="plugin-install-controls">
+            <TextInput
+              size="sm"
+              value={pluginName}
+              onChange={(event) => setPluginName(event.currentTarget.value)}
+              placeholder="plugin@marketplace"
+              aria-label="Marketplace 插件标识"
+            />
+            <Button
+              size="sm"
+              leftSection={<IconDownload size={15} />}
+              disabled={!pluginName.trim() || envNames.length === 0 || !!busy}
+              loading={busy === `install:${pluginName.trim()}`}
+              onClick={() => void manage("install", pluginName)}
+            >安装到{scopeLabel}</Button>
+          </div>
+        </section>
+      </div>
+      </details>
     </Card>
-    <Alert color="blue" variant="light">安装、更新、启用、停用和卸载均由 Claude Code 官方命令逐环境执行；列表分别展示真实安装状态与启停策略。</Alert>
+
+    <div className="plugin-reading-guide">
+      <IconInfoCircle size={18} />
+      <Text size="xs"><strong>怎么看：</strong>“默认 Claude”只显示可复制的来源；“{scopeLabel}”才是当前正在管理的真实状态。每次操作都会逐个环境执行并显示结果。</Text>
+    </div>
     {err && <Alert color="red">{err}</Alert>}
     {lastReport && <Alert color={lastReport.results.every((item) => item.ok) ? "teal" : "orange"} title={<Group gap={4}>插件操作结果<FeatureHelp content={PLUGIN_RESULT_HELP} /></Group>}>
       {lastReport.results.map((item) => <Text size="xs" key={item.env}>{item.env}：{item.ok ? "成功" : "失败"} · {item.detail}</Text>)}
       {lastReport.policyWarning && <Text size="xs" c="orange.9" mt={6}>{lastReport.policyWarning}</Text>}
       <Text size="xs" mt={6}>{lastReport.reloadHint}</Text>
     </Alert>}
-    <Card withBorder padding={0} radius="lg" className="extension-table-card"><Table verticalSpacing="xs" highlightOnHover>
-      <Table.Thead><Table.Tr><Table.Th>插件</Table.Th><Table.Th w={140}>默认 Claude</Table.Th><Table.Th w={190}>{isAll ? "所有环境" : `环境 ${target}`}</Table.Th><Table.Th w={270}>操作</Table.Th></Table.Tr></Table.Thead>
-      <Table.Tbody>{rows.map((row) => {
+    <Card withBorder padding={0} radius="lg" className="plugin-list-card">
+      <div className="plugin-list-heading">
+        <div>
+          <Group gap={8}><Text fw={700}>已发现的插件</Text><Badge size="sm" variant="light">{rows.length}</Badge></Group>
+          <Text size="xs" c="dimmed">每张卡片依次显示插件来源、安装状态和当前可执行的操作。</Text>
+        </div>
+        <Text size="xs" c="dimmed">正在查看：<strong>{scopeLabel}</strong></Text>
+      </div>
+      <div className="plugin-list">{rows.map((row) => {
         const envState = row.envs.find((entry) => entry.env === target);
-        return <Table.Tr key={row.name}>
-          <Table.Td><Text size="sm">{row.name}</Text></Table.Td>
-          <Table.Td><Stack gap={3}>{row.defaultInstalled ? <Badge size="xs" variant="light" color="gray">已安装{row.defaultVersion ? ` · ${row.defaultVersion}` : ""}</Badge> : <Text size="xs" c="dimmed">未安装</Text>}
-            {row.defaultClaude != null && <Text size="xs" c="dimmed">{row.defaultClaude ? "已启用" : "已停用"}</Text>}</Stack></Table.Td>
-          <Table.Td>{isAll ? <Stack gap={4}><Text size="xs">已安装 {row.envs.filter((item) => item.installed).length}/{envNames.length}</Text>
-            {row.envs.some((item) => item.storageIndependent === false) && <Badge size="xs" color="orange">存在旧共享目录</Badge>}</Stack> :
-            <Group gap="xs"><Switch size="sm" checked={envState?.value === true} disabled={!!busy || !envState?.installed}
-              aria-label={`${row.name} ${envState?.value ? "停用" : "启用"}`}
-              onChange={(event) => void manage(event.currentTarget.checked ? "enable" : "disable", row.name)} />
-              <Badge size="xs" variant="light" color={envState?.installed ? "teal" : "gray"}>{envState?.installed ? `已安装${envState.version ? ` · ${envState.version}` : ""}` : "未安装"}</Badge>
-              {envState?.excluded && <Tooltip label="不跟随所有环境的插件操作"><Badge size="xs" variant="light" color="gray">已排除共享策略</Badge></Tooltip>}
-              {envState && !envState.inherited && <Tooltip label={envState.reason || "该环境有自己的设置"}><Badge size="xs" variant="light" color="orange">已覆盖</Badge></Tooltip>}</Group>}</Table.Td>
-          <Table.Td><Group gap={5}>
-            {(!isAll && !envState?.installed || isAll && row.envs.some((item) => !item.installed)) && <Button size="compact-xs" variant="light" disabled={!!busy} loading={busy === `install:${row.name}`} onClick={() => void manage("install", row.name)}>安装</Button>}
-            <Button size="compact-xs" variant="default" disabled={!!busy || (isAll ? row.envs.every((item) => !item.installed) : !envState?.installed)} loading={busy === `update:${row.name}`} onClick={() => void manage("update", row.name)}>更新</Button>
-            {isAll && <Button size="compact-xs" variant="light" disabled={!!busy || row.envs.every((item) => !item.installed)}
-              loading={busy === `${row.shared === true ? "disable" : "enable"}:${row.name}`}
-              onClick={() => void manage(row.shared === true ? "disable" : "enable", row.name)}>{row.shared === true ? "全部停用" : "全部启用"}</Button>}
-            <Button size="compact-xs" variant="subtle" color="red" disabled={!!busy || (isAll ? row.envs.every((item) => !item.installed) : !envState?.installed)} onClick={() => setRemoveName(row.name)}>卸载</Button>
-            {!isAll && envState?.excluded && <Button size="compact-xs" variant="light" loading={busy === `include:${target}:${row.name}`} disabled={!!busy}
-              onClick={() => apply(() => api.setPluginExcluded(target, row.name, false), `include:${target}:${row.name}`)}>恢复共享策略</Button>}
-            {!isAll && envState && !envState.excluded && row.shared != null && <Button size="compact-xs" variant="default" loading={busy === `exclude-plugin:${target}:${row.name}`} disabled={!!busy}
-              onClick={() => apply(() => api.setPluginExcluded(target, row.name, true), `exclude-plugin:${target}:${row.name}`)}>排除共享策略</Button>}
-            {!isAll && envState && !envState.excluded && !envState.inherited && row.shared != null && <Button size="compact-xs" variant="light" loading={busy === `restore:${target}:${row.name}`} disabled={!!busy}
-              onClick={() => apply(() => api.restorePluginInheritance(target, row.name), `restore:${target}:${row.name}`)}>恢复策略</Button>}
-          </Group></Table.Td>
-        </Table.Tr>;
-      })}</Table.Tbody>
-      {rows.length === 0 && <Table.Tbody><Table.Tr><Table.Td colSpan={4}>
+        const installedCount = row.envs.filter((item) => item.installed).length;
+        const enabledCount = row.envs.filter((item) => item.installed && item.value === true).length;
+        const allInstalledEnabled = installedCount > 0
+          && row.envs.filter((item) => item.installed).every((item) => item.value === true);
+        const splitAt = row.name.lastIndexOf("@");
+        const displayName = splitAt > 0 ? row.name.slice(0, splitAt) : row.name;
+        const sourceName = splitAt > 0 ? row.name.slice(splitAt + 1) : "自定义来源";
+        const canManage = isAll ? installedCount > 0 : envState?.installed === true;
+        const needsInstall = isAll ? installedCount < envNames.length : !envState?.installed;
+        return <article className="plugin-card" key={row.name}>
+          <div className="plugin-card-summary">
+            <div className="plugin-identity">
+              <div className="plugin-identity-icon"><IconPlugConnected size={19} /></div>
+              <div>
+                <Text size="sm" fw={700}>{displayName}</Text>
+                <Text size="xs" c="dimmed">来源：{sourceName}</Text>
+                <code title={row.name}>{row.name}</code>
+              </div>
+            </div>
+
+            <div className="plugin-status-block">
+              <Text className="plugin-status-label">默认 Claude（仅参考）</Text>
+              <Group gap={6} wrap="wrap">
+                <Badge size="sm" variant="light" color={row.defaultInstalled ? "gray" : "dark"}>
+                  {row.defaultInstalled ? `已安装${row.defaultVersion ? ` · ${row.defaultVersion}` : ""}` : "未安装"}
+                </Badge>
+                {row.defaultClaude != null && <Badge size="sm" variant="dot" color={row.defaultClaude ? "teal" : "gray"}>{row.defaultClaude ? "已启用" : "已停用"}</Badge>}
+              </Group>
+              <Text size="xs" c="dimmed">这里的状态不会被本页操作修改。</Text>
+            </div>
+
+            <div className="plugin-status-block">
+              <Text className="plugin-status-label">{scopeLabel}的真实状态</Text>
+              {isAll ? <>
+                <Group gap={6} wrap="wrap">
+                  <Badge size="sm" variant="light" color={installedCount === envNames.length ? "teal" : "blue"}>{installedCount}/{envNames.length} 已安装</Badge>
+                  <Badge size="sm" variant="light" color={enabledCount === installedCount && installedCount > 0 ? "teal" : "gray"}>{enabledCount}/{installedCount} 已启用</Badge>
+                </Group>
+                <Text size="xs" c="dimmed">批量操作会按环境逐一执行。</Text>
+                {row.envs.some((item) => item.storageIndependent === false) && <Badge size="xs" color="orange" variant="light">部分环境仍使用旧目录</Badge>}
+              </> : <>
+                <Group gap={6} wrap="wrap">
+                  <Badge size="sm" variant="light" color={envState?.installed ? "teal" : "gray"}>{envState?.installed ? `已安装${envState.version ? ` · ${envState.version}` : ""}` : "未安装"}</Badge>
+                  {envState?.installed && <Badge size="sm" variant="dot" color={envState.value ? "teal" : "gray"}>{envState.value ? "已启用" : "已停用"}</Badge>}
+                  {envState?.excluded && <Badge size="sm" variant="light" color="gray">单独管理</Badge>}
+                  {envState && !envState.inherited && !envState.excluded && <Badge size="sm" variant="light" color="orange">与批量设置不同</Badge>}
+                </Group>
+                <Text size="xs" c="dimmed">只反映环境 {target}，不会混入其他环境。</Text>
+              </>}
+            </div>
+          </div>
+
+          <div className="plugin-card-actions">
+            <div className="plugin-action-main">
+              <Text className="plugin-action-label">{isAll ? "批量操作" : `环境 ${target} 的操作`}</Text>
+              <Group gap={7} wrap="wrap">
+                {needsInstall && <Button size="sm" variant="light" leftSection={<IconDownload size={15} />} disabled={!!busy}
+                  loading={busy === `install:${row.name}`} onClick={() => void manage("install", row.name)}>安装缺少的环境</Button>}
+                <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!!busy || !canManage}
+                  loading={busy === `update:${row.name}`} onClick={() => void manage("update", row.name)}>检查并更新</Button>
+                {isAll ? <Button size="sm" variant="light" leftSection={allInstalledEnabled ? <IconPlayerPause size={15} /> : <IconPlayerPlay size={15} />}
+                  disabled={!!busy || !canManage} loading={busy === `${allInstalledEnabled ? "disable" : "enable"}:${row.name}`}
+                  onClick={() => void manage(allInstalledEnabled ? "disable" : "enable", row.name)}>{allInstalledEnabled ? "在全部环境停用" : "在全部环境启用"}</Button> :
+                  <Switch size="md" label={envState?.value ? "此环境已启用" : "此环境已停用"} checked={envState?.value === true}
+                    disabled={!!busy || !envState?.installed} aria-label={`${row.name} ${envState?.value ? "停用" : "启用"}`}
+                    onChange={(event) => void manage(event.currentTarget.checked ? "enable" : "disable", row.name)} />}
+              </Group>
+            </div>
+            <div className="plugin-danger-action">
+              <Text className="plugin-action-label">危险操作</Text>
+              <Button size="sm" variant="subtle" color="red" leftSection={<IconTrash size={15} />} disabled={!!busy || !canManage}
+                onClick={() => setRemoveName(row.name)}>从{scopeLabel}卸载</Button>
+            </div>
+          </div>
+
+          {!isAll && envState && row.shared != null && <div className="plugin-policy-row">
+            <div>
+              <Text size="xs" fw={650}>与“所有环境”批量设置的关系</Text>
+              <Text size="xs" c="dimmed">
+                {envState.excluded
+                  ? "当前环境已设为单独管理，之后的批量启停不会影响它。"
+                  : envState.inherited
+                    ? "当前环境会跟随“所有环境”的批量启停。"
+                    : `当前状态与批量设置不同${envState.reason ? `：${envState.reason}` : "。"}`}
+              </Text>
+            </div>
+            <Group gap={6} wrap="wrap">
+              {envState.excluded && <Button size="compact-sm" variant="light" loading={busy === `include:${target}:${row.name}`} disabled={!!busy}
+                onClick={() => apply(() => api.setPluginExcluded(target, row.name, false), `include:${target}:${row.name}`)}>重新跟随批量设置</Button>}
+              {!envState.excluded && !envState.inherited && <Button size="compact-sm" variant="light" loading={busy === `restore:${target}:${row.name}`} disabled={!!busy}
+                onClick={() => apply(() => api.restorePluginInheritance(target, row.name), `restore:${target}:${row.name}`)}>恢复为批量设置</Button>}
+              {!envState.excluded && <Button size="compact-sm" variant="default" loading={busy === `exclude-plugin:${target}:${row.name}`} disabled={!!busy}
+                onClick={() => apply(() => api.setPluginExcluded(target, row.name, true), `exclude-plugin:${target}:${row.name}`)}>改为单独管理</Button>}
+            </Group>
+          </div>}
+        </article>;
+      })}
+      {rows.length === 0 &&
         <div className="extension-empty-state">
           <div className="extension-empty-icon"><IconPlugConnected size={24} /></div>
           <Text fw={650}>还没有已知插件</Text>
-          <Text size="xs" c="dimmed">选择默认 Claude 中的插件，或输入 plugin@marketplace 开始安装。</Text>
+          <Text size="xs" c="dimmed">可以从默认 Claude 复制，或输入 plugin@marketplace 安装到{scopeLabel}。</Text>
         </div>
-      </Table.Td></Table.Tr></Table.Tbody>}
-    </Table></Card>
+      }</div>
+    </Card>
     <Modal opened={!!removeName} onClose={() => setRemoveName("")} title="卸载插件" centered>
-      <Stack><Text size="sm">将从{isAll ? "所有环境" : `环境 ${target}`}卸载“{removeName}”。每个环境会分别执行 Claude Code 官方卸载命令。</Text>
+      <Stack><Text size="sm">将从{scopeLabel}卸载“{removeName}”。{isAll ? "系统会逐个环境执行卸载，其他插件不受影响。" : `只会影响 ${target}，其他环境保持不变。`}</Text>
         <Group justify="flex-end"><Button variant="default" onClick={() => setRemoveName("")}>取消</Button>
           <Button color="red" onClick={async () => { const name = removeName; await manage("uninstall", name); setRemoveName(""); }}>确认卸载</Button></Group>
       </Stack>

@@ -28,9 +28,25 @@
 ## Verification
 
 - TypeScript typecheck passed.
-- 31 test files and 165 tests passed.
+- 31 test files and 166 tests passed.
 - Production frontend build and debug macOS application bundle completed.
 - Real-app interaction verified the Apple card and 4×2 layout, selected/live-preview state, dark-mode content hierarchy, sidebar contrast, and top chrome synchronization, in addition to all five festival skins and Lantern Festival tangyuan.
 - The bundle command exits non-zero only after producing the `.app`, because a release updater public key is configured without its private signing key in the local environment.
 
 Final result: passed.
+
+## Plugin Management Redesign
+
+- Audit source: the Windows Plugins screenshot supplied by the user, compared with the rebuilt macOS application at 980×720.
+- Audit evidence: `/tmp/pathmux-plugin-audit/01-current-plugins-windows.png`, `/tmp/pathmux-plugin-audit/02-redesigned-plugins-macos.png`, and `/tmp/pathmux-plugin-audit/04-before-after.png` for the current session.
+
+| Step | Health | Verified result |
+| --- | --- | --- |
+| 1. Choose scope | Pass | “所有环境” and a single environment explain their effect before any action is taken. |
+| 2. Install a plugin | Pass | The two sources are separated into “从默认 Claude 复制” and “从 Marketplace 安装”, inside a progressive disclosure that keeps the list visible by default. |
+| 3. Read plugin status | Pass | Each plugin card separates identity/source, read-only default-Claude status, and the selected environment's real installed/enabled status. |
+| 4. Perform routine actions | Pass | Install, update, and enable/disable actions are grouped and worded with their destination. The batch enable/disable label now derives from real environment state. |
+| 5. Understand policy exceptions | Pass | Technical “共享策略/排除” language is replaced by “跟随批量设置/单独管理”, with visible consequence copy. |
+| 6. Avoid destructive mistakes | Pass | Uninstall is isolated under “危险操作” and still requires confirmation. |
+
+Evidence limits: screenshots support hierarchy, copy, contrast, target visibility, responsive scrolling, disclosure behavior, and scope switching. Unit tests cover command routing; destructive plugin mutations were not executed against the user's installed plugins during visual QA.

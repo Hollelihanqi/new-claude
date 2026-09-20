@@ -40,7 +40,7 @@ vi.mock("../api", () => ({ api: {
 } }));
 
 const rows = (): PluginRow[] => [
-  { name: "shared@m", shared: true, defaultClaude: false, defaultInstalled: true, defaultVersion: "1.0.0", envs: [
+  { name: "shared@m", shared: false, defaultClaude: false, defaultInstalled: true, defaultVersion: "1.0.0", envs: [
     { env: "corp", value: true, inherited: true, reason: "", installed: true, version: "1.0.0", storageIndependent: true },
   ] },
   { name: "overridden@m", shared: true, defaultClaude: null, envs: [
@@ -101,7 +101,18 @@ describe("扩展中心的插件管理", () => {
     expect(data[0].value).toBe("__all__");
     expect(data[0].label).toContain("所有环境");
     expect(data.some((d) => d.value === "corp")).toBe(true);
-    expect(allText()).toContain("已安装 1/1");
+    const badges = renderer.root.findAllByType(Badge).map((badge) => textOf(badge.props.children));
+    expect(badges).toContain("1/1 已安装");
+    expect(badges).toContain("1/1 已启用");
+  });
+
+  it("把管理范围、两种安装来源和插件状态分成清晰层级", () => {
+    expect(allText()).toContain("当前操作范围");
+    expect(allText()).toContain("从默认 Claude 复制");
+    expect(allText()).toContain("从 Marketplace 安装");
+    expect(allText()).toContain("默认 Claude（仅参考）");
+    expect(allText()).toContain("所有环境的真实状态");
+    expect(allText()).toContain("危险操作");
   });
 
   it("自动导入可以关闭，并保留手动导入入口", async () => {
@@ -123,7 +134,7 @@ describe("扩展中心的插件管理", () => {
       (node.props.data as { value: string }[] | undefined)?.some((item) => item.value === "shared@m")
     )!;
     await act(async () => { source.props.onChange("shared@m"); });
-    const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装默认 Claude 的插件")!;
+    const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装到所有环境")!;
     await act(async () => { await install.props.onClick(); });
     expect(api.managePlugin).toHaveBeenCalledWith("install", "shared@m", ["corp"], true);
   });
@@ -136,19 +147,19 @@ describe("扩展中心的插件管理", () => {
   });
 
   it("所有环境的停用操作通过 Claude Code 官方插件命令逐环境执行", async () => {
-    const disable = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "全部停用")!;
+    const disable = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "在全部环境停用")!;
     await act(async () => { await disable.props.onClick(); });
     expect(api.managePlugin).toHaveBeenCalledWith("disable", "shared@m", ["corp"], true);
   });
 
   it("切到某个环境后显示覆盖标记，并用官方命令启停插件", async () => {
     await act(async () => { target().props.onChange("corp"); });
-    // 覆盖的那条要标出来，并给出恢复入口（标记是 Badge，不在 Text 里）
+    // 与批量设置不同的状态要显式标出来，并给出恢复入口。
     const badges = renderer.root.findAllByType(Badge).map((b) => textOf(b.props.children));
-    expect(badges.some((t) => t.includes("已覆盖"))).toBe(true);
+    expect(badges.some((t) => t.includes("与批量设置不同"))).toBe(true);
     const restore = renderer.root
       .findAllByType(Button)
-      .find((b) => textOf(b.props.children).includes("恢复策略"));
+      .find((b) => textOf(b.props.children).includes("恢复为批量设置"));
     expect(restore).toBeTruthy();
     const pluginSwitch = switches().find((node) => node.props["aria-label"] === "shared@m 停用")!;
     await act(async () => { pluginSwitch.props.onChange({ currentTarget: { checked: false } }); });
@@ -159,14 +170,14 @@ describe("扩展中心的插件管理", () => {
     await act(async () => { target().props.onChange("corp"); });
     const restore = renderer.root
       .findAllByType(Button)
-      .find((b) => textOf(b.props.children).includes("恢复策略"))!;
+      .find((b) => textOf(b.props.children).includes("恢复为批量设置"))!;
     await act(async () => { await restore.props.onClick(); });
     expect(api.restorePluginInheritance).toHaveBeenCalledWith("corp", "overridden@m");
   });
 
   it("插件排除与停用是两个独立操作", async () => {
     await act(async () => { target().props.onChange("corp"); });
-    const exclude = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "排除共享策略")!;
+    const exclude = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "改为单独管理")!;
     await act(async () => { await exclude.props.onClick(); });
     expect(api.setPluginExcluded).toHaveBeenCalledWith("corp", "shared@m", true);
     expect(api.managePlugin).not.toHaveBeenCalledWith("disable", "shared@m", ["corp"], false);
@@ -182,7 +193,7 @@ describe("扩展中心的插件管理", () => {
 
   it("默认 Claude 只读，不能对它执行插件命令", async () => {
     expect(allText()).toContain("默认 Claude");
-    expect(allText()).toContain("只读");
+    expect(allText()).toContain("不会被修改");
     expect((target().props.data as { value: string }[]).some((item) => item.value === "__main__")).toBe(false);
     expect(switches().length).toBeLessThanOrEqual(rows().length * 2);
   });
