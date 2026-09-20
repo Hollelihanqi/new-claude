@@ -21,6 +21,7 @@ import {
   type ThemeDefinition,
 } from "../themeScheme";
 import oceanWave from "../assets/themes/ocean-wave.png";
+import appleGlass from "../assets/themes/apple-glass.png";
 import springArt from "../assets/themes/festival-spring.png";
 import lanternArt from "../assets/themes/festival-lantern.png";
 import dragonBoatArt from "../assets/themes/festival-dragonboat.png";
@@ -31,6 +32,7 @@ import CaCertButton from "./CaCertButton";
 type ThemeStyle = CSSProperties & Record<`--${string}`, string>;
 
 const THEME_ART: Partial<Record<Scheme, string>> = {
+  apple: appleGlass,
   spring: springArt,
   lantern: lanternArt,
   dragonboat: dragonBoatArt,
@@ -51,7 +53,13 @@ function previewStyle(theme: ThemeDefinition): ThemeStyle {
 function ThemeMiniature({ theme }: { theme: ThemeDefinition }) {
   const art = THEME_ART[theme.value];
   return (
-    <div className="theme-miniature" style={previewStyle(theme)} data-festival={theme.category === "festival"} aria-hidden="true">
+    <div
+      className="theme-miniature"
+      style={previewStyle(theme)}
+      data-festival={theme.category === "festival"}
+      data-apple={theme.value === "apple"}
+      aria-hidden="true"
+    >
       {art && <img src={art} alt="" className="theme-mini-art" />}
       <div className="theme-mini-sidebar">
         <span className="theme-mini-dot" />
@@ -103,7 +111,12 @@ function ThemeCard({
 function LiveThemePreview({ theme }: { theme: ThemeDefinition }) {
   const art = THEME_ART[theme.value] ?? oceanWave;
   return (
-    <section className="theme-live-preview" style={previewStyle(theme)} data-festival={theme.category === "festival"}>
+    <section
+      className="theme-live-preview"
+      style={previewStyle(theme)}
+      data-festival={theme.category === "festival"}
+      data-apple={theme.value === "apple"}
+    >
       <img src={art} alt="" className="theme-live-art" />
       <div className="theme-live-copy">
         <Text className="theme-live-name">{theme.name}</Text>

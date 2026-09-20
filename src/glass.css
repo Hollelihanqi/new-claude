@@ -59,7 +59,33 @@ html[data-theme="pine"] { --theme-base: #2eae82; --theme-deep: #0c3b31; --theme-
 html[data-theme="sunset"] { --theme-base: #ec7940; --theme-deep: #4c2418; --theme-mid: #84452c; --theme-sidebar-start: #6a3827; --theme-sidebar-end: #301a16; --theme-glow: rgba(236, 121, 64, .22); --theme-hero-filter: hue-rotate(170deg) saturate(.72); }
 html[data-theme="iris"] { --theme-base: #876df1; --theme-deep: #30265f; --theme-mid: #5847a8; --theme-sidebar-start: #463988; --theme-sidebar-end: #211b43; --theme-glow: rgba(135, 109, 241, .23); --theme-hero-filter: hue-rotate(35deg) saturate(.88); }
 html[data-theme="sakura"] { --theme-base: #dc6da7; --theme-deep: #552440; --theme-mid: #974a77; --theme-sidebar-start: #7a3b61; --theme-sidebar-end: #351b2c; --theme-glow: rgba(233, 134, 184, .24); --theme-hero-filter: hue-rotate(95deg) saturate(.68) brightness(1.08); }
-html[data-theme="sand"] { --theme-base: #b18a52; --theme-deep: #4b3b28; --theme-mid: #806640; --theme-sidebar-start: #645239; --theme-sidebar-end: #30271d; --theme-glow: rgba(201, 164, 107, .20); --theme-hero-filter: sepia(.58) saturate(.62); }
+html[data-theme="apple"] {
+  --theme-base: #007aff;
+  --theme-deep: #111318;
+  --theme-mid: #636366;
+  --theme-sidebar-start: #30323a;
+  --theme-sidebar-end: #111318;
+  --theme-glow: rgba(0, 122, 255, .18);
+  --theme-hero-filter: none;
+  --theme-decoration: url("./assets/themes/apple-glass.png");
+  --theme-decoration-opacity: .28;
+  --theme-decoration-position: center;
+  --sidebar-scrim-opacity: .28;
+  --app-bg: #f2f2f7;
+  --app-surface: rgba(255, 255, 255, .76);
+  --app-surface-soft: rgba(242, 242, 247, .76);
+  --app-surface-subtle: rgba(255, 255, 255, .64);
+  --app-input-bg: rgba(255, 255, 255, .82);
+  --app-chrome-bg: rgba(255, 255, 255, .72);
+  --app-toolbar-bg: rgba(255, 255, 255, .78);
+  --app-border: rgba(60, 60, 67, .16);
+  --app-subtle-border: rgba(60, 60, 67, .10);
+  --app-text: #1c1c1e;
+  --app-strong-text: #1c1c1e;
+  --app-secondary-text: #636366;
+  --app-muted: #8e8e93;
+  --app-panel-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 18px 48px rgba(28, 28, 30, .08);
+}
 html[data-theme="spring"] { --theme-base: #e64b45; --theme-deep: #7d1f29; --theme-mid: #c63a40; --theme-sidebar-start: #bc3441; --theme-sidebar-end: #6e1524; --theme-glow: rgba(255, 120, 90, .34); --theme-decoration: url("./assets/themes/festival-spring.png"); --theme-decoration-opacity: .56; --theme-decoration-position: left center; --sidebar-scrim-opacity: .38; }
 html[data-theme="lantern"] { --theme-base: #f06c42; --theme-deep: #7a2c21; --theme-mid: #c94f35; --theme-sidebar-start: #cc5038; --theme-sidebar-end: #72251c; --theme-glow: rgba(255, 174, 92, .34); --theme-decoration: url("./assets/themes/festival-lantern.png"); --theme-decoration-opacity: .58; --theme-decoration-position: left center; --sidebar-scrim-opacity: .38; }
 html[data-theme="dragonboat"] { --theme-base: #2db69a; --theme-deep: #0f5860; --theme-mid: #218f82; --theme-sidebar-start: #228c82; --theme-sidebar-end: #0b4a51; --theme-glow: rgba(63, 205, 188, .30); --theme-decoration: url("./assets/themes/festival-dragonboat.png"); --theme-decoration-opacity: .52; --theme-decoration-position: left center; --sidebar-scrim-opacity: .36; }
@@ -80,6 +106,31 @@ html[data-mantine-color-scheme="dark"][data-theme="national"] {
   --app-toolbar-bg: color-mix(in srgb, var(--theme-base) 18%, rgba(58, 63, 70, .90));
   --app-border: color-mix(in srgb, var(--theme-base) 24%, #697178);
   --app-subtle-border: color-mix(in srgb, var(--theme-base) 18%, #60686f);
+}
+
+html[data-mantine-color-scheme="dark"][data-theme="apple"] {
+  --theme-base: #0a84ff;
+  --theme-deep: #000000;
+  --theme-mid: #636366;
+  --theme-sidebar-start: #242429;
+  --theme-sidebar-end: #08080a;
+  --theme-glow: rgba(10, 132, 255, .22);
+  --theme-decoration-opacity: .18;
+  --sidebar-scrim-opacity: .38;
+  --app-bg: #000000;
+  --app-surface: rgba(28, 28, 30, .76);
+  --app-surface-soft: rgba(44, 44, 46, .72);
+  --app-surface-subtle: rgba(44, 44, 46, .58);
+  --app-input-bg: rgba(28, 28, 30, .84);
+  --app-chrome-bg: rgba(28, 28, 30, .72);
+  --app-toolbar-bg: rgba(28, 28, 30, .80);
+  --app-border: rgba(84, 84, 88, .52);
+  --app-subtle-border: rgba(84, 84, 88, .32);
+  --app-text: #ffffff;
+  --app-strong-text: #f2f2f7;
+  --app-secondary-text: #aeaeb2;
+  --app-muted: #8e8e93;
+  --app-panel-shadow: 0 1px 2px rgba(0, 0, 0, .24), 0 20px 54px rgba(0, 0, 0, .24);
 }
 
 html,
@@ -177,6 +228,12 @@ body {
   border-bottom: 1px solid color-mix(in srgb, var(--theme-base) 24%, transparent);
   backdrop-filter: blur(18px);
 }
+html[data-theme="apple"] .platform-macos .app-titlebar {
+  background: color-mix(in srgb, var(--app-chrome-bg) 90%, transparent);
+  border-bottom-color: var(--app-border);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .16);
+  backdrop-filter: blur(28px) saturate(1.45);
+}
 
 /* 拖拽只用 data-tauri-drag-region 属性，**刻意不加** app-region: drag。
    官方「Windows 触摸/笔」那条建议用的是 WebView2 原生拖动，它会吃掉鼠标事件，
@@ -235,6 +292,23 @@ body {
   opacity: var(--sidebar-scrim-opacity);
 }
 .app-sidebar > * { position: relative; z-index: 2; }
+html[data-theme="apple"] .app-sidebar {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(10, 132, 255, .22), transparent 38%),
+    linear-gradient(165deg, rgba(48, 50, 58, .94), rgba(8, 8, 10, .92));
+  border-color: rgba(255, 255, 255, .14);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .20), inset 0 1px rgba(255, 255, 255, .14);
+  backdrop-filter: blur(30px) saturate(1.35);
+}
+html[data-theme="apple"] .side-nav-item.active {
+  background: rgba(255, 255, 255, .14);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: inset 3px 0 #0a84ff, 0 8px 24px rgba(0, 0, 0, .10);
+}
+html[data-theme="apple"] .side-nav-item.active .side-nav-icon {
+  color: #64d2ff;
+  background: rgba(10, 132, 255, .18);
+}
 .platform-other .app-sidebar { grid-row: 1; }
 
 .brand-block { display: flex; align-items: center; gap: 12px; padding: 0 8px 28px; }
@@ -285,6 +359,10 @@ body {
   box-shadow: var(--app-panel-shadow);
   backdrop-filter: blur(18px) saturate(1.1);
   overflow: hidden;
+}
+html[data-theme="apple"] .app-header {
+  box-shadow: var(--app-panel-shadow), inset 0 1px rgba(255, 255, 255, .34);
+  backdrop-filter: blur(28px) saturate(1.42);
 }
 .page-kicker { color: var(--mantine-primary-color-7) !important; font-size: 9px !important; font-weight: 800; letter-spacing: 1.7px; }
 .page-title { margin-top: 2px; color: var(--app-text); font-size: 21px !important; line-height: 1.15; font-weight: 720; letter-spacing: -.45px; }
@@ -762,6 +840,12 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
   backdrop-filter: blur(18px);
 }
 .theme-studio { padding: 20px; }
+html[data-theme="apple"] .theme-studio,
+html[data-theme="apple"] .settings-list,
+html[data-theme="apple"] .settings-assurance {
+  box-shadow: var(--app-panel-shadow), inset 0 1px rgba(255, 255, 255, .26);
+  backdrop-filter: blur(24px) saturate(1.32);
+}
 .theme-studio-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .settings-section-icon,
 .settings-row-icon {
@@ -799,6 +883,21 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
   border-radius: 10px;
   font: 650 13px/1 var(--mantine-font-family);
   cursor: pointer;
+}
+html[data-theme="apple"] .theme-category-bar {
+  padding: 5px;
+  border-radius: 15px;
+  backdrop-filter: blur(18px) saturate(1.3);
+}
+html[data-theme="apple"] .theme-category-bar > button {
+  height: 40px;
+  border-radius: 11px;
+  transition: transform .18s cubic-bezier(.2, .8, .2, 1), background .18s ease, box-shadow .18s ease;
+}
+html[data-theme="apple"] .theme-category-bar > button:active,
+html[data-theme="apple"] .theme-choice:active,
+html[data-theme="apple"] .side-nav-item:active {
+  transform: scale(.985);
 }
 .theme-category-bar > button span {
   min-width: 21px;
@@ -869,6 +968,21 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
   inset: 0;
   background: linear-gradient(90deg, color-mix(in srgb, var(--preview-base) 66%, transparent), rgba(255,255,255,.06));
 }
+.theme-miniature[data-apple="true"] .theme-mini-art { opacity: .96; }
+.theme-miniature[data-apple="true"]::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background: linear-gradient(115deg, rgba(17, 19, 24, .64), rgba(255, 255, 255, .10) 56%, rgba(10, 132, 255, .14));
+}
+.theme-miniature[data-apple="true"] .theme-mini-sidebar,
+.theme-miniature[data-apple="true"] .theme-mini-canvas,
+.theme-miniature[data-apple="true"] .theme-mini-chart {
+  border: 1px solid rgba(255, 255, 255, .26);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .18);
+  backdrop-filter: blur(8px) saturate(1.35);
+}
 .theme-mini-sidebar,
 .theme-mini-canvas,
 .theme-mini-chart { position: relative; z-index: 2; background: color-mix(in srgb, var(--preview-surface) 78%, transparent); border-radius: 7px; backdrop-filter: blur(4px); }
@@ -913,11 +1027,21 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
   filter: var(--theme-hero-filter);
 }
 .theme-live-preview[data-festival="true"] .theme-live-art { opacity: .94; filter: none; }
+.theme-live-preview[data-apple="true"] .theme-live-art { opacity: .98; filter: none; }
 .theme-live-preview::after {
   content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, color-mix(in srgb, var(--preview-base) 90%, transparent) 0%, color-mix(in srgb, var(--preview-base) 56%, transparent) 45%, transparent 76%);
+}
+.theme-live-preview[data-apple="true"]::after {
+  background: linear-gradient(90deg, rgba(17, 19, 24, .94) 0%, rgba(17, 19, 24, .70) 38%, rgba(10, 132, 255, .08) 72%, transparent 100%);
+}
+.theme-live-preview[data-apple="true"] .theme-live-window {
+  background: rgba(28, 28, 30, .68);
+  border-color: rgba(255, 255, 255, .32);
+  box-shadow: 0 22px 64px rgba(0, 0, 0, .24), inset 0 1px rgba(255, 255, 255, .20);
+  backdrop-filter: blur(22px) saturate(1.45);
 }
 .theme-live-copy { position: relative; z-index: 2; width: 42%; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
 .theme-live-name { color: white; font-size: 25px !important; font-weight: 750; letter-spacing: -.4px; }

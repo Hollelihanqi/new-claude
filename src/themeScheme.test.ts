@@ -30,6 +30,10 @@ describe("theme scheme persistence", () => {
     expect(readStoredScheme(memoryStorage("b"))).toBe("ocean");
   });
 
+  it("migrates the retired warm-sand style to the Apple style", () => {
+    expect(readStoredScheme(memoryStorage("sand"))).toBe("apple");
+  });
+
   it("falls back safely for missing or invalid values", () => {
     expect(readStoredScheme(memoryStorage())).toBe(DEFAULT_SCHEME);
     expect(readStoredScheme(memoryStorage("unexpected"))).toBe(DEFAULT_SCHEME);
@@ -45,6 +49,8 @@ describe("theme scheme persistence", () => {
     expect(THEME_DEFINITIONS.filter((theme) => theme.category === "daily")).toHaveLength(8);
     expect(THEME_DEFINITIONS.filter((theme) => theme.category === "festival").map((theme) => theme.name))
       .toEqual(["新春", "元宵", "端午", "中秋", "国庆"]);
+    const dailyThemes = THEME_DEFINITIONS.filter((theme) => theme.category === "daily");
+    expect(dailyThemes[dailyThemes.length - 1]?.name).toBe("苹果");
   });
 
   it("maps Gregorian and Chinese-calendar festival dates to their skins", () => {

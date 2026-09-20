@@ -6,7 +6,7 @@ export type Scheme =
   | "sunset"
   | "iris"
   | "sakura"
-  | "sand"
+  | "apple"
   | "spring"
   | "lantern"
   | "dragonboat"
@@ -33,7 +33,7 @@ export const THEME_DEFINITIONS: readonly ThemeDefinition[] = [
   { value: "sunset", name: "夕照", description: "温暖柔和，激发创造", category: "daily", colors: ["#2b1c18", "#5b3527", "#f28a4b", "#f7bb83", "#ef5b63"] },
   { value: "iris", name: "鸢尾", description: "优雅灵动，富有想象", category: "daily", colors: ["#1d1838", "#39306d", "#8b6cf2", "#b5a1ff", "#ef5b63"] },
   { value: "sakura", name: "樱雾", description: "柔和治愈，轻盈雅致", category: "daily", colors: ["#311e2c", "#63415b", "#e986b8", "#f6bdd9", "#ef5b63"] },
-  { value: "sand", name: "暖砂", description: "质感温润，从容专注", category: "daily", colors: ["#29231c", "#554a3b", "#c9a46b", "#ead6ae", "#ef5b63"] },
+  { value: "apple", name: "苹果", description: "清晰克制，液态玻璃", category: "daily", colors: ["#111318", "#2c2c2e", "#0a84ff", "#d9efff", "#ff453a"] },
   { value: "spring", name: "新春", description: "梅花灯笼，喜迎新岁", category: "festival", colors: ["#7d1f29", "#bc3441", "#e64b45", "#ffd28a", "#ef5b63"] },
   { value: "lantern", name: "元宵", description: "灯海暖金，欢聚团圆", category: "festival", colors: ["#7a2c21", "#cc5038", "#f06c42", "#ffdda3", "#ef5b63"] },
   { value: "dragonboat", name: "端午", description: "晴空碧水，龙舟竞渡", category: "festival", colors: ["#0f5860", "#228c82", "#2db69a", "#a6eadb", "#ef5b63"] },
@@ -57,6 +57,8 @@ export function readStoredScheme(storage: ThemeStorage): Scheme {
     // 兼容 3.0.10 及更早版本的 a / b 两套强调色。
     if (stored === "a") return "sunset";
     if (stored === "b") return "ocean";
+    // “暖砂”已升级为苹果风格，保留老用户的选择位置。
+    if (stored === "sand") return "apple";
     return isScheme(stored) ? stored : DEFAULT_SCHEME;
   } catch {
     return DEFAULT_SCHEME;

@@ -143,7 +143,7 @@ describe("深色模式：选中态不得复用浅色第 0 阶（近乎白色）"
 describe("完整主题系统与提示语义", () => {
   it("每套主题都能驱动背景、侧栏与氛围，而不是只改强调色", () => {
     for (const theme of [
-      "glacier", "graphite", "pine", "sunset", "iris", "sakura", "sand",
+      "glacier", "graphite", "pine", "sunset", "iris", "sakura", "apple",
       "spring", "lantern", "dragonboat", "midautumn", "national",
     ]) {
       const selector = `html[data-theme="${theme}"]`;
@@ -180,6 +180,21 @@ describe("完整主题系统与提示语义", () => {
     }
     expect(rule(".app-shell::before")).toContain("var(--theme-decoration)");
     expect(rule(".app-sidebar::before")).toContain("var(--theme-decoration)");
+  });
+
+  it("苹果主题使用动态系统色与独立的液态玻璃素材", () => {
+    const apple = rule('html[data-theme="apple"]');
+    const appleDark = rule('html[data-mantine-color-scheme="dark"][data-theme="apple"]');
+    const panel = readFileSync(
+      resolve(process.cwd(), "src/components/SettingsPanel.tsx"),
+      "utf8"
+    );
+    expect(apple).toContain("apple-glass.png");
+    expect(apple).toContain("--app-bg: #f2f2f7");
+    expect(appleDark).toContain("--app-bg: #000000");
+    expect(appleDark).toContain("--theme-base: #0a84ff");
+    expect(panel).toContain("data-apple");
+    expect(panel).toContain("apple-glass.png");
   });
 });
 

@@ -29,7 +29,7 @@ const THEME_COLORS: Record<Scheme, MantineColorsTuple> = {
   sunset: ["#fff2e9", "#ffdfca", "#ffc6a3", "#f9ab79", "#f28f54", "#ec7940", "#d9632e", "#b94d22", "#913a1a", "#6d2b14"],
   iris: ["#f2efff", "#e4ddff", "#cbbdff", "#b19cff", "#9a82fa", "#876df1", "#7456df", "#6041c2", "#4b3299", "#382672"],
   sakura: ["#fff0f7", "#ffe0ef", "#f9bdd9", "#f19bc6", "#e986b8", "#dc6da7", "#c65391", "#a73f77", "#84315f", "#632548"],
-  sand: ["#f8f3e9", "#efe5d2", "#decaa7", "#ceb17f", "#c09b61", "#b18a52", "#987344", "#795b36", "#5c452b", "#423221"],
+  apple: ["#eaf4ff", "#d5eaff", "#abd5ff", "#7dbcff", "#4da2ff", "#0a84ff", "#007aff", "#0066d6", "#0051ab", "#003d80"],
   spring: ["#fff0f1", "#ffdadd", "#ffb5ba", "#f5868e", "#e85b64", "#d93941", "#bd2931", "#9a2028", "#761820", "#551118"],
   lantern: ["#fff2ec", "#ffded1", "#ffc0aa", "#f99b7c", "#ed7957", "#e25f3f", "#c94b32", "#aa3927", "#842a20", "#621f18"],
   dragonboat: ["#eaf8f3", "#d2efe4", "#a9ddca", "#7fcbb0", "#57b996", "#38a77d", "#278c69", "#1d7156", "#145743", "#0d4032"],
@@ -71,9 +71,11 @@ function Root() {
   useEffect(() => {
     document.documentElement.dataset.theme = scheme;
     const palette = THEME_COLORS[scheme];
-    const chromeColor = colorScheme === "dark"
-      ? palette[FESTIVAL_SCHEMES.has(scheme) ? 7 : 9]
-      : palette[1];
+    const chromeColor = scheme === "apple"
+      ? colorScheme === "dark" ? "#1c1c1e" : "#f2f2f7"
+      : colorScheme === "dark"
+        ? palette[FESTIVAL_SCHEMES.has(scheme) ? 7 : 9]
+        : palette[1];
     void getCurrentWindow().setBackgroundColor(chromeColor).catch(() => {
       // 浏览器预览环境没有原生窗口；页面主题本身仍可正常工作。
     });
