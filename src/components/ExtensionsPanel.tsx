@@ -5,25 +5,25 @@ import { notifications } from "@mantine/notifications";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   IconBrain,
-  IconCheck,
+  IconCircle,
+  IconCircleCheckFilled,
   IconFolder,
+  IconLoader2,
   IconPackage,
   IconPlugConnected,
   IconPlus,
-  IconPower,
   IconRefresh,
   IconRobot,
   IconTrash,
   IconWorld,
 } from "@tabler/icons-react";
 import { api } from "../api";
-import type { PluginAction, PluginActionReport, PluginRow, ResourceItem, ResourceKind, ResourceOverview } from "../api";
+import type { PluginAction, PluginRow, ResourceItem, ResourceKind, ResourceOverview } from "../api";
 import FeatureHelp from "./FeatureHelp";
 import {
   AGENT_DEPENDENCY_HELP,
   AGENTS_HELP,
   AUTO_IMPORT_HELP,
-  PLUGIN_RESULT_HELP,
   RESOURCE_OVERRIDE_HELP,
   SKILLS_HELP,
 } from "./featureHelpContent";
@@ -215,8 +215,6 @@ function ResourceManager({ kind }: { kind: ResourceKind }) {
           </Table.Tbody>
         </Table>
       </Card>
-      {overview && <Text size="xs" c="dimmed" px={4}>共享库：{overview.sharedPath}</Text>}
-
       <Modal opened={deleteItem !== null} onClose={() => setDeleteItem(null)} title={`删除共享 ${label}`} centered>
         <Stack>
           <Text size="sm">将从共享库删除“{deleteItem?.name}”。仍使用共享版本的目标会删除对应副本；目标自己的版本会保留。</Text>
@@ -258,7 +256,8 @@ function PluginSharing() {
   const [installSource, setInstallSource] = useState("");
   const [localPackage, setLocalPackage] = useState("");
   const [installEnvs, setInstallEnvs] = useState<string[]>([]);
-  const [lastReport, setLastReport] = useState<PluginActionReport | null>(null);
+  const [installAllEnvs, setInstallAllEnvs] = useState(true);
+  const [pendingEnvKey, setPendingEnvKey] = useState("");
   const [removeName, setRemoveName] = useState("");
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
@@ -300,16 +299,17 @@ function PluginSharing() {
     ++loadGeneration.current;
     setBusy(`${action}:${plugin}`);
     setErr("");
-    setLastReport(null);
     try {
       const report = await api.managePlugin(action, plugin, selected, sharedScope);
-      setLastReport(report);
       const succeeded = report.results.filter((item) => item.ok).length;
+      const failures = report.results.filter((item) => !item.ok);
       notifications.show({
-        message: `${plugin}：${succeeded}/${report.results.length} 个环境操作成功`,
+        message: `${plugin}：${succeeded}/${report.results.length} 个环境操作成功${report.policyWarning ? ` · ${report.policyWarning}` : ""}`,
         color: succeeded === report.results.length ? "teal" : "orange",
+        className: "plugin-action-notification",
       });
       await load();
+      if (failures.length) setErr(failures.map((item) => `${item.env}：${item.detail}`).join("；"));
       return true;
     } catch (error) {
       setErr(String(error));
@@ -322,14 +322,21 @@ function PluginSharing() {
 
   const openInstaller = () => {
     setInstallEnvs([...envNames]);
+    setInstallAllEnvs(true);
     setInstallOpen(true);
     setErr("");
   };
 
   const toggleInstallEnv = (env: string) => {
-    setInstallEnvs((current) => current.includes(env)
-      ? current.filter((item) => item !== env)
-      : [...current, env]);
+    if (installAllEnvs) {
+      setInstallAllEnvs(false);
+      setInstallEnvs([env]);
+      return;
+    }
+    setInstallEnvs((current) => {
+      if (!current.includes(env)) return [...current, env];
+      return current.length === 1 ? current : current.filter((item) => item !== env);
+    });
   };
 
   const pickLocalPackage = async () => {
@@ -348,8 +355,7 @@ function PluginSharing() {
   const installPackage = async () => {
     const source = installMode === "local" ? localPackage : installSource.trim();
     if (!source || installEnvs.length === 0 || busy || mutating.current) return;
-    const sharedScope = installEnvs.length === envNames.length
-      && envNames.every((env) => installEnvs.includes(env));
+    const sharedScope = installAllEnvs;
     if (installMode === "remote" && !/^https:\/\//i.test(source) && !source.includes("@")) {
       setErr("请输入 plugin@marketplace，或 HTTPS 插件 ZIP 地址");
       return;
@@ -362,16 +368,17 @@ function PluginSharing() {
     ++loadGeneration.current;
     setBusy("install-package");
     setErr("");
-    setLastReport(null);
     try {
       const report = await api.installPluginPackage(source, installEnvs, sharedScope);
-      setLastReport(report);
       const succeeded = report.results.filter((item) => item.ok).length;
+      const failures = report.results.filter((item) => !item.ok);
       notifications.show({
-        message: `${report.plugin}：${succeeded}/${report.results.length} 个环境安装成功`,
+        message: `${report.plugin}：${succeeded}/${report.results.length} 个环境安装成功${report.policyWarning ? ` · ${report.policyWarning}` : ""}`,
         color: succeeded === report.results.length ? "teal" : "orange",
+        className: "plugin-action-notification",
       });
       await load();
+      if (failures.length) setErr(failures.map((item) => `${item.env}：${item.detail}`).join("；"));
       setInstallOpen(false);
     } catch (error) {
       setErr(String(error));
@@ -381,10 +388,13 @@ function PluginSharing() {
     }
   };
 
-  const envAction = (row: PluginRow, env: string) => {
+  const envAction = async (row: PluginRow, env: string) => {
+    if (mutating.current) return;
     const state = row.envs.find((item) => item.env === env);
     const action: PluginAction = !state?.installed ? "install" : state.value ? "disable" : "enable";
-    return manage(action, row.name, [env], false);
+    setPendingEnvKey(`${row.name}:${env}`);
+    try { await manage(action, row.name, [env], false); }
+    finally { setPendingEnvKey(""); }
   };
 
   return <Stack gap="md" className="extension-manager plugin-manager">
@@ -407,17 +417,11 @@ function PluginSharing() {
       </Button>
     </div>
     {err && <Alert color="red">{err}</Alert>}
-    {lastReport && <Alert color={lastReport.results.every((item) => item.ok) ? "teal" : "orange"} title={<Group gap={4}>插件操作结果<FeatureHelp content={PLUGIN_RESULT_HELP} /></Group>}>
-      {lastReport.results.map((item) => <Text size="xs" key={item.env}>{item.env}：{item.ok ? "成功" : "失败"} · {item.detail}</Text>)}
-      {lastReport.policyWarning && <Text size="xs" c="orange.9" mt={6}>{lastReport.policyWarning}</Text>}
-      <Text size="xs" mt={6}>{lastReport.reloadHint}</Text>
-    </Alert>}
-    <Card withBorder padding={0} radius="lg" className="plugin-list-card">
+    <section className="plugin-list-card" aria-label="已发现的插件">
       <div className="plugin-list-heading">
         <div>
           <Group gap={8}><Text fw={700}>已发现的插件</Text><Badge size="sm" variant="light">{rows.length}</Badge></Group>
         </div>
-        <Text size="xs" c="dimmed">正在查看：<strong>{scopeLabel}</strong></Text>
       </div>
       <div className="plugin-list">{rows.map((row) => {
         const envState = row.envs.find((entry) => entry.env === target);
@@ -449,21 +453,33 @@ function PluginSharing() {
               {envNames.map((env) => {
                 const state = row.envs.find((item) => item.env === env);
                 const mode = !state?.installed ? "missing" : state.value ? "enabled" : "disabled";
+                const pending = pendingEnvKey === `${row.name}:${env}`;
                 const actionLabel = mode === "missing" ? "安装" : mode === "enabled" ? "停用" : "启用";
-                return <button
-                  type="button"
+                if (mode === "missing") return <button
+                    type="button"
+                    key={env}
+                    className="plugin-env-toggle missing"
+                    aria-label={`${row.name} 在环境 ${env} ${actionLabel}`}
+                    title={`${actionLabel} · ${env}`}
+                    disabled={!!busy}
+                    onClick={() => void envAction(row, env)}
+                  ><IconPlus size={15} /><span>{env}</span></button>;
+                return <Switch
                   key={env}
-                  className={`plugin-env-toggle ${mode}`}
+                  className="plugin-env-switch"
+                  size="md"
+                  checked={mode === "enabled"}
+                  thumbIcon={pending ? <IconLoader2 className="plugin-switch-spinner" size={13} /> : undefined}
+                  aria-busy={pending}
+                  label={env}
+                  labelPosition="left"
+                  color="#00a675"
+                  withThumbIndicator={false}
                   aria-label={`${row.name} 在环境 ${env} ${actionLabel}`}
                   title={`${actionLabel} · ${env}`}
                   disabled={!!busy}
-                  data-focused={!isAll && target === env ? "true" : undefined}
-                  onClick={() => void envAction(row, env)}
-                >
-                  {mode === "enabled" ? <IconCheck size={15} stroke={2.6} /> : mode === "disabled" ? <IconPower size={15} /> : <IconPlus size={15} />}
-                  <span>{env}</span>
-                  {mode !== "missing" && <span className="plugin-env-toggle-knob" aria-hidden="true" />}
-                </button>;
+                  onChange={() => void envAction(row, env)}
+                />;
               })}
             </div>
 
@@ -504,7 +520,7 @@ function PluginSharing() {
           <Text size="xs" c="dimmed">可通过远程地址或本地插件包完成安装。</Text>
         </div>
       }</div>
-    </Card>
+    </section>
     <Drawer
       opened={installOpen}
       onClose={() => setInstallOpen(false)}
@@ -546,12 +562,18 @@ function PluginSharing() {
           <Text fw={700}>安装到哪些环境</Text>
           <Text size="sm" c="dimmed">默认选择全部环境。</Text>
           <div className="plugin-install-envs">
-            <button type="button" className={installEnvs.length === envNames.length && envNames.length ? "selected" : ""}
-              onClick={() => setInstallEnvs(installEnvs.length === envNames.length ? [] : [...envNames])}>
-              <IconCheck size={15} />全部环境
+            <button type="button" className={installAllEnvs ? "selected" : ""} aria-pressed={installAllEnvs}
+              onClick={() => { setInstallAllEnvs(true); setInstallEnvs([...envNames]); }}>
+              {installAllEnvs ? <IconCircleCheckFilled size={18} /> : <IconCircle size={18} />}全部环境
             </button>
-            {envNames.map((env) => <button type="button" key={env} className={installEnvs.includes(env) ? "selected" : ""}
-              onClick={() => toggleInstallEnv(env)}><IconCheck size={15} />{env}</button>)}
+            {envNames.map((env) => {
+              const selected = !installAllEnvs && installEnvs.includes(env);
+              const included = installAllEnvs || selected;
+              return <button type="button" key={env} className={selected ? "selected" : included ? "included" : ""} aria-pressed={included}
+                onClick={() => toggleInstallEnv(env)}>
+                {included ? <IconCircleCheckFilled size={18} /> : <IconCircle size={18} />}{env}
+              </button>;
+            })}
           </div>
         </div>
 
@@ -568,7 +590,8 @@ function PluginSharing() {
         </div>
       </div>
     </Drawer>
-    <Modal opened={!!removeName} onClose={() => setRemoveName("")} title="卸载插件" centered>
+    <Modal opened={!!removeName} onClose={() => setRemoveName("")} title="卸载插件" centered
+      classNames={{ content: "plugin-remove-modal-content", header: "plugin-remove-modal-header", body: "plugin-remove-modal-body", title: "plugin-remove-modal-title" }}>
       <Stack><Text size="sm">将从{scopeLabel}卸载“{removeName}”。{isAll ? "系统会逐个环境执行卸载，其他插件不受影响。" : `只会影响 ${target}，其他环境保持不变。`}</Text>
         <Group justify="flex-end"><Button variant="default" onClick={() => setRemoveName("")}>取消</Button>
           <Button color="red" onClick={async () => { const name = removeName; await manage("uninstall", name); setRemoveName(""); }}>确认卸载</Button></Group>

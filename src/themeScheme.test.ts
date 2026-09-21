@@ -22,6 +22,7 @@ describe("theme scheme persistence", () => {
   it("restores the previously selected scheme", () => {
     expect(readStoredScheme(memoryStorage("ocean"))).toBe("ocean");
     expect(readStoredScheme(memoryStorage("sakura"))).toBe("sakura");
+    expect(readStoredScheme(memoryStorage("mint"))).toBe("mint");
     expect(readStoredScheme(memoryStorage("midautumn"))).toBe("midautumn");
   });
 
@@ -45,12 +46,14 @@ describe("theme scheme persistence", () => {
     expect(readStoredScheme(storage)).toBe("dragonboat");
   });
 
-  it("offers eight daily styles and five Chinese festival skins", () => {
-    expect(THEME_DEFINITIONS.filter((theme) => theme.category === "daily")).toHaveLength(8);
+  it("offers twelve daily styles and five Chinese festival skins", () => {
+    expect(THEME_DEFINITIONS.filter((theme) => theme.category === "daily")).toHaveLength(12);
     expect(THEME_DEFINITIONS.filter((theme) => theme.category === "festival").map((theme) => theme.name))
       .toEqual(["新春", "元宵", "端午", "中秋", "国庆"]);
     const dailyThemes = THEME_DEFINITIONS.filter((theme) => theme.category === "daily");
-    expect(dailyThemes[dailyThemes.length - 1]?.name).toBe("苹果");
+    expect(dailyThemes.slice(-4).map((theme) => theme.name))
+      .toEqual(["晴空", "薄荷", "柔光", "云紫"]);
+    expect(dailyThemes[7]?.name).toBe("苹果");
   });
 
   it("maps Gregorian and Chinese-calendar festival dates to their skins", () => {

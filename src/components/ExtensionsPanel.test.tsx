@@ -1,7 +1,7 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ExtensionsPanel from "./ExtensionsPanel";
-import { Button, Switch, Tabs, Text } from "@mantine/core";
+import { Alert, Button, Switch, Tabs, Text } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type PluginRow, type ResourceOverview } from "../api";
 
@@ -111,8 +111,9 @@ describe("扩展中心的插件管理", () => {
   it("默认查看所有环境，并把环境状态呈现为可操作按钮", async () => {
     expect(scopeButton("全部环境").props["aria-selected"]).toBe(true);
     expect(scopeButton("corp")).toBeTruthy();
-    const enabled = nativeButtons().find((button) => button.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    expect(enabled.props.className).toContain("enabled");
+    const enabled = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    expect(enabled.props.checked).toBe(true);
+    expect(enabled.props.color).toBe("#00a675");
   });
 
   it("把环境筛选、卡片状态和两种安装来源分成清晰层级", () => {
@@ -141,11 +142,33 @@ describe("扩展中心的插件管理", () => {
   it("默认 Claude 的插件只提供身份，安装仍发往选中的环境", async () => {
     const openInstaller = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装插件")!;
     await act(async () => { openInstaller.props.onClick(); });
+    const allEnvs = nativeButtons().find((button) => textOf(button.children) === "全部环境" && "aria-pressed" in button.props)!;
+    const corp = nativeButtons().find((button) => textOf(button.children) === "corp" && "aria-pressed" in button.props)!;
+    expect(allEnvs.props["aria-pressed"]).toBe(true);
+    expect(corp.props["aria-pressed"]).toBe(true);
+    expect(corp.props.className).toBe("included");
     const suggestion = nativeButtons().find((button) => textOf(button.children) === "shared@m")!;
     await act(async () => { suggestion.props.onClick(); });
     const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "开始安装")!;
     await act(async () => { await install.props.onClick(); });
     expect(api.managePlugin).toHaveBeenCalledWith("install", "shared@m", ["corp"], true);
+  });
+
+  it("安装面板在全部环境与单环境之间使用互斥选择模式", async () => {
+    const openInstaller = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装插件")!;
+    await act(async () => { openInstaller.props.onClick(); });
+    const drawerButton = (label: string) => nativeButtons().find((button) =>
+      textOf(button.children) === label && "aria-pressed" in button.props
+    )!;
+
+    await act(async () => { drawerButton("corp").props.onClick(); });
+    expect(drawerButton("全部环境").props["aria-pressed"]).toBe(false);
+    expect(drawerButton("corp").props["aria-pressed"]).toBe(true);
+
+    await act(async () => { drawerButton("全部环境").props.onClick(); });
+    expect(drawerButton("全部环境").props["aria-pressed"]).toBe(true);
+    expect(drawerButton("corp").props["aria-pressed"]).toBe(true);
+    expect(drawerButton("corp").props.className).toBe("included");
   });
 
   it("只保留 Skills、Plugins 与 Agents，不再展示 Commands", () => {
@@ -155,10 +178,41 @@ describe("扩展中心的插件管理", () => {
     expect(allText()).toContain("Commands 已退出独立管理");
   });
 
+  it("不在 Skills 与 Agents 界面暴露共享库的本机路径", () => {
+    expect(allText()).not.toContain("共享库：");
+    expect(allText()).not.toContain("C:/shared/");
+  });
+
   it("点击绿色环境按钮会通过官方插件命令停用对应环境", async () => {
-    const disable = nativeButtons().find((button) => button.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { await disable.props.onClick(); });
+    const disable = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    await act(async () => { await disable.props.onChange(); });
     expect(api.managePlugin).toHaveBeenCalledWith("disable", "shared@m", ["corp"], false);
+    expect(allText()).not.toContain("插件操作结果");
+  });
+
+  it("环境启停执行期间在对应开关圆点显示转动反馈", async () => {
+    let complete!: (report: Awaited<ReturnType<typeof api.managePlugin>>) => void;
+    vi.mocked(api.managePlugin).mockReturnValueOnce(new Promise((resolve) => { complete = resolve; }));
+    const disable = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    act(() => { disable.props.onChange(); });
+    const pending = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    expect(pending.props["aria-busy"]).toBe(true);
+    expect(pending.props.thumbIcon.props.className).toBe("plugin-switch-spinner");
+    await act(async () => {
+      complete({ action: "disable", plugin: "shared@m", reloadHint: "请重新加载", results: [{ env: "corp", ok: true, detail: "完成" }] });
+    });
+    expect(switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")?.props["aria-busy"]).toBe(false);
+  });
+
+  it("移除成功横幅后仍保留失败环境的具体错误", async () => {
+    vi.mocked(api.managePlugin).mockResolvedValueOnce({
+      action: "disable", plugin: "shared@m", reloadHint: "请重新加载",
+      results: [{ env: "corp", ok: false, detail: "命令失败" }],
+    });
+    const disable = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    await act(async () => { disable.props.onChange(); });
+    expect(renderer.root.findAllByType(Alert).map(textOf).join(" ")).toContain("corp：命令失败");
+    expect(allText()).not.toContain("插件操作结果");
   });
 
   it("切到某个环境后显示覆盖标记，并用官方命令启停插件", async () => {
@@ -169,8 +223,8 @@ describe("扩展中心的插件管理", () => {
       .findAllByType(Button)
       .find((b) => textOf(b.props.children).includes("恢复为批量设置"));
     expect(restore).toBeTruthy();
-    const pluginSwitch = nativeButtons().find((node) => node.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { pluginSwitch.props.onClick(); });
+    const pluginSwitch = switches().find((node) => node.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    await act(async () => { pluginSwitch.props.onChange(); });
     expect(api.managePlugin).toHaveBeenCalledWith("disable", "shared@m", ["corp"], false);
   });
 
@@ -194,8 +248,8 @@ describe("扩展中心的插件管理", () => {
   it("当前环境被删除后自动回到所有环境，避免向失效目标发命令", async () => {
     await act(async () => { scopeButton("corp").props.onClick(); });
     vi.mocked(api.pluginTargets).mockResolvedValueOnce([]);
-    const pluginSwitch = nativeButtons().find((node) => node.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { await pluginSwitch.props.onClick(); });
+    const pluginSwitch = switches().find((node) => node.props["aria-label"] === "shared@m 在环境 corp 停用")!;
+    await act(async () => { await pluginSwitch.props.onChange(); });
     expect(scopeButton("全部环境").props["aria-selected"]).toBe(true);
   });
 

@@ -3895,6 +3895,26 @@ mod tests {
     }
 
     #[test]
+    fn gui_startup_sync_never_reads_gateway_credentials() {
+        // macOS 钥匙串会把“始终允许”绑定到应用的签名身份。开发版重新编译、
+        // 正式版签名变化或升级后，任何启动期读取都可能再次弹系统授权框。
+        // 启动同步只负责配置与扩展分发；读取 Key、探测网关只能由用户主动操作触发。
+        let source = include_str!("main.rs");
+        let start = source.find("fn sync_all_blocking").unwrap();
+        let end = source[start..]
+            .find("#[tauri::command]\nasync fn sync_all")
+            .map(|offset| start + offset)
+            .unwrap();
+        let body = &source[start..end];
+        for forbidden in ["decrypt_token", "credentials::read", "run_health_checks"] {
+            assert!(
+                !body.contains(forbidden),
+                "启动同步不应调用 {forbidden}，否则 macOS 启动时可能反复弹钥匙串授权框"
+            );
+        }
+    }
+
+    #[test]
     fn plaintext_transport_only_allowed_on_loopback() {
         // https 一律放行
         for secure in ["https://gw.example.com", "https://203.0.113.10:8443"] {

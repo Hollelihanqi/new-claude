@@ -1,7 +1,8 @@
 import { useMemo, useState, type CSSProperties } from "react";
-import { Alert, Badge, Button, Stack, Text } from "@mantine/core";
+import { Alert, Badge, Button, Stack, Switch, Text } from "@mantine/core";
 import {
   IconArchive,
+  IconBrightnessAuto,
   IconCertificate,
   IconCheck,
   IconChevronRight,
@@ -22,6 +23,9 @@ import {
 } from "../themeScheme";
 import oceanWave from "../assets/themes/ocean-wave.png";
 import appleGlass from "../assets/themes/apple-glass.png";
+import airySky from "../assets/themes/airy-sky.png";
+import airyMint from "../assets/themes/airy-mint.png";
+import airyPastel from "../assets/themes/airy-pastel.png";
 import springArt from "../assets/themes/festival-spring.png";
 import lanternArt from "../assets/themes/festival-lantern.png";
 import dragonBoatArt from "../assets/themes/festival-dragonboat.png";
@@ -33,12 +37,17 @@ type ThemeStyle = CSSProperties & Record<`--${string}`, string>;
 
 const THEME_ART: Partial<Record<Scheme, string>> = {
   apple: appleGlass,
+  sky: airySky,
+  mint: airyMint,
+  peach: airyPastel,
   spring: springArt,
   lantern: lanternArt,
   dragonboat: dragonBoatArt,
   midautumn: midAutumnArt,
   national: nationalArt,
 };
+
+const AIRY_THEMES = new Set<Scheme>(["sky", "mint", "peach", "lavender"]);
 
 function previewStyle(theme: ThemeDefinition): ThemeStyle {
   return {
@@ -58,6 +67,7 @@ function ThemeMiniature({ theme }: { theme: ThemeDefinition }) {
       style={previewStyle(theme)}
       data-festival={theme.category === "festival"}
       data-apple={theme.value === "apple"}
+      data-airy={AIRY_THEMES.has(theme.value)}
       aria-hidden="true"
     >
       {art && <img src={art} alt="" className="theme-mini-art" />}
@@ -109,15 +119,17 @@ function ThemeCard({
 }
 
 function LiveThemePreview({ theme }: { theme: ThemeDefinition }) {
-  const art = THEME_ART[theme.value] ?? oceanWave;
+  const airy = AIRY_THEMES.has(theme.value);
+  const art = THEME_ART[theme.value] ?? (airy ? undefined : oceanWave);
   return (
     <section
       className="theme-live-preview"
       style={previewStyle(theme)}
       data-festival={theme.category === "festival"}
       data-apple={theme.value === "apple"}
+      data-airy={airy}
     >
-      <img src={art} alt="" className="theme-live-art" />
+      {art && <img src={art} alt="" className="theme-live-art" />}
       <div className="theme-live-copy">
         <Text className="theme-live-name">{theme.name}</Text>
         <Text className="theme-live-description">{theme.description}</Text>
@@ -142,6 +154,8 @@ export default function SettingsPanel({
   env,
   scheme,
   setScheme,
+  followsSystemColorScheme,
+  setFollowsSystemColorScheme,
   appVersion,
   onCheckUpdate,
   onEnvironmentChanged,
@@ -149,6 +163,8 @@ export default function SettingsPanel({
   env: EnvInfo | null;
   scheme: Scheme;
   setScheme: (value: Scheme) => void;
+  followsSystemColorScheme: boolean;
+  setFollowsSystemColorScheme: (follow: boolean) => void;
   appVersion: string;
   onCheckUpdate: () => void;
   onEnvironmentChanged: () => void;
@@ -193,30 +209,29 @@ export default function SettingsPanel({
         <section className="theme-studio">
           <header className="theme-studio-header">
             <span className="settings-section-icon"><IconPalette size={21} /></span>
-            <div>
+            <div className="theme-studio-title">
               <Text fw={720} size="lg">界面主题</Text>
               <Text size="sm" c="dimmed">选择完整视觉风格，背景、导航、控件与数据配色会同步更新。</Text>
             </div>
+            <div className="theme-category-bar" role="tablist" aria-label="主题分类">
+              <button
+                role="tab"
+                aria-selected={category === "daily"}
+                className={category === "daily" ? "active" : ""}
+                onClick={() => setCategory("daily")}
+              >
+                日常风格 <span>{dailyCount}</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={category === "festival"}
+                className={category === "festival" ? "active" : ""}
+                onClick={() => setCategory("festival")}
+              >
+                节日限定 <span>{festivalCount}</span>
+              </button>
+            </div>
           </header>
-
-          <div className="theme-category-bar" role="tablist" aria-label="主题分类">
-            <button
-              role="tab"
-              aria-selected={category === "daily"}
-              className={category === "daily" ? "active" : ""}
-              onClick={() => setCategory("daily")}
-            >
-              日常风格 <span>{dailyCount}</span>
-            </button>
-            <button
-              role="tab"
-              aria-selected={category === "festival"}
-              className={category === "festival" ? "active" : ""}
-              onClick={() => setCategory("festival")}
-            >
-              节日限定 <span>{festivalCount}</span>
-            </button>
-          </div>
 
           <div className={`theme-gallery theme-gallery-${category}`} role="tabpanel">
             {visibleThemes.map((theme) => (
@@ -237,6 +252,20 @@ export default function SettingsPanel({
             <Text fw={700}>其他设置</Text>
             <Text size="xs" c="dimmed">更新、证书与本地数据</Text>
           </header>
+
+          <div className="settings-row">
+            <span className="settings-row-icon"><IconBrightnessAuto size={19} /></span>
+            <div className="settings-row-copy">
+              <strong>自动跟随系统明暗模式</strong>
+              <small>开启后随 macOS 或 Windows 的外观设置自动切换</small>
+            </div>
+            <Switch
+              aria-label="自动跟随系统明暗模式"
+              color="#00a675"
+              checked={followsSystemColorScheme}
+              onChange={(event) => setFollowsSystemColorScheme(event.currentTarget.checked)}
+            />
+          </div>
 
           <div className="settings-row">
             <span className="settings-row-icon"><IconDownload size={19} /></span>

@@ -143,7 +143,8 @@ describe("深色模式：选中态不得复用浅色第 0 阶（近乎白色）"
 describe("完整主题系统与提示语义", () => {
   it("每套主题都能驱动背景、侧栏与氛围，而不是只改强调色", () => {
     for (const theme of [
-      "glacier", "graphite", "pine", "sunset", "iris", "sakura", "apple",
+      "glacier", "graphite", "pine", "sunset", "iris", "sakura",
+      "sky", "mint", "peach", "lavender", "apple",
       "spring", "lantern", "dragonboat", "midautumn", "national",
     ]) {
       const selector = `html[data-theme="${theme}"]`;

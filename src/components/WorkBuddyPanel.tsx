@@ -512,7 +512,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         </Group>
       </Card>
 
-      <Alert color="orange" variant="light" icon={<IconAlertTriangle size={16} />}>
+      <Alert className="semantic-reminder workbuddy-privacy-notice" color="orange" variant="light" icon={<IconAlertTriangle size={16} />}>
         MaaS Gateway 会收集与模型交互的请求和响应用于公司审计，请勿提交个人隐私或非公司事务信息。组织 Key 仅保存在本机 WorkBuddy 配置中（未加密的明文文件；macOS 显式限本人可读，Windows 依赖用户目录的继承权限），不会写入 Claude Code。
       </Alert>
 

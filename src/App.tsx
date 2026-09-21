@@ -20,6 +20,8 @@ import {
   IconHelpCircle,
   IconBrandOpenai,
   IconInfoCircle,
+  IconMoon,
+  IconSun,
 } from "@tabler/icons-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -39,6 +41,7 @@ import { USAGE_AUTO_OPTIONS } from "./components/usageAutoOptions";
 import StableRefreshButton from "./components/StableRefreshButton";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
 import type { Scheme } from "./themeScheme";
+import type { SystemColorScheme } from "./systemColorScheme";
 
 const UsagePanel = lazy(() => import("./components/UsagePanel"));
 
@@ -132,12 +135,39 @@ function EnvironmentStatus({ env }: { env: EnvInfo | null }) {
   );
 }
 
+function ColorSchemeControl({
+  value,
+  onChange,
+}: {
+  value: SystemColorScheme;
+  onChange: (value: SystemColorScheme) => void;
+}) {
+  return (
+    <div className="header-color-scheme" role="group" aria-label="界面明暗模式">
+      <button type="button" aria-pressed={value === "light"} title="切换为亮色模式" onClick={() => onChange("light")}>
+        <IconSun size={16} />
+      </button>
+      <button type="button" aria-pressed={value === "dark"} title="切换为暗色模式" onClick={() => onChange("dark")}>
+        <IconMoon size={16} />
+      </button>
+    </div>
+  );
+}
+
 export default function App({
   scheme,
   setScheme,
+  colorScheme,
+  followsSystemColorScheme,
+  setColorScheme,
+  setFollowsSystemColorScheme,
 }: {
   scheme: Scheme;
   setScheme: (s: Scheme) => void;
+  colorScheme: SystemColorScheme;
+  followsSystemColorScheme: boolean;
+  setColorScheme: (value: SystemColorScheme) => void;
+  setFollowsSystemColorScheme: (follow: boolean) => void;
 }) {
   const [env, setEnv] = useState<EnvInfo | null>(null);
   const [err, setErr] = useState("");
@@ -367,7 +397,10 @@ export default function App({
             <Text className="page-kicker">{view === "workbuddy" ? "WORKBUDDY GATEWAY" : "CLAUDE ENVIRONMENT"}</Text>
             <Text className="page-title">{VIEW_TITLES[view]}</Text>
           </div>
-          {view !== "workbuddy" && <EnvironmentStatus env={env} />}
+          <div className="app-header-actions">
+            <ColorSchemeControl value={colorScheme} onChange={setColorScheme} />
+            {view !== "workbuddy" && <EnvironmentStatus env={env} />}
+          </div>
         </header>
 
         <section className="app-content">
@@ -459,7 +492,7 @@ export default function App({
               </div>
             </PersistentPage>
             <PersistentPage active={view === "diagnostics"} warmupDelay={2300}><DiagnosticsPanel /></PersistentPage>
-            <PersistentPage active={view === "settings"} warmupDelay={2700}><SettingsPanel env={env} scheme={scheme} setScheme={setScheme} appVersion={appVersion} onCheckUpdate={() => checkUpdate(true)} onEnvironmentChanged={refreshEnv} /></PersistentPage>
+            <PersistentPage active={view === "settings"} warmupDelay={2700}><SettingsPanel env={env} scheme={scheme} setScheme={setScheme} followsSystemColorScheme={followsSystemColorScheme} setFollowsSystemColorScheme={setFollowsSystemColorScheme} appVersion={appVersion} onCheckUpdate={() => checkUpdate(true)} onEnvironmentChanged={refreshEnv} /></PersistentPage>
             <PersistentPage active={view === "guide"} warmupDelay={3100}>
               <div className="view-scroll">
                 <GuidePanel />

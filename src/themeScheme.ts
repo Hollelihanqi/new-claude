@@ -6,6 +6,10 @@ export type Scheme =
   | "sunset"
   | "iris"
   | "sakura"
+  | "sky"
+  | "mint"
+  | "peach"
+  | "lavender"
   | "apple"
   | "spring"
   | "lantern"
@@ -34,6 +38,10 @@ export const THEME_DEFINITIONS: readonly ThemeDefinition[] = [
   { value: "iris", name: "鸢尾", description: "优雅灵动，富有想象", category: "daily", colors: ["#1d1838", "#39306d", "#8b6cf2", "#b5a1ff", "#ef5b63"] },
   { value: "sakura", name: "樱雾", description: "柔和治愈，轻盈雅致", category: "daily", colors: ["#311e2c", "#63415b", "#e986b8", "#f6bdd9", "#ef5b63"] },
   { value: "apple", name: "苹果", description: "清晰克制，液态玻璃", category: "daily", colors: ["#111318", "#2c2c2e", "#0a84ff", "#d9efff", "#ff453a"] },
+  { value: "sky", name: "晴空", description: "澄澈明亮，自在舒展", category: "daily", colors: ["#dff4ff", "#f7fcff", "#3ba7e8", "#ffffff", "#ef5b63"] },
+  { value: "mint", name: "薄荷", description: "清新自然，轻松醒神", category: "daily", colors: ["#ddf8f1", "#f7fdfb", "#3fc6aa", "#ffffff", "#ef5b63"] },
+  { value: "peach", name: "柔光", description: "粉紫晴蓝，柔润轻盈", category: "daily", colors: ["#f8e5ee", "#fbf9ff", "#b7a8d6", "#add9f3", "#ef5b63"] },
+  { value: "lavender", name: "云紫", description: "蓝紫弥散，安静通透", category: "daily", colors: ["#dff4ff", "#ffffff", "#5553b8", "#d9d5ff", "#ef5b63"] },
   { value: "spring", name: "新春", description: "梅花灯笼，喜迎新岁", category: "festival", colors: ["#7d1f29", "#bc3441", "#e64b45", "#ffd28a", "#ef5b63"] },
   { value: "lantern", name: "元宵", description: "灯海暖金，欢聚团圆", category: "festival", colors: ["#7a2c21", "#cc5038", "#f06c42", "#ffdda3", "#ef5b63"] },
   { value: "dragonboat", name: "端午", description: "晴空碧水，龙舟竞渡", category: "festival", colors: ["#0f5860", "#228c82", "#2db69a", "#a6eadb", "#ef5b63"] },

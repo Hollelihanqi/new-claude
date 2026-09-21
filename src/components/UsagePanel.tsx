@@ -1,5 +1,5 @@
 import { usePageActive } from "./PersistentPage";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Stack,
   Group,
@@ -80,7 +80,7 @@ const daysAgoLocal = (n: number) => dstr(new Date(Date.now() - (n - 1) * 8640000
 type SeriesKey = "input" | "output" | "cacheCreate" | "cacheRead";
 const SERIES: { key: SeriesKey; name: string; color: string }[] = [
   { key: "input", name: "输入", color: "#3b82f6" },
-  { key: "output", name: "输出", color: "#10b981" },
+  { key: "output", name: "输出", color: "#00a675" },
   { key: "cacheCreate", name: "缓存创建", color: "#f59e0b" },
   { key: "cacheRead", name: "缓存命中", color: "#06b6d4" },
 ];
@@ -166,11 +166,21 @@ function StatCard({
   desc?: string;
 }) {
   return (
-    <Card withBorder padding="md" radius="lg" style={{ background: bg }}>
-      <Text size="xs" style={{ color: fg, opacity: 0.85 }}>
+    <Card
+      withBorder
+      padding="md"
+      radius="lg"
+      className="usage-stat-card"
+      style={{
+        background: `color-mix(in srgb, ${fg} 10%, var(--app-surface))`,
+        "--usage-stat-color": fg,
+        "--usage-stat-original-bg": bg,
+      } as CSSProperties}
+    >
+      <Text size="xs" className="usage-stat-label">
         {label}
       </Text>
-      <Text fw={800} size="xl" style={{ color: fg }}>
+      <Text fw={800} size="xl" className="usage-stat-value">
         {value}
       </Text>
       {desc && (
