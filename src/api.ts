@@ -550,6 +550,8 @@ export const api = {
     invoke("restore_plugin_inheritance", { env, name }),
   managePlugin: (action: PluginAction, plugin: string, envs: string[], sharedScope: boolean): Promise<PluginActionReport> =>
     invoke("manage_plugin", { action, plugin, envs, sharedScope }),
+  installPluginPackage: (source: string, envs: string[], sharedScope: boolean): Promise<PluginActionReport> =>
+    invoke("install_plugin_package", { source, envs, sharedScope }),
   testMcpServer: (request: McpTestRequest): Promise<McpTestResult> =>
     invoke("test_mcp_server", { request }),
   previewMcpTargetSync: (

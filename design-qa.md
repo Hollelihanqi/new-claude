@@ -35,18 +35,45 @@
 
 Final result: passed.
 
-## Plugin Management Redesign
+## Plugin Management Redesign — Implementation QA
 
-- Audit source: the Windows Plugins screenshot supplied by the user, compared with the rebuilt macOS application at 980×720.
-- Audit evidence: `/tmp/pathmux-plugin-audit/01-current-plugins-windows.png`, `/tmp/pathmux-plugin-audit/02-redesigned-plugins-macos.png`, and `/tmp/pathmux-plugin-audit/04-before-after.png` for the current session.
+- Source visual truth: `/Users/hq/.codex/generated_images/01a0b8ba-2bbd-7442-8450-fe48425127a6/exec-ebe1f681-5af1-4080-a310-c048aa2d1bc5.png` (1586×992 px).
+- Rendered implementation: real macOS Tauri app built from this workspace.
+- Primary implementation screenshot: `/tmp/pathmux-apple-drawer-floating.png` (2184×1664 px including Retina window shadow; 980×720 CSS-pixel app window at device scale factor 2).
+- Full-view combined comparison: `/tmp/pathmux-design-qa-comparison.png` (source and implementation normalized to 992 px height).
+- Focused comparison: `/tmp/pathmux-design-qa-focus.png` (environment selector, card spacing, action affordances, and fixed-green enabled state).
+- Responsive evidence: `/tmp/pathmux-responsive-1600.png`, `/tmp/pathmux-plugin-real-wide.png` (980 px), and `/tmp/pathmux-responsive-800.png`.
+- State: Apple dark theme with the floating install panel open; one managed environment and one real discovered plugin. Responsive captures also cover the light theme.
 
-| Step | Health | Verified result |
+### Findings
+
+- No actionable P0, P1, or P2 differences remain.
+- The conceptual source uses nine example plugins and branded icons, while the real app correctly displays the user's one discovered plugin with the neutral package icon. This is expected data/content variance, not design drift.
+- P3 follow-up: a denser installation with many long environment names could benefit from an additional stress capture, though wrapping and overflow behavior are already defined.
+
+### Required fidelity surfaces
+
+| Surface | Result | Evidence |
 | --- | --- | --- |
-| 1. Choose scope | Pass | “所有环境” and a single environment explain their effect before any action is taken. |
-| 2. Install a plugin | Pass | The two sources are separated into “从默认 Claude 复制” and “从 Marketplace 安装”, inside a progressive disclosure that keeps the list visible by default. |
-| 3. Read plugin status | Pass | Each plugin card separates identity/source, read-only default-Claude status, and the selected environment's real installed/enabled status. |
-| 4. Perform routine actions | Pass | Install, update, and enable/disable actions are grouped and worded with their destination. The batch enable/disable label now derives from real environment state. |
-| 5. Understand policy exceptions | Pass | Technical “共享策略/排除” language is replaced by “跟随批量设置/单独管理”, with visible consequence copy. |
-| 6. Avoid destructive mistakes | Pass | Uninstall is isolated under “危险操作” and still requires confirmation. |
+| Fonts and typography | Pass | System/SF-compatible typography keeps the same weight hierarchy for title, field label, helper text, card name, and actions; no clipping or ambiguous truncation appears in the tested states. |
+| Spacing and layout rhythm | Pass | Environment selector is 68 px high with 10 px vertical padding around 48 px tabs; cards use 22 px inner padding and 20 px grid gaps. The install panel is now inset on all sides with full rounding. |
+| Colors and visual tokens | Pass | Surfaces follow the active theme, while `.plugin-env-toggle.enabled` remains the same `#30d158` green in Ocean light/dark and Apple dark captures. |
+| Image and icon fidelity | Pass | Existing Tabler icons remain sharp at Retina scale. The neutral package icon is intentional because plugin manifests do not provide a guaranteed branded asset. |
+| Copy and content | Pass | The interface keeps only task-relevant labels. Card controls expose state through icon, color, environment name, title, and accessible label without redundant “环境状态/点击切换状态” text. |
 
-Evidence limits: screenshots support hierarchy, copy, contrast, target visibility, responsive scrolling, disclosure behavior, and scope switching. Unit tests cover command routing; destructive plugin mutations were not executed against the user's installed plugins during visual QA.
+### Interaction and responsive verification
+
+- The actual app opened the Plugins page and rendered real plugin/environment data.
+- The environment selector visibly retains top and bottom padding.
+- The card grid rendered at the intended 3-column (1600 px), 2-column (980 px), and 1-column/stacked-toolbar (800 px) breakpoints in real Tauri windows.
+- The install panel overlays the unchanged plugin page under a blur/scrim, defaults to all environments through the normal open action, and supports separate remote and local-package tabs.
+- The enabled environment control remains fixed green across themes; unit interaction coverage verifies clicking it routes to the exact environment and toggles enable/disable.
+- A real isolated Claude Code 2.1.176 command test added a local marketplace, installed a plugin, and listed it as enabled. This exposed and fixed the incompatible legacy `--yes` option without touching the user's managed environments.
+
+### Comparison history
+
+1. Initial rendered panel was flush against the top, right, and bottom window edges, unlike the floating source panel (P1).
+2. Fixed `.plugin-install-drawer-content` with 16 px outer margins, calculated height, a full border, 24 px radius, and a responsive 8 px mobile inset.
+3. Recaptured `/tmp/pathmux-apple-drawer-floating.png` and recomposed the full comparison. The panel now reads as an independent floating glass layer and no P0/P1/P2 mismatch remains.
+
+final result: passed

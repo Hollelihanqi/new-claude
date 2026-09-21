@@ -3459,6 +3459,7 @@ fn main() {
             extensions::plugin_targets,
             extensions::set_plugin_excluded,
             extensions::manage_plugin,
+            extensions::install_plugin_package,
             mcp::list_mcp_services,
             mcp::register_mcp_project,
             mcp::unregister_mcp_project,

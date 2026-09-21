@@ -7,13 +7,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_VERSION: u32 = 2;
 const CODEX_TARGET: &str = "__codex__";
 const AUTO_IMPORT_INTERVAL_SECS: u64 = 3 * 24 * 60 * 60 + 12 * 60 * 60;
+const MAX_PLUGIN_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PLUGIN_PACKAGE_FILES: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -1727,6 +1729,303 @@ pub(crate) struct PluginActionReport {
     policy_warning: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ImportedPluginManifest {
+    name: String,
+}
+
+struct PluginPackageTemp {
+    root: PathBuf,
+}
+
+impl PluginPackageTemp {
+    fn new(label: &str) -> Result<Self, String> {
+        let root = std::env::temp_dir().join(format!(
+            "pathmux-plugin-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| format!("系统时间异常：{e}"))?
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).map_err(|e| format!("创建插件临时目录失败：{e}"))?;
+        Ok(Self { root })
+    }
+}
+
+impl Drop for PluginPackageTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn validate_plugin_package_url(value: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(value).map_err(|_| "插件地址格式不正确")?;
+    if parsed.scheme() != "https" {
+        return Err("远程插件包只允许使用 HTTPS 地址".into());
+    }
+    match parsed.host().ok_or("插件地址缺少主机名")? {
+        url::Host::Domain(host)
+            if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") =>
+        {
+            return Err("插件地址不能指向本机或局域网主机".into());
+        }
+        url::Host::Ipv4(ip) if ip.is_private() || ip.is_loopback() || ip.is_link_local() => {
+            return Err("插件地址不能指向本机或私有网络".into());
+        }
+        url::Host::Ipv6(ip) if ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() => {
+            return Err("插件地址不能指向本机或私有网络".into());
+        }
+        _ => {}
+    }
+    Ok(parsed)
+}
+
+fn download_plugin_package(url: &str, temp: &PluginPackageTemp) -> Result<PathBuf, String> {
+    let requested = validate_plugin_package_url(url)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| format!("创建插件下载请求失败：{e}"))?;
+    let mut response = client
+        .get(requested)
+        .send()
+        .map_err(|e| format!("下载插件包失败：{e}"))?
+        .error_for_status()
+        .map_err(|e| format!("下载插件包失败：{e}"))?;
+    validate_plugin_package_url(response.url().as_str())?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_PLUGIN_PACKAGE_BYTES)
+    {
+        return Err("插件包超过 256 MiB，已拒绝下载".into());
+    }
+    let path = temp.root.join("plugin.zip");
+    let mut file = fs::File::create(&path).map_err(|e| format!("创建插件临时文件失败：{e}"))?;
+    let copied = std::io::copy(
+        &mut response.by_ref().take(MAX_PLUGIN_PACKAGE_BYTES + 1),
+        &mut file,
+    )
+    .map_err(|e| format!("保存插件包失败：{e}"))?;
+    if copied > MAX_PLUGIN_PACKAGE_BYTES {
+        return Err("插件包超过 256 MiB，已停止保存".into());
+    }
+    file.flush().map_err(|e| format!("保存插件包失败：{e}"))?;
+    Ok(path)
+}
+
+fn extract_plugin_package(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = fs::File::open(archive_path).map_err(|e| format!("读取插件包失败：{e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("插件包不是有效的 ZIP：{e}"))?;
+    if archive.len() > MAX_PLUGIN_PACKAGE_FILES {
+        return Err("插件包文件数量过多，已拒绝解压".into());
+    }
+    let mut total = 0_u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("读取插件包条目失败：{e}"))?;
+        let relative = entry
+            .enclosed_name()
+            .ok_or("插件包包含不安全的文件路径")?
+            .to_path_buf();
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("插件包不能包含符号链接".into());
+        }
+        total = total.saturating_add(entry.size());
+        if total > MAX_PLUGIN_PACKAGE_BYTES {
+            return Err("插件包解压后超过 256 MiB，已停止处理".into());
+        }
+        let output = destination.join(relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&output).map_err(|e| format!("创建插件目录失败：{e}"))?;
+            continue;
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建插件目录失败：{e}"))?;
+        }
+        let mut target = fs::File::create(&output).map_err(|e| format!("创建插件文件失败：{e}"))?;
+        std::io::copy(&mut entry, &mut target).map_err(|e| format!("解压插件文件失败：{e}"))?;
+    }
+    Ok(())
+}
+
+fn find_imported_plugin_root(root: &Path) -> Result<PathBuf, String> {
+    let direct = root.join(".claude-plugin").join("plugin.json");
+    if direct.is_file() {
+        return Ok(root.to_path_buf());
+    }
+    let mut matches = vec![];
+    for entry in fs::read_dir(root).map_err(|e| format!("读取插件包失败：{e}"))? {
+        let path = entry.map_err(|e| format!("读取插件包失败：{e}"))?.path();
+        if path.is_dir() && path.join(".claude-plugin").join("plugin.json").is_file() {
+            matches.push(path);
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err("插件包内未找到 .claude-plugin/plugin.json".into()),
+        _ => Err("插件包内包含多个插件，请分别打包后安装".into()),
+    }
+}
+
+fn copy_plugin_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|e| format!("创建插件缓存目录失败：{e}"))?;
+    for entry in fs::read_dir(source).map_err(|e| format!("读取插件目录失败：{e}"))? {
+        let entry = entry.map_err(|e| format!("读取插件目录失败：{e}"))?;
+        let kind = entry
+            .file_type()
+            .map_err(|e| format!("读取插件文件类型失败：{e}"))?;
+        let destination_path = destination.join(entry.file_name());
+        if kind.is_symlink() {
+            return Err("插件包不能包含符号链接".into());
+        }
+        if kind.is_dir() {
+            copy_plugin_tree(&entry.path(), &destination_path)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), destination_path)
+                .map_err(|e| format!("复制插件文件失败：{e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn stage_imported_plugin(source: &str) -> Result<(String, String, PathBuf), String> {
+    let temp = PluginPackageTemp::new("import")?;
+    let archive = if url::Url::parse(source)
+        .is_ok_and(|parsed| parsed.scheme().eq_ignore_ascii_case("https"))
+    {
+        download_plugin_package(source, &temp)?
+    } else {
+        let path = PathBuf::from(source);
+        if !path.is_file() {
+            return Err("本地插件包不存在或不是文件".into());
+        }
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("zip"))
+            != Some(true)
+        {
+            return Err("本地插件包必须是 .zip 文件".into());
+        }
+        path
+    };
+    let extracted = temp.root.join("extracted");
+    fs::create_dir_all(&extracted).map_err(|e| format!("创建插件解压目录失败：{e}"))?;
+    extract_plugin_package(&archive, &extracted)?;
+    let plugin_root = find_imported_plugin_root(&extracted)?;
+    let manifest_path = plugin_root.join(".claude-plugin").join("plugin.json");
+    let manifest: ImportedPluginManifest = serde_json::from_str(
+        &fs::read_to_string(&manifest_path).map_err(|e| format!("读取 plugin.json 失败：{e}"))?,
+    )
+    .map_err(|e| format!("plugin.json 格式不正确：{e}"))?;
+    if !crate::claude_cli::valid_plugin_identifier(&manifest.name)
+        || manifest.name.contains(['@', '/'])
+    {
+        return Err("plugin.json 中的插件名称格式不正确".into());
+    }
+    let digest = hex::encode(Sha256::digest(
+        format!("{source}\n{}", manifest.name).as_bytes(),
+    ));
+    let marketplace = format!("pathmux-import-{}", &digest[..12]);
+    let root = crate::cfg_dir().join("shared").join("plugin-marketplaces");
+    fs::create_dir_all(&root).map_err(|e| format!("创建插件 Marketplace 目录失败：{e}"))?;
+    let final_dir = root.join(&marketplace);
+    let staging = root.join(format!(".{marketplace}.staging"));
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|e| format!("清理插件暂存目录失败：{e}"))?;
+    }
+    let staged_plugin = staging.join("plugin");
+    copy_plugin_tree(&plugin_root, &staged_plugin)?;
+    let catalog_dir = staging.join(".claude-plugin");
+    fs::create_dir_all(&catalog_dir).map_err(|e| format!("创建 Marketplace 清单目录失败：{e}"))?;
+    let catalog = serde_json::json!({
+        "name": marketplace.clone(),
+        "owner": { "name": "PathMux local import" },
+        "plugins": [{ "name": manifest.name.clone(), "source": "./plugin" }]
+    });
+    fs::write(
+        catalog_dir.join("marketplace.json"),
+        serde_json::to_vec_pretty(&catalog)
+            .map_err(|e| format!("生成 Marketplace 清单失败：{e}"))?,
+    )
+    .map_err(|e| format!("保存 Marketplace 清单失败：{e}"))?;
+    if final_dir.exists() {
+        fs::remove_dir_all(&final_dir).map_err(|e| format!("替换旧插件缓存失败：{e}"))?;
+    }
+    fs::rename(&staging, &final_dir).map_err(|e| format!("启用插件缓存失败：{e}"))?;
+    Ok((manifest.name, marketplace, final_dir))
+}
+
+fn install_plugin_package_blocking(
+    source: String,
+    envs: Vec<String>,
+    shared_scope: bool,
+) -> Result<PluginActionReport, String> {
+    let configured = crate::configured_profile_names();
+    let mut requested = envs;
+    requested.sort();
+    requested.dedup();
+    if requested.is_empty() || requested.iter().any(|env| !configured.contains(env)) {
+        return Err("请选择有效的受管理环境".into());
+    }
+    let covers_all =
+        requested.len() == configured.len() && configured.iter().all(|env| requested.contains(env));
+    if shared_scope && !covers_all {
+        return Err("所有环境安装的目标列表不完整，请刷新后重试".into());
+    }
+    let (name, marketplace, marketplace_dir) = stage_imported_plugin(source.trim())?;
+    let plugin = format!("{name}@{marketplace}");
+
+    let mut prepared = vec![];
+    let mut failures = vec![];
+    for env in &requested {
+        let result = (|| -> Result<(), String> {
+            let _guard = crate::sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
+            let config_dir = crate::sync::instance_dir(env);
+            let _ = crate::claude_cli::remove_plugin_marketplace(&config_dir, &marketplace);
+            crate::claude_cli::add_plugin_marketplace(&config_dir, &marketplace_dir)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => prepared.push(env.clone()),
+            Err(detail) => failures.push(PluginActionOutcome {
+                env: env.clone(),
+                ok: false,
+                detail,
+            }),
+        }
+    }
+
+    let mut report = if prepared.is_empty() {
+        PluginActionReport {
+            action: "install".into(),
+            plugin: plugin.clone(),
+            results: vec![],
+            reload_hint: plugin_reload_hint("install").into(),
+            policy_warning: None,
+        }
+    } else {
+        manage_plugin_blocking(
+            "install".into(),
+            plugin.clone(),
+            prepared,
+            shared_scope && failures.is_empty(),
+        )?
+    };
+    report.results.extend(failures);
+    report
+        .results
+        .sort_by(|left, right| left.env.cmp(&right.env));
+    Ok(report)
+}
+
 fn manage_plugin_blocking(
     action: String,
     plugin: String,
@@ -1904,9 +2203,23 @@ pub(crate) async fn manage_plugin(
     .map_err(|e| format!("插件任务异常：{e}"))?
 }
 
+#[tauri::command]
+pub(crate) async fn install_plugin_package(
+    source: String,
+    envs: Vec<String>,
+    shared_scope: bool,
+) -> Result<PluginActionReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_plugin_package_blocking(source, envs, shared_scope)
+    })
+    .await
+    .map_err(|e| format!("插件安装任务异常：{e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::SimpleFileOptions;
 
     struct Temp(PathBuf);
     impl Temp {
@@ -1933,6 +2246,72 @@ mod tests {
         let dir = root.join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("SKILL.md"), body).unwrap();
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &str)]) {
+        let file = fs::File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        for (name, body) in entries {
+            archive
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(body.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+    }
+
+    #[test]
+    fn plugin_package_urls_require_public_https_hosts() {
+        assert!(validate_plugin_package_url("https://plugins.example.com/demo.zip").is_ok());
+        let private_v4 = format!("https://{}.{}.{}.{}/demo.zip", 192, 168, 1, 20);
+        for blocked in [
+            "http://plugins.example.com/demo.zip".into(),
+            "https://localhost/demo.zip".into(),
+            "https://devbox.local/demo.zip".into(),
+            "https://127.0.0.1/demo.zip".into(),
+            private_v4,
+            "https://[::1]/demo.zip".into(),
+        ] {
+            assert!(
+                validate_plugin_package_url(&blocked).is_err(),
+                "should reject {blocked}"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_package_extraction_rejects_path_traversal() {
+        let temp = Temp::new("plugin-zip-traversal");
+        let archive = temp.0.join("plugin.zip");
+        write_zip(&archive, &[("../escaped.txt", "unsafe")]);
+        let destination = temp.0.join("extracted");
+        fs::create_dir_all(&destination).unwrap();
+
+        let error = extract_plugin_package(&archive, &destination).unwrap_err();
+
+        assert!(error.contains("不安全"));
+        assert!(!temp.0.join("escaped.txt").exists());
+    }
+
+    #[test]
+    fn plugin_package_finds_a_single_wrapped_manifest() {
+        let temp = Temp::new("plugin-zip-valid");
+        let archive = temp.0.join("plugin.zip");
+        write_zip(
+            &archive,
+            &[
+                ("demo/.claude-plugin/plugin.json", r#"{"name":"demo"}"#),
+                ("demo/README.md", "Demo plugin"),
+            ],
+        );
+        let destination = temp.0.join("extracted");
+        fs::create_dir_all(&destination).unwrap();
+
+        extract_plugin_package(&archive, &destination).unwrap();
+        let root = find_imported_plugin_root(&destination).unwrap();
+
+        assert_eq!(root, destination.join("demo"));
+        assert!(root.join(".claude-plugin/plugin.json").is_file());
     }
 
     #[test]

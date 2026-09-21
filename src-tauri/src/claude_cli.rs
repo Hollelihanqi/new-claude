@@ -744,6 +744,67 @@ pub(crate) fn run_plugin_action(
     }
 }
 
+/// 注册 PathMux 为本地/远程插件包生成的临时 Marketplace。
+/// Marketplace 仍由 Claude Code 官方命令读取和验证，PathMux 不直接改写插件台账。
+pub(crate) fn add_plugin_marketplace(config_dir: &Path, source: &Path) -> Result<String, String> {
+    let source = source
+        .to_str()
+        .ok_or("插件 Marketplace 路径包含不支持的字符")?;
+    run_plugin_cli(
+        config_dir,
+        &["plugin", "marketplace", "add", source],
+        "添加插件 Marketplace",
+    )
+}
+
+pub(crate) fn remove_plugin_marketplace(config_dir: &Path, name: &str) -> Result<String, String> {
+    if !valid_plugin_identifier(name) {
+        return Err("Marketplace 名称格式不正确".into());
+    }
+    run_plugin_cli(
+        config_dir,
+        &["plugin", "marketplace", "remove", name],
+        "移除旧插件 Marketplace",
+    )
+}
+
+fn run_plugin_cli(config_dir: &Path, args: &[&str], label: &str) -> Result<String, String> {
+    let detection = detect_claude();
+    let executable = detection
+        .path
+        .ok_or_else(|| format!("未找到可用的 Claude Code：{}", detection.detail))?;
+    fs::create_dir_all(config_dir).map_err(|e| format!("创建环境配置目录失败：{e}"))?;
+    let mut command = command_for_executable(&executable, args);
+    for name in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "NODE_EXTRA_CA_CERTS",
+    ] {
+        command.env_remove(name);
+    }
+    command.env("CLAUDE_CONFIG_DIR", config_dir);
+    let output = run_with_timeout(command, Duration::from_secs(120))?;
+    let text = output_text(&output);
+    if output.status.success() {
+        Ok(if text.is_empty() {
+            format!("Claude Code 已完成{label}")
+        } else {
+            text
+        })
+    } else {
+        Err(if text.is_empty() {
+            format!("{label}失败：{}", output.status)
+        } else {
+            format!("{label}失败：{text}")
+        })
+    }
+}
+
 pub(crate) fn valid_plugin_identifier(plugin: &str) -> bool {
     !plugin.is_empty()
         && plugin.len() <= 300
@@ -756,12 +817,7 @@ pub(crate) fn valid_plugin_identifier(plugin: &str) -> bool {
 }
 
 fn plugin_command(executable: &Path, config_dir: &Path, action: &str, plugin: &str) -> Command {
-    let mut args = vec!["plugin", action, plugin, "--scope", "user"];
-    if matches!(action, "install" | "update" | "uninstall") {
-        // Tauri 后台进程没有交互式终端。Claude Code 对可能执行安装命令的插件
-        // 要求非交互调用显式确认，否则按钮会立即失败，看起来像“闪一下没反应”。
-        args.push("--yes");
-    }
+    let args = vec!["plugin", action, plugin, "--scope", "user"];
     let mut command = command_for_executable(executable, &args);
     for name in [
         "ANTHROPIC_BASE_URL",
@@ -926,7 +982,7 @@ mod tests {
             .windows(3)
             .any(|window| window == ["plugin", "install", "demo@market"]));
         assert!(args.windows(2).any(|window| window == ["--scope", "user"]));
-        assert!(args.iter().any(|arg| arg == "--yes"));
+        assert!(!args.iter().any(|arg| arg == "--yes"));
         let env = command
             .get_envs()
             .map(|(key, value)| {
