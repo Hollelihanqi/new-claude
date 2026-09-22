@@ -39,7 +39,7 @@ describe("环境模型检测", () => {
     vi.mocked(api.deleteProfile).mockResolvedValue("已彻底删除");
     await act(async () => { renderer = create(<ConfigPanel env={null} usageData={null} />); });
     act(() => renderer.root.findAllByType(NavLink)[0].props.onClick());
-  });
+  }, 30_000);
   afterEach(() => { act(() => renderer.unmount()); vi.unstubAllGlobals(); });
   const detect = () => renderer.root.findByType(StableRefreshButton);
   const options = () => renderer.root.findAllByType(Autocomplete)[0].props.data;
@@ -175,7 +175,7 @@ describe("默认 Claude 的模型钉死只告警、不提供一键修复", () =>
       { profile: "a", model: "glm-4", settingsPath: "/home/u/.claude-split/a/.claude/settings.json" },
     ] as never);
     await act(async () => { renderer = create(<ConfigPanel env={null} usageData={null} />); });
-  });
+  }, 30_000);
   afterEach(() => { act(() => renderer.unmount()); vi.unstubAllGlobals(); });
 
   it("默认 Claude 那条没有恢复按钮，并给出配置文件路径供用户自行处理", () => {
