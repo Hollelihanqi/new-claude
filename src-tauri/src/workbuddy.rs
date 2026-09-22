@@ -831,6 +831,14 @@ fn read_document(path: &Path) -> Result<Value, String> {
         .map_err(|error| format!("读取 WorkBuddy 模型配置失败：{error}"))?;
     let value: Value = serde_json::from_str(&text)
         .map_err(|error| format!("WorkBuddy models.json 不是有效 JSON：{error}"))?;
+    // WorkBuddy 升级后会把"无自定义模型"的 models.json 重置成顶层空数组 `[]`，
+    // 它自己读得动（日志里 "Loaded custom models config" 成功）。我们以前只认对象
+    // `{}`，于是把这个合法的空配置误判成"已损坏"、弹红叉、禁止保存。
+    // 空数组语义上等价于空对象（无模型），归一化后放行；再由本 app 首次保存写回对象结构。
+    // 非空数组仍属未知结构（历史上模型始终存在对象的 models 字段里），保持报错。
+    if value.as_array().is_some_and(|items| items.is_empty()) {
+        return Ok(Value::Object(Map::new()));
+    }
     if !value.is_object() {
         return Err("WorkBuddy models.json 顶层必须是 JSON 对象。".into());
     }
@@ -3258,6 +3266,42 @@ jlM7HEs96XujSVLwEU310EvCiXpwSj/ZloPLVtVd0g==
                 mode
             );
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_document_normalizes_empty_array_and_rejects_unknown_shapes() {
+        let dir = std::env::temp_dir().join(format!(
+            "ccm-wb-doc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+
+        // WorkBuddy 升级后把无模型的配置重置成顶层空数组：必须当成空配置放行，
+        // 而不是报"顶层必须是 JSON 对象"、禁止保存（这正是用户看到的红叉根因）。
+        fs::write(&path, "[]").unwrap();
+        assert_eq!(read_document(&path).unwrap(), Value::Object(Map::new()));
+
+        // 合法对象原样返回。
+        fs::write(&path, r#"{"models":[]}"#).unwrap();
+        assert_eq!(
+            read_document(&path).unwrap(),
+            serde_json::json!({ "models": [] })
+        );
+
+        // 非空数组是未知结构（模型历来存在对象的 models 字段里），保持报错以免误覆盖。
+        fs::write(&path, "[1]").unwrap();
+        assert!(read_document(&path).is_err());
+
+        // 其它标量顶层同样拒绝。
+        fs::write(&path, "42").unwrap();
+        assert!(read_document(&path).is_err());
+
         let _ = fs::remove_dir_all(&dir);
     }
 
