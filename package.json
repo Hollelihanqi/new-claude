@@ -1,6 +1,6 @@
 {
   "name": "pathmux",
-  "version": "3.0.14",
+  "version": "3.0.15",
   "description": "Claude Code 本地环境、扩展、洞察与诊断管理工具",
   "license": "MIT",
   "type": "module",

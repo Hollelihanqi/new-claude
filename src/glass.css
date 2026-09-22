@@ -1296,8 +1296,8 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
   flex: 1 1 680px;
   max-width: 700px;
   gap: 4px;
-  background: color-mix(in srgb, var(--app-surface-soft) 72%, var(--app-input-bg));
-  border: 1px solid var(--app-subtle-border);
+  background: color-mix(in srgb, var(--theme-base) 4%, var(--app-surface-soft));
+  border: 1px solid color-mix(in srgb, var(--theme-base) 10%, var(--app-border));
   border-radius: 15px;
   box-shadow: inset 0 1px 2px rgba(7, 29, 42, .06);
 }
@@ -1316,16 +1316,26 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
   cursor: pointer;
   transition: background .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease;
 }
-.plugin-env-tab:hover:not(:disabled) { color: var(--app-strong-text); background: color-mix(in srgb, var(--app-surface) 58%, transparent); }
+.plugin-env-tab:hover:not(:disabled) {
+  color: var(--app-strong-text);
+  background: color-mix(in srgb, var(--theme-base) 7%, var(--app-surface));
+}
 .plugin-env-tab:active:not(:disabled) { transform: scale(.985); }
 .plugin-env-tab[aria-selected="true"] {
-  color: var(--app-strong-text);
-  background: var(--app-surface);
-  border-color: var(--app-border);
-  box-shadow: 0 2px 8px rgba(7, 29, 42, .09);
+  color: color-mix(in srgb, var(--theme-deep) 70%, var(--app-strong-text));
+  background: color-mix(in srgb, var(--theme-base) 14%, var(--app-surface));
+  border-color: color-mix(in srgb, var(--theme-base) 28%, var(--app-border));
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--theme-base) 14%, transparent), inset 0 1px rgba(255, 255, 255, .30);
 }
-html[data-mantine-color-scheme="dark"] .plugin-env-tabs { background: var(--app-input-bg); }
-html[data-mantine-color-scheme="dark"] .plugin-env-tab[aria-selected="true"] { background: var(--app-surface-soft); }
+html[data-mantine-color-scheme="dark"] .plugin-env-tabs {
+  background: color-mix(in srgb, var(--theme-base) 6%, var(--app-input-bg));
+}
+html[data-mantine-color-scheme="dark"] .plugin-env-tab[aria-selected="true"] {
+  color: color-mix(in srgb, var(--theme-base) 78%, white);
+  background: color-mix(in srgb, var(--theme-base) 18%, var(--app-surface-soft));
+  border-color: color-mix(in srgb, var(--theme-base) 34%, var(--app-border));
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--theme-base) 18%, transparent), inset 0 1px rgba(255, 255, 255, .08);
+}
 .plugin-env-tab:disabled { cursor: wait; opacity: .62; }
 .plugin-install-button { min-height: 48px; flex: 0 0 auto; padding-inline: 22px; }
 

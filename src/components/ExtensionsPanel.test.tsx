@@ -204,6 +204,26 @@ describe("扩展中心的插件管理", () => {
     expect(switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")?.props["aria-busy"]).toBe(false);
   });
 
+  it("更新一个插件时只显示当前按钮加载，不让全部卡片进入褪色禁用态", async () => {
+    let complete!: (report: Awaited<ReturnType<typeof api.managePlugin>>) => void;
+    vi.mocked(api.managePlugin).mockReturnValueOnce(new Promise((resolve) => { complete = resolve; }));
+    const updates = () => renderer.root.findAllByType(Button).filter((button) => textOf(button.props.children) === "更新");
+    const removes = () => renderer.root.findAllByType(Button).filter((button) => textOf(button.props.children) === "卸载");
+
+    act(() => { updates()[0].props.onClick(); });
+
+    expect(updates()[0].props.loading).toBe(true);
+    expect(updates()[1].props.disabled).toBe(false);
+    expect(removes()[1].props.disabled).toBe(false);
+    const pluginSwitches = switches().filter((control) => control.props.className === "plugin-env-switch");
+    expect(pluginSwitches.every((control) => control.props.disabled !== true)).toBe(true);
+    expect(pluginSwitches.every((control) => control.props["aria-disabled"] === true)).toBe(true);
+
+    await act(async () => {
+      complete({ action: "update", plugin: "shared@m", reloadHint: "请重新加载", results: [{ env: "corp", ok: true, detail: "完成" }] });
+    });
+  });
+
   it("移除成功横幅后仍保留失败环境的具体错误", async () => {
     vi.mocked(api.managePlugin).mockResolvedValueOnce({
       action: "disable", plugin: "shared@m", reloadHint: "请重新加载",

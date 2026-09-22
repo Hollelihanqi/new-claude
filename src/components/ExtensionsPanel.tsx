@@ -433,7 +433,8 @@ function PluginSharing() {
         const version = isAll
           ? row.envs.find((item) => item.installed && item.version)?.version ?? row.defaultVersion
           : envState?.version ?? row.defaultVersion;
-        return <article className="plugin-card" key={row.name}>
+        const rowBusy = busy.endsWith(`:${row.name}`);
+        return <article className="plugin-card" key={row.name} aria-busy={rowBusy}>
           <div className="plugin-card-body">
             <div className="plugin-identity">
               <div className="plugin-identity-icon"><IconPackage size={21} /></div>
@@ -461,7 +462,7 @@ function PluginSharing() {
                     className="plugin-env-toggle missing"
                     aria-label={`${row.name} 在环境 ${env} ${actionLabel}`}
                     title={`${actionLabel} · ${env}`}
-                    disabled={!!busy}
+                    aria-disabled={!!busy}
                     onClick={() => void envAction(row, env)}
                   ><IconPlus size={15} /><span>{env}</span></button>;
                 return <Switch
@@ -471,23 +472,25 @@ function PluginSharing() {
                   checked={mode === "enabled"}
                   thumbIcon={pending ? <IconLoader2 className="plugin-switch-spinner" size={13} /> : undefined}
                   aria-busy={pending}
+                  aria-disabled={!!busy}
                   label={env}
                   labelPosition="left"
                   color="#00a675"
                   withThumbIndicator={false}
                   aria-label={`${row.name} 在环境 ${env} ${actionLabel}`}
                   title={`${actionLabel} · ${env}`}
-                  disabled={!!busy}
                   onChange={() => void envAction(row, env)}
                 />;
               })}
             </div>
 
             <div className="plugin-card-actions">
-              <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!!busy || !canManage}
+              <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!canManage}
+                aria-disabled={!!busy || !canManage}
                 loading={busy === `update:${row.name}`} onClick={() => void manage("update", row.name)}>更新</Button>
-              <Button size="sm" variant="subtle" color="red" leftSection={<IconTrash size={15} />} disabled={!!busy || !canManage}
-                onClick={() => setRemoveName(row.name)}>卸载</Button>
+              <Button size="sm" variant="subtle" color="red" leftSection={<IconTrash size={15} />} disabled={!canManage}
+                aria-disabled={!!busy || !canManage}
+                onClick={() => { if (!busy) setRemoveName(row.name); }}>卸载</Button>
             </div>
           </div>
 
@@ -503,11 +506,11 @@ function PluginSharing() {
               </Text>
             </div>
             <Group gap={6} wrap="wrap">
-              {envState.excluded && <Button size="compact-sm" variant="light" loading={busy === `include:${target}:${row.name}`} disabled={!!busy}
+              {envState.excluded && <Button size="compact-sm" variant="light" loading={busy === `include:${target}:${row.name}`} aria-disabled={!!busy}
                 onClick={() => apply(() => api.setPluginExcluded(target, row.name, false), `include:${target}:${row.name}`)}>重新跟随批量设置</Button>}
-              {!envState.excluded && !envState.inherited && <Button size="compact-sm" variant="light" loading={busy === `restore:${target}:${row.name}`} disabled={!!busy}
+              {!envState.excluded && !envState.inherited && <Button size="compact-sm" variant="light" loading={busy === `restore:${target}:${row.name}`} aria-disabled={!!busy}
                 onClick={() => apply(() => api.restorePluginInheritance(target, row.name), `restore:${target}:${row.name}`)}>恢复为批量设置</Button>}
-              {!envState.excluded && <Button size="compact-sm" variant="default" loading={busy === `exclude-plugin:${target}:${row.name}`} disabled={!!busy}
+              {!envState.excluded && <Button size="compact-sm" variant="default" loading={busy === `exclude-plugin:${target}:${row.name}`} aria-disabled={!!busy}
                 onClick={() => apply(() => api.setPluginExcluded(target, row.name, true), `exclude-plugin:${target}:${row.name}`)}>改为单独管理</Button>}
             </Group>
           </div>}
