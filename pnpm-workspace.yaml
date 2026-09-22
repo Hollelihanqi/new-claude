@@ -1,0 +1,9 @@
+# pnpm v11 起,依赖覆盖从 package.json 的 "pnpm.overrides" 迁移到这里。
+# 以下钉死构建/测试工具链里经传递依赖引入的已知漏洞版本(不进 Tauri 生产包):
+#   - postcss <=8.5.22: 路径穿越 (GHSA-fxqj-rqcc-2cmp 及其不完整修复)
+#   - nanoid  <3.3.18 : 非安全/自定义生成器可能无限循环
+# nanoid 钉在 v3 线(^3.3.18):postcss 依赖的是 nanoid v3 的 CommonJS 接口,
+# 放开到 4+/6+ 会拉入 ESM-only 且改了导出的大版本,可能破坏 postcss。
+overrides:
+  postcss: "^8.5.23"
+  nanoid: "^3.3.18"
