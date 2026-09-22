@@ -23,6 +23,7 @@ const FORBIDDEN = [
 ];
 
 const CLAIM_SOURCES = [
+  "src-tauri/src/main.rs",
   "src/components/SettingsPanel.tsx",
   "src/components/GuidePanel.tsx",
   "src/components/ConfigPanel.tsx",
@@ -43,11 +44,13 @@ describe("安全承诺与代码事实一致", () => {
 
   it("明说了 WorkBuddy / MCP 密钥是明文，以及 DPAPI 的作用域边界", () => {
     // 只消除错误承诺、不给替代说明，等于把用户从「被骗」换成「不知情」。
-    // 所以正向也要钉住：设置页与引导页必须披露这两个事实。
+    // 平台文案由后端提供、前端只渲染，避免在 React 中重新维护系统差异。
     expect(read("src/components/SettingsPanel.tsx")).toContain("明文文件");
     const guide = read("src/components/GuidePanel.tsx");
-    expect(guide).toContain("明文文件");
-    expect(guide).toContain("同一登录用户下的其他程序");
+    expect(guide).toContain("credential_storage_instruction");
+    const backend = read("src-tauri/src/main.rs");
+    expect(backend).toContain("明文文件");
+    expect(backend).toContain("同一登录用户下的其他程序");
   });
 
   it("应用启动不自动读取钥匙串凭证", () => {

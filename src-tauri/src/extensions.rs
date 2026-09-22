@@ -1770,10 +1770,10 @@ fn validate_plugin_package_url(value: &str) -> Result<url::Url, String> {
         {
             return Err("插件地址不能指向本机或局域网主机".into());
         }
-        url::Host::Ipv4(ip) if ip.is_private() || ip.is_loopback() || ip.is_link_local() => {
+        url::Host::Ipv4(ip) if plugin_destination_is_private(ip.into()) => {
             return Err("插件地址不能指向本机或私有网络".into());
         }
-        url::Host::Ipv6(ip) if ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() => {
+        url::Host::Ipv6(ip) if plugin_destination_is_private(ip.into()) => {
             return Err("插件地址不能指向本机或私有网络".into());
         }
         _ => {}
@@ -1781,11 +1781,78 @@ fn validate_plugin_package_url(value: &str) -> Result<url::Url, String> {
     Ok(parsed)
 }
 
+fn plugin_destination_is_private(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.is_documentation()
+                || octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+                || (octets[0] == 198 && matches!(octets[1], 18 | 19))
+                || octets[0] >= 240
+        }
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+                || ip.segments()[0] & 0xffc0 == 0xfec0
+                || ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8
+                || ip
+                    .to_ipv4()
+                    .is_some_and(|mapped| plugin_destination_is_private(mapped.into()))
+        }
+    }
+}
+
+fn validate_plugin_package_destination(value: &str) -> Result<url::Url, String> {
+    use std::net::ToSocketAddrs;
+
+    let parsed = validate_plugin_package_url(value)?;
+    let url::Host::Domain(host) = parsed.host().ok_or("插件地址缺少主机名")? else {
+        return Ok(parsed);
+    };
+    let port = parsed
+        .port_or_known_default()
+        .ok_or("插件地址缺少有效端口")?;
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("无法解析插件地址：{error}"))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("插件地址没有可用的网络地址".into());
+    }
+    if addresses
+        .iter()
+        .any(|address| plugin_destination_is_private(address.ip()))
+    {
+        return Err("插件地址解析到了本机、私有或保留网络，已拒绝访问".into());
+    }
+    Ok(parsed)
+}
+
 fn download_plugin_package(url: &str, temp: &PluginPackageTemp) -> Result<PathBuf, String> {
-    let requested = validate_plugin_package_url(url)?;
+    let requested = validate_plugin_package_destination(url)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error(std::io::Error::other("插件下载重定向次数超过限制"));
+            }
+            match validate_plugin_package_destination(attempt.url().as_str()) {
+                Ok(_) => attempt.follow(),
+                Err(error) => attempt.error(std::io::Error::other(error)),
+            }
+        }))
         .build()
         .map_err(|e| format!("创建插件下载请求失败：{e}"))?;
     let mut response = client
@@ -1794,7 +1861,7 @@ fn download_plugin_package(url: &str, temp: &PluginPackageTemp) -> Result<PathBu
         .map_err(|e| format!("下载插件包失败：{e}"))?
         .error_for_status()
         .map_err(|e| format!("下载插件包失败：{e}"))?;
-    validate_plugin_package_url(response.url().as_str())?;
+    validate_plugin_package_destination(response.url().as_str())?;
     if response
         .content_length()
         .is_some_and(|size| size > MAX_PLUGIN_PACKAGE_BYTES)
@@ -2271,12 +2338,39 @@ mod tests {
             "https://127.0.0.1/demo.zip".into(),
             private_v4,
             "https://[::1]/demo.zip".into(),
+            "https://[fe80::1]/demo.zip".into(),
+            "https://[::ffff:127.0.0.1]/demo.zip".into(),
         ] {
             assert!(
                 validate_plugin_package_url(&blocked).is_err(),
                 "should reject {blocked}"
             );
         }
+    }
+
+    #[test]
+    fn plugin_destination_filter_rejects_non_public_address_ranges() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        for blocked in [
+            IpAddr::V4(Ipv4Addr::new(0, 1, 2, 3)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 1, 2)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1)),
+            IpAddr::V6("fe80::1".parse::<Ipv6Addr>().unwrap()),
+            IpAddr::V6("fec0::1".parse::<Ipv6Addr>().unwrap()),
+            IpAddr::V6("fc00::1".parse::<Ipv6Addr>().unwrap()),
+            IpAddr::V6("::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap()),
+        ] {
+            assert!(plugin_destination_is_private(blocked), "应拒绝 {blocked}");
+        }
+        assert!(!plugin_destination_is_private(
+            Ipv4Addr::new(8, 8, 8, 8).into()
+        ));
+        assert!(!plugin_destination_is_private(
+            "2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap().into()
+        ));
     }
 
     #[test]

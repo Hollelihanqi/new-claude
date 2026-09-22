@@ -260,7 +260,8 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         organizationForm.url.trim(),
         organizationForm.apiKey.trim() || undefined,
         // 与 model 写入同级：文件被别的程序改过时后端会拒绝覆盖
-        state?.organizationsRevision ?? ""
+        state?.organizationsRevision ?? "",
+        state?.revision ?? ""
       );
       setState(next);
       const organization = selectedOrganizationId
@@ -290,7 +291,9 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
     try {
       const next = await api.applyWorkBuddyOrganizationModels(
         selectedOrganizationId,
-        selectedModels
+        selectedModels,
+        state?.organizationsRevision ?? "",
+        state?.revision ?? ""
       );
       setState(next);
       const organization = next.organizations.find(
@@ -313,7 +316,11 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
     setBusy("delete");
     invalidateRequests();
     try {
-      const next = await api.deleteWorkBuddyOrganization(selectedOrganizationId);
+      const next = await api.deleteWorkBuddyOrganization(
+        selectedOrganizationId,
+        state?.organizationsRevision ?? "",
+        state?.revision ?? ""
+      );
       setState(next);
       setDeleteOpen(false);
       const organization = next.organizations[0];
@@ -344,12 +351,17 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
 
   const chooseWorkBuddyExecutable = async () => {
     try {
-      const macos = state?.environment.platform === "macos";
+      const platformUi = state?.environment.platformUi;
       const selected = await open({
-        title: macos ? "选择 WorkBuddy.app" : "选择 WorkBuddy.exe",
+        title: platformUi?.executablePickerTitle ?? "选择 WorkBuddy",
         directory: false,
         multiple: false,
-        filters: [{ name: "WorkBuddy 应用程序", extensions: [macos ? "app" : "exe"] }],
+        filters: platformUi?.executableExtensions.length
+          ? [{
+              name: platformUi.executableFilterName,
+              extensions: platformUi.executableExtensions,
+            }]
+          : undefined,
       });
       if (!selected || Array.isArray(selected)) return;
       setBusy("executable");
@@ -393,7 +405,6 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
   };
 
   const environment = state?.environment;
-  const isMacos = environment?.platform === "macos";
   const locked = environment?.configValid === false;
   const allModelIds = Array.from(new Set([...catalog, ...selectedModels])).sort();
   const certificateBadge = {
@@ -425,7 +436,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         </Stack>
       </Modal>
 
-      <RiskConfirm
+      {environment?.platformUi && <RiskConfirm
         opened={active && Boolean(certificatePath)}
         // 两个平台都会**改变信任边界**，所以都定 critical：
         //   - 该 CA 会经 import_cert 进入应用信任库 ⇒ 全部托管 Claude 环境都信任它；
@@ -433,25 +444,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
         // macOS 只动 WorkBuddy 内置 CLI 的证书文件（不碰系统钥匙串），但"所有环境"那一条同样成立。
         level="critical"
         title="导入网关 CA 证书"
-        consequences={
-          isMacos
-            ? [
-                "该 CA 会同时加入应用信任库 —— 此后全部托管 Claude 环境都会信任它签发的任意证书。",
-                "同时同步到 WorkBuddy.app 内置 CLI 的证书文件。",
-                "不会修改 macOS 系统钥匙串，也不影响系统层面的信任设置。",
-                "WorkBuddy 更新后，管理中心会在下次启动时自动补写。",
-                "请只导入公司网关管理员提供的证书。",
-              ]
-            : [
-                // 后端用的是 certutil -user，作用域是当前登录用户，不是全机。
-                // 另有共享面（WorkBuddy 安装目录里的 ca.pem）与"所有托管 Claude 环境"，三者要分开说。
-                "该 CA 会同时加入应用信任库 —— 此后所有托管 Claude 环境都会信任它签发的任意证书。",
-                "还会加入「当前 Windows 用户」的受信任根证书库：只对你自己生效，不改动其他用户账户。",
-                "并写入 WorkBuddy 安装目录下的共享 ca.pem，那个文件是该安装的所有用户共用的。",
-                "WorkBuddy 更新后，管理中心会在下次启动时自动补写。",
-                "请只导入公司网关管理员提供的证书。",
-              ]
-        }
+        consequences={environment.platformUi.caImportConsequences}
         detail={certificatePath}
         confirmLabel="确认并信任"
         busy={busy === "certificate"}
@@ -460,7 +453,7 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
           // 只有成功才关窗并清掉路径；失败保留上下文供直接重试
           if (await importCertificate()) setCertificatePath(null);
         }}
-      />
+      />}
 
       <Card withBorder padding="md" radius="lg" className="workbuddy-environment-card">
         <Group justify="space-between" align="flex-start">

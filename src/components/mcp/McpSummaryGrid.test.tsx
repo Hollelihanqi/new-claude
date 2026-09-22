@@ -29,7 +29,7 @@ describe("McpSummaryGrid", () => {
     expect(renderer.root.findAllByType("section").map((card) => (
       card.findAllByType("span").map((text) => text.children.join("")).join("")
     )))
-      .toEqual(["全部定义—", "已启用—", "存在警告—", "环境覆盖—"]);
+      .toEqual(["全部定义—", "允许加载—", "存在警告—", "环境覆盖—"]);
 
     act(() => {
       renderer.update(<McpSummaryGrid summary={loadedSummary} sharedOverrideCount={2} />);

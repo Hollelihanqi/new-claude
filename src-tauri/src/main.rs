@@ -40,11 +40,53 @@ struct Profile {
 #[derive(Serialize)]
 struct EnvInfo {
     platform: String,
+    platform_ui: PlatformUi,
     claude_found: bool,
     claude_detection: claude_cli::ClaudeDetection,
     integrated: bool,
     cert_imported: bool,
     cert_count: usize,
+}
+
+#[derive(Serialize)]
+struct PlatformUi {
+    cert_path_example: String,
+    shell_reload_instruction: String,
+    gateway_certificate_instruction: String,
+    terminal_support_instruction: String,
+    credential_storage_instruction: String,
+    cleanup_instruction: String,
+}
+
+fn platform_ui(platform: &str) -> PlatformUi {
+    match platform {
+        "windows" => PlatformUi {
+            cert_path_example: r"C:\path\to\ca-cert.pem".into(),
+            shell_reload_instruction:
+                "保存后请重新打开终端窗口；也可在 PowerShell 运行 . $PROFILE 立即生效。".into(),
+            gateway_certificate_instruction: "证书只写入所选网关环境的独立信任包，不修改 Windows 系统根证书库，也不需要管理员权限。".into(),
+            terminal_support_instruction: "支持 PowerShell 5.1 与 PowerShell 7+；暂不支持 cmd.exe、Git Bash 和 WSL。".into(),
+            credential_storage_instruction: "网关 Token 使用 Windows DPAPI 按当前用户加密；同一登录用户下的其他程序仍可能解密，密文会随配置备份导出。WorkBuddy Key 以及 MCP env/header 密钥保存在受权限保护的明文文件中。".into(),
+            cleanup_instruction: "终端接入位于 PowerShell 的 $PROFILE；删除带 # cc-manager-integration 标记的区段即可撤销。全部应用配置位于当前用户目录下的 .cc-manager 文件夹。".into(),
+        },
+        "macos" => PlatformUi {
+            cert_path_example: "/Users/you/ca-cert.pem".into(),
+            shell_reload_instruction:
+                "保存后请重新打开终端窗口；也可运行 source ~/.zshrc 立即生效。".into(),
+            gateway_certificate_instruction: "证书只写入所选网关环境的独立信任包，不修改 macOS 钥匙串，也不需要管理员权限。".into(),
+            terminal_support_instruction: "支持 zsh 与 bash；暂不支持 fish 和 sh。".into(),
+            credential_storage_instruction: "网关 Token 保存在 macOS 钥匙串中。WorkBuddy Key 以及 MCP env/header 密钥保存在仅限当前用户读取的明文文件中。".into(),
+            cleanup_instruction: "终端接入通常位于 ~/.zshrc 或 bash 配置文件；删除带 # cc-manager-integration 标记的区段即可撤销。全部应用配置位于 ~/.cc-manager。".into(),
+        },
+        _ => PlatformUi {
+            cert_path_example: "/path/to/ca-cert.pem".into(),
+            shell_reload_instruction: "保存后请重新打开终端窗口使配置生效。".into(),
+            gateway_certificate_instruction: "证书只写入所选网关环境的独立信任包。".into(),
+            terminal_support_instruction: "请在诊断页面确认当前终端是否已接入。".into(),
+            credential_storage_instruction: "请妥善保护本机凭证文件与配置备份。".into(),
+            cleanup_instruction: "从终端配置中删除带 # cc-manager-integration 标记的区段即可撤销接入。".into(),
+        },
+    }
 }
 
 #[derive(Serialize)]
@@ -1969,9 +2011,11 @@ fn environment() -> EnvInfo {
         "other"
     }
     .to_string();
+    let platform_ui = platform_ui(&platform);
     let claude_detection = claude_cli::detect_claude();
     EnvInfo {
         platform,
+        platform_ui,
         claude_found: claude_detection.found,
         claude_detection,
         integrated: cfg_path().exists(),
@@ -3466,6 +3510,7 @@ fn main() {
             mcp::preview_mcp_change,
             mcp::apply_mcp_change,
             mcp::test_mcp_server,
+            mcp::probe_mcp_connections,
             mcp::preview_mcp_target_sync,
             mcp::apply_mcp_target_sync,
             mcp::disable_mcp_target,
@@ -3514,6 +3559,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_ui_supplies_windows_and_macos_copy_to_frontend() {
+        let windows = platform_ui("windows");
+        assert!(windows.cert_path_example.contains('\\'));
+        assert!(windows.shell_reload_instruction.contains("PowerShell"));
+
+        let macos = platform_ui("macos");
+        assert!(macos.cert_path_example.starts_with('/'));
+        assert!(macos.shell_reload_instruction.contains("source ~/.zshrc"));
+    }
 
     fn temp_config_paths(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
@@ -4236,14 +4292,10 @@ mod tests {
     // —— 用量统计：message.id 去重回归测试（平台无关，任一开发机均可跑）——
 
     fn write_usage_fixture(lines: &[serde_json::Value]) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "cc-manager-usage-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // 测试会并行创建多个 fixture；仅靠时钟在 Windows/macOS 的低分辨率时钟上
+        // 可能同名并互相覆盖，导致用量行数偶发变少。
+        let dir =
+            std::env::temp_dir().join(format!("cc-manager-usage-{}", crate::sync::unique_token()));
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("session.jsonl");
         let body = lines

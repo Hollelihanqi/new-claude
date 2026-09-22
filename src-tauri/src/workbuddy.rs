@@ -6,6 +6,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // 注意：这里**不再**有任何默认网关地址。
@@ -17,6 +18,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ORGANIZATION_OWNER_FIELD: &str = "_ccManagerOrganizationId";
+static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn write_guard() -> MutexGuard<'static, ()> {
+    WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +38,53 @@ pub struct WorkBuddyEnvironment {
     config_exists: bool,
     config_valid: bool,
     detail: String,
+    platform_ui: WorkBuddyPlatformUi,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkBuddyPlatformUi {
+    executable_picker_title: String,
+    executable_filter_name: String,
+    executable_extensions: Vec<String>,
+    ca_import_consequences: Vec<String>,
+}
+
+fn platform_ui(platform: &str) -> WorkBuddyPlatformUi {
+    let shared = "该 CA 会同时加入应用信任库 —— 此后全部托管 Claude 环境都会信任它签发的任意证书。";
+    let final_note = "请只导入公司网关管理员提供的证书。";
+    match platform {
+        "macos" => WorkBuddyPlatformUi {
+            executable_picker_title: "选择 WorkBuddy.app".into(),
+            executable_filter_name: "WorkBuddy 应用程序".into(),
+            executable_extensions: vec!["app".into()],
+            ca_import_consequences: vec![
+                shared.into(),
+                "同时同步到 WorkBuddy.app 内置 CLI 的证书文件。".into(),
+                "不会修改 macOS 系统钥匙串，也不影响系统层面的信任设置。".into(),
+                "WorkBuddy 更新后，管理中心会在下次启动时自动补写。".into(),
+                final_note.into(),
+            ],
+        },
+        "windows" => WorkBuddyPlatformUi {
+            executable_picker_title: "选择 WorkBuddy.exe".into(),
+            executable_filter_name: "WorkBuddy 应用程序".into(),
+            executable_extensions: vec!["exe".into()],
+            ca_import_consequences: vec![
+                shared.into(),
+                "还会加入当前 Windows 用户的受信任根证书库；不会改动其他用户账户。".into(),
+                "并写入 WorkBuddy 安装目录下的共享 ca.pem。".into(),
+                "WorkBuddy 更新后，管理中心会在下次启动时自动补写。".into(),
+                final_note.into(),
+            ],
+        },
+        _ => WorkBuddyPlatformUi {
+            executable_picker_title: "选择 WorkBuddy 可执行文件".into(),
+            executable_filter_name: "WorkBuddy 应用程序".into(),
+            executable_extensions: Vec::new(),
+            ca_import_consequences: vec![shared.into(), final_note.into()],
+        },
+    }
 }
 
 #[derive(Serialize)]
@@ -104,6 +160,7 @@ pub struct SaveWorkBuddyOrganizationRequest {
     /// 前端拿到的 `organizationsRevision`。与 model 写入同级保护：
     /// 不一致说明文件被别的程序改过，拒绝覆盖而不是静默 last-writer-wins。
     expected_revision: String,
+    expected_models_revision: String,
     name: String,
     #[serde(default)]
     model_prefix: String,
@@ -116,6 +173,16 @@ pub struct SaveWorkBuddyOrganizationRequest {
 pub struct ApplyWorkBuddyOrganizationModelsRequest {
     organization_id: String,
     models: Vec<String>,
+    expected_organizations_revision: String,
+    expected_models_revision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkBuddyOrganizationRequest {
+    id: String,
+    expected_organizations_revision: String,
+    expected_models_revision: String,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +210,7 @@ pub struct SaveWorkBuddyGatewayRequest {
     api_key: Option<String>,
     /// 同 organization：防静默覆盖别的程序写的内容
     expected_revision: String,
+    expected_models_revision: String,
 }
 
 #[derive(Deserialize)]
@@ -594,8 +662,27 @@ pub(crate) fn credential_file_paths() -> Vec<PathBuf> {
         paths.push(base.clone());
         paths.push(base.with_extension("cc-manager.backup.json"));
         paths.push(base.with_extension("cc-manager.previous.json"));
+        // 兼容旧版本固定临时名；新版本使用唯一临时名，并把可能因崩溃遗留的文件
+        // 从目录中枚举出来，避免权限检查漏报含明文 apiKey 的残留文件。
         paths.push(base.with_extension("cc-manager.tmp"));
+        let prefix = format!(
+            "{}.cc-manager.",
+            base.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+        );
+        if let Some(parent) = base.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                paths.extend(entries.flatten().map(|entry| entry.path()).filter(|path| {
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+                }));
+            }
+        }
     }
+    paths.sort();
+    paths.dedup();
     paths
 }
 
@@ -1256,26 +1343,27 @@ fn environment_for(path: &Path, document: Result<&Value, &String>) -> WorkBuddyE
     } else {
         "WorkBuddy 已就绪；保存第一个模型时会创建 models.json。".to_string()
     };
+    let platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "other"
+    };
     WorkBuddyEnvironment {
         found: executable.is_some(),
-        platform: if cfg!(target_os = "windows") {
-            "windows"
-        } else if cfg!(target_os = "macos") {
-            "macos"
-        } else {
-            "other"
-        }
-        .into(),
+        platform: platform.into(),
         executable_path: executable.as_ref().map(|value| value.display().to_string()),
         version,
         config_path: path.display().to_string(),
         config_exists,
         config_valid,
         detail,
+        platform_ui: platform_ui(platform),
     }
 }
 
-fn build_state() -> WorkBuddyState {
+fn build_state_unlocked() -> WorkBuddyState {
     let path = models_path();
     let repair_warning = repair_managed_models().err();
     let document = read_document(&path);
@@ -1363,12 +1451,18 @@ fn validate_model(model: &mut WorkBuddyModelInput, require_key: bool) -> Result<
     Ok(())
 }
 
+fn document_temp_path(path: &Path) -> PathBuf {
+    path.with_extension(format!("cc-manager.{}.tmp", crate::sync::unique_token()))
+}
+
 fn write_document(path: &Path, document: &Value) -> Result<(), String> {
     let parent = path.parent().ok_or("WorkBuddy 配置目录无效。")?;
     fs::create_dir_all(parent).map_err(|error| format!("创建 WorkBuddy 配置目录失败：{error}"))?;
     let text = serde_json::to_string_pretty(document)
         .map_err(|error| format!("序列化 WorkBuddy 配置失败：{error}"))?;
-    let tmp = path.with_extension("cc-manager.tmp");
+    // 唯一临时名可避免两个进程/应用实例在落盘前互相截断同一临时文件。
+    // 完整 read-modify-write 仍由 WRITE_LOCK 串行化；修订号用于发现外部程序改写。
+    let tmp = document_temp_path(path);
     let backup = path.with_extension("cc-manager.backup.json");
     let previous = path.with_extension("cc-manager.previous.json");
     fs::write(&tmp, format!("{text}\n"))
@@ -1456,11 +1550,13 @@ fn ensure_expected_revision(path: &Path, expected: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub fn workbuddy_state() -> WorkBuddyState {
-    build_state()
+    let _guard = write_guard();
+    build_state_unlocked()
 }
 
 #[tauri::command]
 pub fn set_workbuddy_executable(path: String) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
     let expected = if cfg!(target_os = "macos") {
         "WorkBuddy.app"
     } else {
@@ -1488,7 +1584,7 @@ pub fn set_workbuddy_executable(path: String) -> Result<WorkBuddyState, String> 
             ));
         }
     }
-    let mut state = build_state();
+    let mut state = build_state_unlocked();
     if let Some(note) = note {
         state.warnings.push(note);
     }
@@ -1499,6 +1595,7 @@ pub fn set_workbuddy_executable(path: String) -> Result<WorkBuddyState, String> 
 pub fn save_workbuddy_gateway(
     mut request: SaveWorkBuddyGatewayRequest,
 ) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
     request.url = request.url.trim().trim_end_matches('/').to_string();
     let parsed = url::Url::parse(&request.url).map_err(|_| "网关地址不是有效 URL。")?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -1511,6 +1608,7 @@ pub fn save_workbuddy_gateway(
     }
     // 与 model 写入同级的并发保护：文件被别的程序改过就拒绝覆盖
     ensure_expected_revision(&gateway_path(), &request.expected_revision)?;
+    ensure_expected_revision(&models_path(), &request.expected_models_revision)?;
     let previous = read_gateway_config()?;
     let api_key = request
         .api_key
@@ -1550,13 +1648,14 @@ pub fn save_workbuddy_gateway(
         }
     }
     write_gateway_config(&next)?;
-    Ok(build_state())
+    Ok(build_state_unlocked())
 }
 
 #[tauri::command]
 pub fn save_workbuddy_organization(
     mut request: SaveWorkBuddyOrganizationRequest,
 ) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
     validate_organization(
         &mut request.name,
         &mut request.model_prefix,
@@ -1564,6 +1663,7 @@ pub fn save_workbuddy_organization(
     )?;
     // 与 model 写入同级的并发保护：文件被别的程序改过就拒绝覆盖
     ensure_expected_revision(&organizations_path(), &request.expected_revision)?;
+    ensure_expected_revision(&models_path(), &request.expected_models_revision)?;
     let mut organizations = read_organizations()?;
     let index = request.id.as_deref().and_then(|id| {
         organizations
@@ -1634,12 +1734,20 @@ pub fn save_workbuddy_organization(
         });
     }
     write_organizations(&organizations)?;
-    Ok(build_state())
+    Ok(build_state_unlocked())
 }
 
 #[tauri::command]
-pub fn delete_workbuddy_organization(id: String) -> Result<WorkBuddyState, String> {
-    let organization = organization_by_id(id.trim())?;
+pub fn delete_workbuddy_organization(
+    request: DeleteWorkBuddyOrganizationRequest,
+) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
+    ensure_expected_revision(
+        &organizations_path(),
+        &request.expected_organizations_revision,
+    )?;
+    ensure_expected_revision(&models_path(), &request.expected_models_revision)?;
+    let organization = organization_by_id(request.id.trim())?;
     let mut organizations = read_organizations()?;
     if models_path().exists() {
         let mut document = read_document(&models_path())?;
@@ -1669,13 +1777,19 @@ pub fn delete_workbuddy_organization(id: String) -> Result<WorkBuddyState, Strin
     }
     organizations.retain(|item| item.id != organization.id);
     write_organizations(&organizations)?;
-    Ok(build_state())
+    Ok(build_state_unlocked())
 }
 
 #[tauri::command]
 pub fn apply_workbuddy_organization_models(
     request: ApplyWorkBuddyOrganizationModelsRequest,
 ) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
+    ensure_expected_revision(
+        &organizations_path(),
+        &request.expected_organizations_revision,
+    )?;
+    ensure_expected_revision(&models_path(), &request.expected_models_revision)?;
     let mut organizations = read_organizations()?;
     let organization_index = organizations
         .iter()
@@ -1814,7 +1928,7 @@ pub fn apply_workbuddy_organization_models(
 
     organizations[organization_index].selected_models = selected;
     write_organizations(&organizations)?;
-    Ok(build_state())
+    Ok(build_state_unlocked())
 }
 
 fn validate_ca_certificate(path: &Path) -> Result<(), String> {
@@ -2111,6 +2225,7 @@ pub async fn check_workbuddy_certificate(
 pub fn save_workbuddy_model(
     mut request: SaveWorkBuddyModelRequest,
 ) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
     let path = models_path();
     if request.model.use_global_key {
         let gateway = read_gateway_config()?;
@@ -2224,13 +2339,14 @@ pub fn save_workbuddy_model(
         available.push(Value::String(request.model.id.clone()));
     }
     write_document(&path, &document)?;
-    Ok(build_state())
+    Ok(build_state_unlocked())
 }
 
 #[tauri::command]
 pub fn delete_workbuddy_model(
     request: DeleteWorkBuddyModelRequest,
 ) -> Result<WorkBuddyState, String> {
+    let _guard = write_guard();
     let path = models_path();
     ensure_expected_revision(&path, &request.expected_revision)?;
     let mut document = read_document(&path)?;
@@ -2253,7 +2369,7 @@ pub fn delete_workbuddy_model(
         available.retain(|value| value.as_str() != Some(request.id.as_str()));
     }
     write_document(&path, &document)?;
-    Ok(build_state())
+    Ok(build_state_unlocked())
 }
 
 fn api_key_for(id: &str) -> Result<String, String> {
@@ -3126,6 +3242,28 @@ jlM7HEs96XujSVLwEU310EvCiXpwSj/ZloPLVtVd0g==
 
         let gateway = serde_json::json!({ "url": "https://gw.example.com" });
         assert!(serde_json::from_value::<SaveWorkBuddyGatewayRequest>(gateway).is_err());
+
+        // 只校验组织/网关文件还不够：这两个操作也会改 models.json。
+        let org_without_models_revision = serde_json::json!({
+            "expectedRevision": "org-rev",
+            "name": "org",
+            "url": "https://gw.example.com"
+        });
+        assert!(serde_json::from_value::<SaveWorkBuddyOrganizationRequest>(
+            org_without_models_revision
+        )
+        .is_err());
+
+        let apply_without_revisions = serde_json::json!({
+            "organizationId": "org",
+            "models": []
+        });
+        assert!(
+            serde_json::from_value::<ApplyWorkBuddyOrganizationModelsRequest>(
+                apply_without_revisions
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -3210,7 +3348,10 @@ jlM7HEs96XujSVLwEU310EvCiXpwSj/ZloPLVtVd0g==
         // backup / previous / tmp（同样含明文 apiKey）完全不在权限检查范围内，
         // 界面却照样显示"含密钥的文件均仅限本人读取"。
         let paths = credential_file_paths();
-        assert_eq!(paths.len(), 12, "3 个主文件 × 4 种产物：{paths:?}");
+        assert!(
+            paths.len() >= 12,
+            "至少覆盖 3 个主文件 × 4 种产物：{paths:?}"
+        );
         let names: Vec<String> = paths
             .iter()
             .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
@@ -3231,6 +3372,77 @@ jlM7HEs96XujSVLwEU310EvCiXpwSj/ZloPLVtVd0g==
             "{names:?}"
         );
         assert!(names.iter().any(|name| name.ends_with(".tmp")), "{names:?}");
+    }
+
+    #[test]
+    fn write_document_uses_unique_temporary_paths() {
+        let path = Path::new("models.json");
+        let first = document_temp_path(path);
+        let second = document_temp_path(path);
+        assert_ne!(first, second);
+        for candidate in [first, second] {
+            let name = candidate.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with("models.cc-manager."), "{name}");
+            assert!(name.ends_with(".tmp"), "{name}");
+        }
+    }
+
+    #[test]
+    fn write_guard_serializes_complete_mutations() {
+        use std::sync::mpsc;
+
+        let first = write_guard();
+        let (sent, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _second = write_guard();
+            sent.send(()).unwrap();
+        });
+        assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(first);
+        received.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn every_workbuddy_config_mutation_takes_the_write_guard() {
+        let source = include_str!("workbuddy.rs");
+        for name in [
+            "set_workbuddy_executable",
+            "save_workbuddy_gateway",
+            "save_workbuddy_organization",
+            "delete_workbuddy_organization",
+            "apply_workbuddy_organization_models",
+            "save_workbuddy_model",
+            "delete_workbuddy_model",
+        ] {
+            let signature = format!("pub fn {name}");
+            let start = source
+                .find(&signature)
+                .unwrap_or_else(|| panic!("缺少 {name}"));
+            let tail = &source[start..];
+            let end = tail.find("\n#[tauri::command]").unwrap_or(tail.len());
+            assert!(
+                tail[..end].contains("let _guard = write_guard();"),
+                "{name} 必须在读取配置之前获取完整写锁"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_ui_covers_windows_and_macos_without_frontend_branching() {
+        let windows = platform_ui("windows");
+        assert_eq!(windows.executable_extensions, ["exe"]);
+        assert!(windows
+            .ca_import_consequences
+            .iter()
+            .any(|line| line.contains("Windows")));
+
+        let macos = platform_ui("macos");
+        assert_eq!(macos.executable_extensions, ["app"]);
+        assert!(macos
+            .ca_import_consequences
+            .iter()
+            .any(|line| line.contains("macOS")));
     }
 
     #[cfg(unix)]

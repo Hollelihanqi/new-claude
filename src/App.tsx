@@ -495,7 +495,7 @@ export default function App({
             <PersistentPage active={view === "settings"} warmupDelay={2700}><SettingsPanel env={env} scheme={scheme} setScheme={setScheme} followsSystemColorScheme={followsSystemColorScheme} setFollowsSystemColorScheme={setFollowsSystemColorScheme} appVersion={appVersion} onCheckUpdate={() => checkUpdate(true)} onEnvironmentChanged={refreshEnv} /></PersistentPage>
             <PersistentPage active={view === "guide"} warmupDelay={3100}>
               <div className="view-scroll">
-                <GuidePanel />
+                <GuidePanel env={env} />
               </div>
             </PersistentPage>
           </Box>

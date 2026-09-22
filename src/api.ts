@@ -17,6 +17,14 @@ export interface Profile {
 /** EnvInfo（serde 未重命名，保持 snake_case） */
 export interface EnvInfo {
   platform: string;
+  platform_ui: {
+    cert_path_example: string;
+    shell_reload_instruction: string;
+    gateway_certificate_instruction: string;
+    terminal_support_instruction: string;
+    credential_storage_instruction: string;
+    cleanup_instruction: string;
+  };
   claude_found: boolean;
   claude_detection: ClaudeDetection;
   integrated: boolean;
@@ -363,6 +371,20 @@ export interface McpTestResult {
   sanitizedDetail: string;
 }
 
+export type McpConnectionStatus = "connected" | "failed" | "pending" | "unknown";
+
+export interface McpConnectionCheck {
+  environment: string;
+  name: string;
+  status: McpConnectionStatus;
+  detail: string;
+}
+
+export interface McpConnectionReport {
+  checks: McpConnectionCheck[];
+  errors: string[];
+}
+
 export interface UsageRow {
   datetime: string; // UTC，如 "2026-06-22T04"
   model: string;
@@ -424,6 +446,12 @@ export interface WorkBuddyEnvironment {
   configExists: boolean;
   configValid: boolean;
   detail: string;
+  platformUi: {
+    executablePickerTitle: string;
+    executableFilterName: string;
+    executableExtensions: string[];
+    caImportConsequences: string[];
+  };
 }
 
 export interface WorkBuddyModel {
@@ -554,6 +582,9 @@ export const api = {
     invoke("install_plugin_package", { source, envs, sharedScope }),
   testMcpServer: (request: McpTestRequest): Promise<McpTestResult> =>
     invoke("test_mcp_server", { request }),
+  /** 调用 Claude Code 官方健康检查，返回各环境真实的 MCP 握手状态 */
+  probeMcpConnections: (): Promise<McpConnectionReport> =>
+    invoke("probe_mcp_connections"),
   previewMcpTargetSync: (
     targetId: string,
     locator: McpLocator
@@ -613,10 +644,11 @@ export const api = {
   saveWorkBuddyGateway: (
     url: string,
     apiKey: string | undefined,
-    expectedRevision: string
+    expectedRevision: string,
+    expectedModelsRevision: string
   ): Promise<WorkBuddyState> =>
     invoke("save_workbuddy_gateway", {
-      request: { url, apiKey: apiKey || null, expectedRevision },
+      request: { url, apiKey: apiKey || null, expectedRevision, expectedModelsRevision },
     }),
   saveWorkBuddyOrganization: (
     id: string | undefined,
@@ -625,7 +657,8 @@ export const api = {
     url: string,
     apiKey: string | undefined,
     /** 来自 state.organizationsRevision；不一致后端会拒绝覆盖 */
-    expectedRevision: string
+    expectedRevision: string,
+    expectedModelsRevision: string
   ): Promise<WorkBuddyState> =>
     invoke("save_workbuddy_organization", {
       request: {
@@ -635,16 +668,30 @@ export const api = {
         url,
         apiKey: apiKey || null,
         expectedRevision,
+        expectedModelsRevision,
       },
     }),
-  deleteWorkBuddyOrganization: (id: string): Promise<WorkBuddyState> =>
-    invoke("delete_workbuddy_organization", { id }),
+  deleteWorkBuddyOrganization: (
+    id: string,
+    expectedOrganizationsRevision: string,
+    expectedModelsRevision: string
+  ): Promise<WorkBuddyState> =>
+    invoke("delete_workbuddy_organization", {
+      request: { id, expectedOrganizationsRevision, expectedModelsRevision },
+    }),
   applyWorkBuddyOrganizationModels: (
     organizationId: string,
-    models: string[]
+    models: string[],
+    expectedOrganizationsRevision: string,
+    expectedModelsRevision: string
   ): Promise<WorkBuddyState> =>
     invoke("apply_workbuddy_organization_models", {
-      request: { organizationId, models },
+      request: {
+        organizationId,
+        models,
+        expectedOrganizationsRevision,
+        expectedModelsRevision,
+      },
     }),
   importWorkBuddyCa: (path: string): Promise<string> => invoke("import_workbuddy_ca", { path }),
   listWorkBuddyModels: (id: string | undefined, url: string, apiKey: string | undefined): Promise<string[]> =>

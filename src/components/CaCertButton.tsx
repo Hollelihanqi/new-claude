@@ -51,8 +51,7 @@ export default function CaCertButton({
   const [gateways, setGateways] = useState<string[]>([]);
 
   const certCount = env?.cert_count ?? 0;
-  const certPlaceholder =
-    env?.platform === "windows" ? "C:\\ca-cert.pem" : "/Users/you/ca-cert.pem";
+  const certPlaceholder = env?.platform_ui?.cert_path_example ?? "";
 
   // 只在**网关环境**里选目标：独立登录环境不注入 CA，列出来只会误导。
   const loadGateways = () => {

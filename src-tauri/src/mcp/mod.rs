@@ -335,6 +335,33 @@ pub struct McpTestResult {
     pub sanitized_detail: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpConnectionState {
+    Connected,
+    Failed,
+    Pending,
+    Unknown,
+}
+
+/// Claude Code 在一个受管环境中实际完成 MCP 握手后的状态。
+/// 这与 `McpService.enabled`（配置开关）是两个完全不同的概念。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConnectionCheck {
+    pub environment: String,
+    pub name: String,
+    pub status: McpConnectionState,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConnectionReport {
+    pub checks: Vec<McpConnectionCheck>,
+    pub errors: Vec<String>,
+}
+
 // ---------------- 命令 ----------------
 
 use storage::{
@@ -597,6 +624,141 @@ pub async fn test_mcp_server(request: McpTestRequest) -> Result<McpTestResult, S
         .map_err(|e| format!("测试任务异常：{e}"))
 }
 
+/// 获取所有受管环境的真实 MCP 连接状态。
+///
+/// 当前列表中的「所有环境」服务会被分发到每个环境，因此必须逐环境检查；只看配置
+/// 是否启用会把“进程启动失败 / MCP 握手失败”错误地展示为正常。
+#[tauri::command]
+pub async fn probe_mcp_connections() -> Result<McpConnectionReport, String> {
+    let paths = McpPaths::system();
+    let instances = current_instances();
+    let state = collect_state(&paths, &instances);
+    let names = state
+        .services
+        .iter()
+        .filter(|service| service.locator.scope == McpScope::User && service.enabled)
+        .map(|service| service.locator.name.clone())
+        .collect::<Vec<_>>();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut checks = Vec::new();
+        let mut errors = Vec::new();
+        for environment in instances {
+            let config_dir = crate::sync::instance_dir(&environment);
+            match crate::claude_cli::run_mcp_health_list(&config_dir) {
+                Ok(output) => {
+                    checks.extend(parse_mcp_health_output(&environment, &names, &output));
+                }
+                Err(error) => errors.push(format!("{environment}：{error}")),
+            }
+        }
+        McpConnectionReport { checks, errors }
+    })
+    .await
+    .map_err(|e| format!("MCP 连接检查任务异常：{e}"))
+}
+
+fn parse_mcp_health_output(
+    environment: &str,
+    names: &[String],
+    output: &str,
+) -> Vec<McpConnectionCheck> {
+    let clean = strip_terminal_escapes(output);
+    names
+        .iter()
+        .map(|name| {
+            let line = clean.lines().find(|line| {
+                let trimmed = line.trim_start();
+                trimmed == name
+                    || trimmed
+                        .strip_prefix(name.as_str())
+                        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(' '))
+            });
+            let (status, detail) = match line {
+                Some(line) => {
+                    let normalized = line.to_ascii_lowercase();
+                    let status = if normalized.contains("failed")
+                        || normalized.contains("error")
+                        || normalized.contains("disconnected")
+                        || line.contains('✗')
+                        || line.contains('×')
+                    {
+                        McpConnectionState::Failed
+                    } else if normalized.contains("pending")
+                        || normalized.contains("approval")
+                        || normalized.contains("approve")
+                    {
+                        McpConnectionState::Pending
+                    } else if normalized.contains("connected")
+                        || line.contains('✓')
+                        || line.contains('✔')
+                    {
+                        McpConnectionState::Connected
+                    } else {
+                        McpConnectionState::Unknown
+                    };
+                    // `claude mcp list` 在状态前还会回显完整 command / URL；其中可能
+                    // 带令牌或查询参数。界面只需要状态结论，绝不能把整条命令送到前端。
+                    let detail = line
+                        .rsplit_once(" - ")
+                        .map(|(_, result)| format!("Claude Code：{}", result.trim()))
+                        .unwrap_or_else(|| match status {
+                            McpConnectionState::Connected => "Claude Code：已连接".into(),
+                            McpConnectionState::Failed => "Claude Code：连接失败".into(),
+                            McpConnectionState::Pending => "Claude Code：等待授权".into(),
+                            McpConnectionState::Unknown => "Claude Code：状态无法识别".into(),
+                        });
+                    (status, detail)
+                }
+                None => (
+                    McpConnectionState::Unknown,
+                    "Claude Code 未返回该服务的状态".into(),
+                ),
+            };
+            McpConnectionCheck {
+                environment: environment.to_string(),
+                name: name.clone(),
+                status,
+                detail,
+            }
+        })
+        .collect()
+}
+
+/// 去掉 CLI 彩色输出中的 ANSI/OSC 控制序列，避免状态关键字被转义码截断。
+fn strip_terminal_escapes(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) | None => {}
+        }
+    }
+    out
+}
+
 // ---------------- preview 构建 ----------------
 
 pub fn start_mcp_sync_monitors(app: tauri::AppHandle) {
@@ -816,9 +978,9 @@ fn describe_action(
         McpChangeAction::SetEnabled { target, enabled } => {
             let cfg = read_locator_config(paths, instances, target)?.map(Value::Object);
             let label = if *enabled {
-                format!("启用服务「{}」", target.name)
+                format!("允许 Claude 加载「{}」", target.name)
             } else {
-                format!("停用服务「{}」", target.name)
+                format!("停止让 Claude 加载「{}」", target.name)
             };
             Ok((label, instances_for(target, instances), cfg.clone(), cfg))
         }
@@ -836,15 +998,10 @@ fn describe_action(
 
 fn instances_for(loc: &McpLocator, instances: &[String]) -> Vec<String> {
     match loc.scope {
-        McpScope::User => {
-            let mut v = vec!["__main__".to_string()];
-            for n in instances {
-                if !v.contains(n) {
-                    v.push(n.clone());
-                }
-            }
-            v
-        }
+        // User 在领域模型里代表 PathMux 共享源，不是默认 Claude。
+        // `__main__` 只是后端定位共享文件的内部标识，绝不能出现在用户可见的
+        // “受影响环境”里，否则会让人误以为默认 Claude 也被改写。
+        McpScope::User => instances.to_vec(),
         McpScope::Local => loc.instance_id.clone().map(|i| vec![i]).unwrap_or_default(),
         McpScope::Project => Vec::new(),
     }
@@ -1203,5 +1360,53 @@ mod tests {
         assert_eq!(result.retryable_count, 0);
         assert_eq!(result.blocked_count, 1);
         assert!(result.complete, "稳定跳过不算未完成");
+    }
+
+    #[test]
+    fn parses_real_mcp_health_states_and_strips_terminal_colors() {
+        let output = concat!(
+            "Checking MCP server health...\n",
+            "\u{1b}[32mcodegraph: node server.js - ✓ Connected\u{1b}[0m\n",
+            "realagent-gx-test: python main.py - ✗ Failed to connect\n",
+            "needs-approval: https://example.test - Pending approval\n"
+        );
+        let names = vec![
+            "codegraph".into(),
+            "realagent-gx-test".into(),
+            "needs-approval".into(),
+            "missing".into(),
+        ];
+        let checks = parse_mcp_health_output("ds", &names, output);
+        assert_eq!(checks[0].status, McpConnectionState::Connected);
+        assert_eq!(checks[1].status, McpConnectionState::Failed);
+        assert_eq!(checks[2].status, McpConnectionState::Pending);
+        assert_eq!(checks[3].status, McpConnectionState::Unknown);
+        assert_eq!(checks[0].environment, "ds");
+        assert!(!checks[0].detail.contains('\u{1b}'));
+        assert!(
+            !checks[0].detail.contains("server.js"),
+            "不得把完整命令发给前端"
+        );
+    }
+
+    #[test]
+    fn health_parser_matches_complete_server_name_only() {
+        let names = vec!["agent".into(), "agent-pro".into()];
+        let checks = parse_mcp_health_output(
+            "hq",
+            &names,
+            "agent-pro: command - ✓ Connected\nagent: command - ✗ Failed",
+        );
+        assert_eq!(checks[0].status, McpConnectionState::Failed);
+        assert_eq!(checks[1].status, McpConnectionState::Connected);
+    }
+
+    #[test]
+    fn shared_scope_preview_never_exposes_main_as_an_environment() {
+        let environments = vec!["hq".into(), "ds".into()];
+        assert_eq!(
+            instances_for(&user_locator("demo"), &environments),
+            environments
+        );
     }
 }

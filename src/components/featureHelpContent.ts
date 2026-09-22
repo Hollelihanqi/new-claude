@@ -194,15 +194,16 @@ export const MCP_SCOPE_HELP: FeatureHelpContent = {
 
 export const MCP_HELP: FeatureHelpContent = {
   title: "MCP 服务",
-  hint: "了解 MCP 的作用范围与共享规则",
+  hint: "了解配置加载、连接检测与共享规则",
   purpose: "让 Claude 连接文件、数据库、浏览器或公司服务等外部工具。MCP 本身不会思考，也不会主动分派任务。",
-  action: "保存后，应用根据选择的范围写入共享源、指定环境或当前项目。共享项再单向发送到受管理环境。",
-  impact: "“所有环境”影响每个受管理环境；“指定环境”只影响选中的环境；“当前项目”只在该项目中可用。",
-  userAction: "如果环境已有同名配置，环境版本会优先并显示覆盖提示。需要统一时可主动恢复共享配置。",
+  action: "保存后，应用根据范围写入配置；“加载配置”只决定新的 Claude 会话是否读取它，不会启动、关闭或重连 MCP 服务器。",
+  impact: "连接检测会建立一次独立的健康检查连接，不代表正在运行的 Claude 会话已经连接。配置变化通常在新会话中生效。",
+  userAction: "修改加载状态后，重启正在运行的 Claude 会话；连接失败时先修复命令、地址或授权，再点击刷新重新检测。",
   flow: [
     "界面把敏感值脱敏后展示，保存时保留完整配置。",
     "所有环境范围写入应用共享源，指定环境和项目写入各自文件。",
     "共享配置逐环境分发，只修改应用负责的条目。",
+    "Claude Code 读取配置后自行建立连接、发现能力并调用工具。",
     "应用记录上次分发值，用来识别环境自己的修改。",
   ],
   principles: [
@@ -219,6 +220,11 @@ export const MCP_HELP: FeatureHelpContent = {
     {
       title: "原子写入与回退",
       detail: "先写完整临时文件再替换正式文件；本轮任一写入失败时恢复本轮已经改变的文件。",
+      status: "implemented",
+    },
+    {
+      title: "配置开关不是服务器开关",
+      detail: "停止加载只影响后续 Claude 会话；远程服务、其他客户端以及已经建立的连接不会被 PathMux 强行关闭。",
       status: "implemented",
     },
   ],

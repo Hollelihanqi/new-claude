@@ -2,12 +2,12 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ConfigPanel from "./ConfigPanel";
 import StableRefreshButton from "./StableRefreshButton";
-import { NavLink, Autocomplete, PasswordInput, TextInput, Alert, Button, Text } from "@mantine/core";
+import { NavLink, Autocomplete, PasswordInput, TextInput, Alert, Button, Text, ActionIcon } from "@mantine/core";
 import { api, type Profile } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
   "Loader", "Card", "Stack", "Group", "Button", "TextInput", "PasswordInput", "Select",
-  "Text", "Title", "NavLink", "Badge", "Code", "Alert", "Box", "Autocomplete", "Modal",
+  "Text", "Title", "NavLink", "Badge", "Code", "Alert", "Box", "Autocomplete", "Modal", "ActionIcon", "Tooltip",
 ].map((name) => [name, name.toLowerCase()])));
 vi.mock("./InstanceSettingsCard", () => ({ default: () => null }));
 vi.mock("../api", () => ({ api: {
@@ -41,7 +41,7 @@ describe("环境模型检测", () => {
     act(() => renderer.root.findAllByType(NavLink)[0].props.onClick());
   }, 30_000);
   afterEach(() => { act(() => renderer.unmount()); vi.unstubAllGlobals(); });
-  const detect = () => renderer.root.findByType(StableRefreshButton);
+  const detect = () => renderer.root.findAllByType(StableRefreshButton).find((button) => button.props.label === "检测模型")!;
   const options = () => renderer.root.findAllByType(Autocomplete)[0].props.data;
   const messages = () => renderer.root.findAllByType(Alert).flatMap((alert) => alert.children.filter((child) => typeof child === "string")).join(" ");
 
@@ -249,19 +249,19 @@ describe("运行状态按失败原因区分文案", () => {
     expect(gatewayStrong()?.props.className).toContain("status-bad");
     vi.mocked(api.probeGateway).mockResolvedValue("网关连通正常，检测到 3 个可用模型。");
     await act(async () => {
-      renderer.root.findAllByType(Button).find((b) => b.children.join("") === "检测")!.props.onClick();
+      renderer.root.findByType(ActionIcon).props.onClick();
     });
     expect(api.probeGateway).toHaveBeenCalledWith("a");
     expect(statusText()).toContain("环境正常");
-    // 复测通过后按钮消失：异常态只在有结论支撑时展示
-    expect(renderer.root.findAllByType(Button).some((b) => b.children.join("") === "检测")).toBe(false);
+    // 检测是当前环境的常驻操作，恢复正常后仍可再次手动触发。
+    expect(renderer.root.findByType(ActionIcon).props["aria-label"]).toBe("检测当前环境");
   });
 
   it("单环境复测失败时如实展示失败原因", async () => {
     await mount(true, true, ["a"]);
     vi.mocked(api.probeGateway).mockRejectedValue(new Error("schannel: TLS 握手失败"));
     await act(async () => {
-      renderer.root.findAllByType(Button).find((b) => b.children.join("") === "检测")!.props.onClick();
+      renderer.root.findByType(ActionIcon).props.onClick();
     });
     expect(statusText()).toContain("网关未连通");
     expect(renderer.root.findAllByType(Alert).some((a) => a.children.join("").includes("TLS 握手失败"))).toBe(true);

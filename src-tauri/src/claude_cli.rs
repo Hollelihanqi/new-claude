@@ -744,6 +744,47 @@ pub(crate) fn run_plugin_action(
     }
 }
 
+/// 在指定环境中调用 Claude Code 官方 MCP 健康检查。
+///
+/// 这里有意不注入 PathMux 的网关地址或凭据：MCP 握手只需要服务自身配置，
+/// 自动刷新列表时也绝不能触发系统钥匙串授权。即使某个 MCP 连接失败，Claude
+/// 仍可能以非零状态退出；只要命令给出了可解析的结果，就把输出交给上层判断。
+pub(crate) fn run_mcp_health_list(config_dir: &Path) -> Result<String, String> {
+    let detection = detect_claude();
+    let executable = detection
+        .path
+        .ok_or_else(|| format!("未找到可用的 Claude Code：{}", detection.detail))?;
+    fs::create_dir_all(config_dir).map_err(|e| format!("创建环境配置目录失败：{e}"))?;
+    let mut command = command_for_executable(&executable, &["mcp", "list"]);
+    for name in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "NODE_EXTRA_CA_CERTS",
+    ] {
+        command.env_remove(name);
+    }
+    command.env("CLAUDE_CONFIG_DIR", config_dir);
+    let output = run_with_timeout(command, Duration::from_secs(30))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let text = match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (true, true) => String::new(),
+    };
+    if text.is_empty() && !output.status.success() {
+        Err(format!("Claude Code MCP 健康检查失败：{}", output.status))
+    } else {
+        Ok(text)
+    }
+}
+
 /// 注册 PathMux 为本地/远程插件包生成的临时 Marketplace。
 /// Marketplace 仍由 Claude Code 官方命令读取和验证，PathMux 不直接改写插件台账。
 pub(crate) fn add_plugin_marketplace(config_dir: &Path, source: &Path) -> Result<String, String> {

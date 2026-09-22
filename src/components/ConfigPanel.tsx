@@ -1,5 +1,6 @@
 import { usePageActivation, usePageActive } from "./PersistentPage";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   Card,
   Stack,
@@ -14,9 +15,11 @@ import {
   Badge,
   Code,
   Alert,
-  Box,
   Autocomplete,
   Modal,
+  ActionIcon,
+  Tooltip,
+  Loader,
 } from "@mantine/core";
 import {
   IconPlus,
@@ -26,6 +29,16 @@ import {
   IconUser,
   IconInfoCircle,
   IconAlertTriangle,
+  IconActivityHeartbeat,
+  IconClockHour4,
+  IconMessageCircle,
+  IconCoins,
+  IconLink,
+  IconCpu,
+  IconTerminal2,
+  IconShieldLock,
+  IconFolder,
+  IconRefresh,
 } from "@tabler/icons-react";
 import { api } from "../api";
 import type { EnvInfo, Profile, ModelPinWarning, ProfileRuntimeInfo, UsageStats } from "../api";
@@ -55,6 +68,29 @@ interface FormState {
   opusModel: string;
   sonnetModel: string;
   haikuModel: string;
+}
+
+function ConfigSectionHeading({
+  icon,
+  title,
+  description,
+  action,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  action?: ReactNode;
+}) {
+  return (
+      <div className="environment-section-heading">
+      <div className="environment-section-icon" aria-hidden="true">{icon}</div>
+      <div className="environment-section-copy">
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </div>
+      {action && <div className="environment-section-action">{action}</div>}
+    </div>
+  );
 }
 
 export default function ConfigPanel({
@@ -169,8 +205,6 @@ export default function ConfigPanel({
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(n))
       return "名称只能包含英文字母、数字、下划线、短横线（1~40 个字符）。";
     if (n.startsWith("__")) return "名称不能以 __ 开头（内部保留前缀）。";
-    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(n))
-      return "该名称是 Windows 保留设备名，请换一个。";
     if (form.type === "router") {
       const url = form.baseUrl.trim();
       if (!/^https?:\/\/\S+$/i.test(url) || url.length > 2048)
@@ -333,15 +367,22 @@ export default function ConfigPanel({
     try {
       const msg = await api.probeGateway(name);
       setStatus({ type: "success", msg: `环境 ${name}：${msg}` });
-      if (verification?.gatewayFails?.includes(name)) {
-        setVerification({
-          ...verification,
-          problems: Math.max(0, verification.problems - 1),
-          gatewayFails: verification.gatewayFails.filter((item) => item !== name),
-        });
-      }
+      setVerification((previous) => ({
+        at: Math.floor(Date.now() / 1000),
+        problems: Math.max(0, (previous?.problems ?? 0) - (previous?.gatewayFails?.includes(name) ? 1 : 0)),
+        gatewayFails: (previous?.gatewayFails ?? []).filter((item) => item !== name),
+      }));
     } catch (e) {
       setStatus({ type: "error", msg: `环境 ${name}：${String(e)}` });
+      setVerification((previous) => {
+        const failures = previous?.gatewayFails ?? [];
+        const alreadyFailed = failures.includes(name);
+        return {
+          at: Math.floor(Date.now() / 1000),
+          problems: (previous?.problems ?? 0) + (alreadyFailed ? 0 : 1),
+          gatewayFails: alreadyFailed ? failures : [...failures, name],
+        };
+      });
     } finally {
       setProbeBusy("");
     }
@@ -492,17 +533,24 @@ export default function ConfigPanel({
       {/* 右栏：环境设置表单（独立滚动） */}
       <div className="editor-pane">
         <div className="editor-scroll">
-          <Card withBorder padding="lg" radius="lg" className="editor-card">
-          <Stack gap="sm">
-            <Group justify="space-between" className="editor-toolbar">
-              <div>
-                <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ letterSpacing: 1.1 }}>Environment settings</Text>
-                <Title order={4}>{sel ? sel : "创建新环境"}</Title>
-              </div>
-              <Group gap="xs">
-                <Badge variant="light" color={sel ? "blue" : "green"}>
-                  {sel ? "已创建" : "新环境"}
-                </Badge>
+          <Card withBorder padding={0} radius="lg" className="editor-card">
+          <Stack gap={0}>
+            <Group justify="space-between" className="editor-toolbar" wrap="nowrap">
+              <Group gap="sm" wrap="nowrap" className="environment-title-group">
+                <div className="environment-title-icon">
+                  {isRouter ? <IconWorld size={22} /> : <IconUser size={22} />}
+                </div>
+                <div className="environment-title-copy">
+                  <Text size="xs" c="dimmed" fw={700}>环境配置</Text>
+                  <Group gap="xs" wrap="wrap">
+                    <Title order={3}>{sel ? sel : "创建新环境"}</Title>
+                    <Badge variant="light" color={sel ? "blue" : "green"}>
+                      {sel ? (isRouter ? "网关环境" : "独立登录") : "新环境"}
+                    </Badge>
+                  </Group>
+                </div>
+              </Group>
+              <Group gap="xs" wrap="nowrap" className="environment-editor-actions">
                 <Button
                   variant="subtle"
                   color="red"
@@ -524,6 +572,8 @@ export default function ConfigPanel({
               </Group>
             </Group>
 
+            <div className="environment-editor-content">
+
             {status.msg && (
               <Alert
                 variant="light"
@@ -536,70 +586,94 @@ export default function ConfigPanel({
 
             {sel && selProfile && (
               <div className="instance-overview">
-                <div>
-                  <span>运行状态</span>
-                  <strong className={`status-${healthClass(selProfile)}`}>{statusForProfile(selProfile).label}</strong>
-                  {statusForProfile(selProfile).gatewayDown && (
-                    // 不用 Mantine loading（会隐藏文字），与诊断页同步按钮同一约定
-                    <Button
-                      size="compact-xs"
-                      variant="light"
-                      color="orange"
-                      disabled={probeBusy === selProfile.name}
-                      onClick={() => { void onProbeGateway(selProfile.name); }}
-                    >
-                      {probeBusy === selProfile.name ? "检测中" : "检测"}
-                    </Button>
+                <div className="environment-stat">
+                  <div className="environment-stat-icon"><IconActivityHeartbeat size={17} /></div>
+                  <div className="environment-stat-copy">
+                    <span>运行状态</span>
+                    <strong className={`status-${healthClass(selProfile)}`}>{statusForProfile(selProfile).label}</strong>
+                  </div>
+                  {isRouter && (
+                    <Tooltip label="检测当前环境" position="top" withArrow>
+                      <ActionIcon
+                        className="environment-status-probe"
+                        variant="subtle"
+                        radius="xl"
+                        size={32}
+                        aria-label="检测当前环境"
+                        aria-busy={probeBusy === selProfile.name}
+                        disabled={probeBusy === selProfile.name}
+                        onClick={() => { void onProbeGateway(selProfile.name); }}
+                      >
+                        {probeBusy === selProfile.name
+                          ? <Loader size={14} />
+                          : <IconRefresh size={15} />}
+                      </ActionIcon>
+                    </Tooltip>
                   )}
                 </div>
-                <div><span>最近使用</span><strong>{formatLastUsed(selRuntime?.lastUsed)}</strong></div>
-                <div><span>今日请求</span><strong>{selectedUsage.requests}</strong></div>
-                <div><span>今日 Token</span><strong>{fmtNumber(selectedUsage.tokens)}</strong></div>
+                <div className="environment-stat">
+                  <div className="environment-stat-icon"><IconClockHour4 size={17} /></div>
+                  <div className="environment-stat-copy"><span>最近使用</span><strong>{formatLastUsed(selRuntime?.lastUsed)}</strong></div>
+                </div>
+                <div className="environment-stat">
+                  <div className="environment-stat-icon"><IconMessageCircle size={17} /></div>
+                  <div className="environment-stat-copy"><span>今日请求</span><strong>{selectedUsage.requests}</strong></div>
+                </div>
+                <div className="environment-stat">
+                  <div className="environment-stat-icon"><IconCoins size={17} /></div>
+                  <div className="environment-stat-copy"><span>今日 Token</span><strong>{fmtNumber(selectedUsage.tokens)}</strong></div>
+                </div>
               </div>
             )}
 
             {selRuntime && (
-              <div className="runtime-strip">
-                <span>配置目录</span><Code>{selRuntime.configDir}</Code>
-                <Badge size="xs" variant="light" color={selRuntime.settingsExists ? "teal" : "gray"}>{selRuntime.settingsExists ? "配置已生成" : "等待首次启动"}</Badge>
-                <Badge size="xs" variant="light" color={selProfile?.type === "router" ? (selProfile.hasToken ? "teal" : "orange") : (selRuntime.authenticated ? "teal" : "orange")}>
-                  {selProfile?.type === "router" ? (selProfile.hasToken ? "凭证已保存" : "缺少凭证") : (selRuntime.authenticated ? "账户已登录" : "等待登录")}
-                </Badge>
-                <Badge size="xs" variant="light" color={selRuntime.sharedDirsOk ? "cyan" : "orange"}>{selRuntime.sharedDirsOk ? "扩展结构正常" : "扩展待迁移"}</Badge>
-                {selProfile?.type === "router" && <Badge size="xs" variant="light" color="blue">{[selProfile.opusModel, selProfile.sonnetModel, selProfile.haikuModel].filter(Boolean).length}/3 模型映射</Badge>}
+              <div className="environment-runtime-card">
+                <div className="environment-runtime-path">
+                  <IconFolder size={17} />
+                  <div><span>配置目录</span><Code>{selRuntime.configDir}</Code></div>
+                </div>
+                <div className="environment-runtime-badges">
+                  <Badge size="sm" variant="light" color={selRuntime.settingsExists ? "teal" : "gray"}>{selRuntime.settingsExists ? "配置已生成" : "等待首次启动"}</Badge>
+                  <Badge size="sm" variant="light" color={selProfile?.type === "router" ? (selProfile.hasToken ? "teal" : "orange") : (selRuntime.authenticated ? "teal" : "orange")}>
+                    {selProfile?.type === "router" ? (selProfile.hasToken ? "凭证已保存" : "缺少凭证") : (selRuntime.authenticated ? "账户已登录" : "等待登录")}
+                  </Badge>
+                  <Badge size="sm" variant="light" color={selRuntime.sharedDirsOk ? "cyan" : "orange"}>{selRuntime.sharedDirsOk ? "扩展结构正常" : "扩展待迁移"}</Badge>
+                  {selProfile?.type === "router" && <Badge size="sm" variant="light" color="blue">{[selProfile.opusModel, selProfile.sonnetModel, selProfile.haikuModel].filter(Boolean).length}/3 模型映射</Badge>}
+                </div>
               </div>
             )}
 
-            <div className="form-section-label"><span>01</span><div><strong>连接信息</strong><small>环境身份与访问凭证</small></div></div>
-
-            <TextInput
-              label="环境名称 = 你要输入的命令词"
-              description={
-                sel
-                  ? "名称创建后不可修改（它是固定的命令词）。如需改名，请删除后重新新建。"
-                  : "例如填 bj，之后在终端用 claude bj。只能用英文字母/数字/下划线/短横线。创建后名称不可修改。"
-              }
-              placeholder="bj"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.currentTarget.value })}
-              readOnly={!!sel}
-              disabled={!!sel}
-            />
-
-            <Select
-              label="类型"
-              data={[
-                { value: "router", label: "网关环境（公司网关 / 第三方）" },
-                { value: "account", label: "独立登录环境（独立登录）" },
-              ]}
-              value={form.type}
-              onChange={(v) => setForm({ ...form, type: (v || "router") as Profile["type"] })}
-              allowDeselect={false}
-            />
-
-            {isRouter && (
-              <>
+            <section className="environment-config-section">
+              <ConfigSectionHeading icon={<IconLink size={18} />} title="连接信息" description="环境身份与访问凭证" />
+              <div className="environment-field-grid">
                 <TextInput
+                  label="环境名称 = 你要输入的命令词"
+                  description={
+                    sel
+                      ? "名称创建后不可修改。如需改名，请删除后重新新建。"
+                      : "例如 bj，之后在终端运行 claude bj。创建后名称不可修改。"
+                  }
+                  placeholder="bj"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.currentTarget.value })}
+                  readOnly={!!sel}
+                  disabled={!!sel}
+                />
+                <Select
+                  label="环境类型"
+                  description="选择通过网关接入，或使用独立 Claude 登录。"
+                  data={[
+                    { value: "router", label: "网关环境（公司网关 / 第三方）" },
+                    { value: "account", label: "独立登录环境（独立登录）" },
+                  ]}
+                  value={form.type}
+                  onChange={(v) => setForm({ ...form, type: (v || "router") as Profile["type"] })}
+                  allowDeselect={false}
+                />
+                {isRouter && (
+                  <>
+                <TextInput
+                  className="environment-field-wide"
                   label="ANTHROPIC_BASE_URL（公司网关地址）"
                   description="按公司网关说明填写，通常要带 /anthropic 后缀。"
                   placeholder="https://gateway.example.com:8080/anthropic"
@@ -609,6 +683,7 @@ export default function ConfigPanel({
                   }
                 />
                 <PasswordInput
+                  className="environment-field-wide"
                   label="API Key"
                   description={
                     selProfile?.hasToken
@@ -619,13 +694,18 @@ export default function ConfigPanel({
                   value={token}
                   onChange={(e) => setToken(e.currentTarget.value)}
                 />
+                  </>
+                )}
+              </div>
+            </section>
 
-                <div className="form-section-label"><span>02</span><div><strong>模型映射</strong><small>将 Claude 档位匹配到网关模型</small></div></div>
-                <Group justify="space-between" align="center">
-                  <Text size="xs" c="dimmed">
-                    点「检测模型」获取当前网关的可用模型；检测成功后下拉只显示检测结果。
-                  </Text>
-                  <StableRefreshButton
+            {isRouter && (
+              <section className="environment-config-section">
+                <ConfigSectionHeading
+                  icon={<IconCpu size={18} />}
+                  title="模型映射"
+                  description="将 Claude 档位匹配到网关模型"
+                  action={<StableRefreshButton
                     key={sel ?? "new"}
                     size="xs"
                     iconSize={14}
@@ -633,8 +713,8 @@ export default function ConfigPanel({
                     busyLabel="检测中…"
                     onClick={onDetect}
                     busy={detectBusy}
-                  />
-                </Group>
+                  />}
+                />
                 {detectStatus && (
                   <Alert
                     data-model-detection-status
@@ -646,62 +726,67 @@ export default function ConfigPanel({
                     {detectStatus.msg}
                   </Alert>
                 )}
-
-                <Autocomplete
-                  label="Opus 档（复杂任务，最强）"
-                  placeholder="如 glm-5.2 / claude-opus-4-7"
-                  data={modelOpts}
-                  value={form.opusModel}
-                  onChange={(v) => setForm({ ...form, opusModel: v })}
-                />
-                <Autocomplete
-                  label="Sonnet 档（日常默认）"
-                  placeholder="如 glm-5.1 / claude-sonnet-4-6"
-                  data={modelOpts}
-                  value={form.sonnetModel}
-                  onChange={(v) => setForm({ ...form, sonnetModel: v })}
-                />
-                <Autocomplete
-                  label="Haiku 档（轻量、快速、后台子任务）"
-                  placeholder="如 glm-5-turbo / claude-haiku-4-5"
-                  data={modelOpts}
-                  value={form.haikuModel}
-                  onChange={(v) => setForm({ ...form, haikuModel: v })}
-                />
-              </>
+                <div className="environment-model-grid">
+                  <Autocomplete
+                    label="Opus · 复杂任务"
+                    placeholder="如 glm-5.2"
+                    data={modelOpts}
+                    value={form.opusModel}
+                    onChange={(v) => setForm({ ...form, opusModel: v })}
+                  />
+                  <Autocomplete
+                    label="Sonnet · 日常默认"
+                    placeholder="如 glm-5.1"
+                    data={modelOpts}
+                    value={form.sonnetModel}
+                    onChange={(v) => setForm({ ...form, sonnetModel: v })}
+                  />
+                  <Autocomplete
+                    label="Haiku · 轻量快速"
+                    placeholder="如 glm-5-turbo"
+                    data={modelOpts}
+                    value={form.haikuModel}
+                    onChange={(v) => setForm({ ...form, haikuModel: v })}
+                  />
+                </div>
+              </section>
             )}
 
-            <div className="form-section-label"><span>03</span><div><strong>自动化与命令</strong><small>共享策略与终端调用方式</small></div></div>
-            <Alert variant="light" color="cyan" icon={<IconInfoCircle size={16} />}>
-              <Text size="xs">
-                Skills 与 Agents 由扩展中心逐项共享，各环境可保留自己的同名版本或明确排除；
-                Plugins 通过 Claude Code 官方命令按环境安装。跨环境共享的 MCP 请在「MCP 服务」中
-                选择「所有环境」添加。
-              </Text>
-            </Alert>
+            <section className="environment-config-section">
+              <ConfigSectionHeading icon={<IconTerminal2 size={18} />} title="自动化与命令" description="共享策略与终端调用方式" />
+              <div className="environment-info-note">
+                <IconInfoCircle size={17} />
+                <Text size="xs">
+                  Skills 与 Agents 在扩展中心逐项共享；Plugins 按环境安装；跨环境 MCP 请在
+                  「MCP 服务」中选择「所有环境」。
+                </Text>
+              </div>
+              <div className="environment-command-preview">
+                <div className="environment-command-heading">
+                  <IconTerminal2 size={17} />
+                  <div><strong>启动命令</strong><span>保存后在新终端窗口中使用</span></div>
+                </div>
+                <Code block>
+                  {`claude            # 默认 Claude\nclaude ${
+                    form.name.trim() || "<名称>"
+                  }     # 使用该环境`}
+                </Code>
+              </div>
+            </section>
 
             {sel && (
-              <>
-                <div className="form-section-label"><span>04</span><div><strong>权限与高级配置</strong><small>该环境的 settings.json</small></div></div>
+              <section className="environment-config-section environment-advanced-section">
+                <ConfigSectionHeading icon={<IconShieldLock size={18} />} title="权限与高级配置" description="该环境的 settings.json" />
                 <InstanceSettingsCard key={sel} name={sel} />
-              </>
+              </section>
             )}
 
-            <Box>
-              <Text size="sm" fw={500}>
-                用法预览
+            {env?.platform_ui?.shell_reload_instruction && (
+              <Text size="xs" c="dimmed" className="environment-terminal-hint">
+                {env.platform_ui.shell_reload_instruction}
               </Text>
-              <Code block>
-                {`cd 任意项目目录\nclaude            # 默认 Claude，原样\nclaude ${
-                  form.name.trim() || "<名称>"
-                }     # 使用该环境启动，其他终端不受影响`}
-              </Code>
-            </Box>
-
-            <Text size="xs" c="dimmed">
-              提示：保存后<b>重开一个终端窗口</b>（或 mac 跑{" "}
-              <Code>source ~/.zshrc</Code>、Windows 跑 <Code>. $PROFILE</Code>）即可生效。
-            </Text>
+            )}
+            </div>
           </Stack>
           </Card>
         </div>

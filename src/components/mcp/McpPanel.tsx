@@ -44,6 +44,8 @@ import type {
   McpChangeAction,
   McpChangePreview,
   McpChangeRequest,
+  McpConnectionCheck,
+  McpConnectionReport,
   McpScope,
   McpService,
   McpState,
@@ -56,6 +58,7 @@ import StableRefreshButton from "../StableRefreshButton";
 import McpServiceDrawer from "./McpServiceDrawer";
 import McpSourceIssuesCard, { cleanupOutcomeView } from "./McpSourceIssuesCard";
 import McpSummaryGrid from "./McpSummaryGrid";
+import McpConnectionBadge from "./McpConnectionBadge";
 import FeatureHelp from "../FeatureHelp";
 import { MCP_HELP, MCP_SCOPE_HELP } from "../featureHelpContent";
 import {
@@ -77,7 +80,7 @@ const EFFECTIVE_LABEL: Record<string, string> = {
   effective: "生效",
   "partially-shadowed": "部分覆盖",
   shadowed: "被覆盖",
-  disabled: "已停用",
+  disabled: "未加载",
 };
 const EFFECTIVE_COLOR: Record<string, string> = {
   effective: "teal",
@@ -87,6 +90,8 @@ const EFFECTIVE_COLOR: Record<string, string> = {
 };
 
 let cachedMcpState: McpState | null = null;
+let cachedConnectionReport: McpConnectionReport | null = null;
+let cachedConnectionAt = 0;
 
 function rememberMcpState(nextState: McpState) {
   cachedMcpState = nextState;
@@ -96,6 +101,10 @@ function rememberMcpState(nextState: McpState) {
 export default function McpPanel() {
   const pageActive = usePageActive();
   const [state, setState] = useState<McpState | null>(() => cachedMcpState);
+  const [connectionReport, setConnectionReport] = useState<McpConnectionReport | null>(
+    () => cachedConnectionReport
+  );
+  const [connectionBusy, setConnectionBusy] = useState(false);
   // 正在恢复哪一行（"环境:条目名"）—— 逐行 loading，不用整页的 busy
   const [restoringRow, setRestoringRow] = useState("");
   // 「一键清理死条目」进行中（RiskConfirm 的确认按钮与卡内按钮共用）
@@ -119,6 +128,7 @@ export default function McpPanel() {
   const [syncBusyKey, setSyncBusyKey] = useState("");
 
   const loadQueue = useRef<Promise<void>>(Promise.resolve());
+  const connectionQueue = useRef<Promise<void>>(Promise.resolve());
   const load = useCallback((quiet = false) => {
     // 刷新必须串行排队，不能在已有请求进行时静默丢弃。尤其是清理完成后的刷新：
     // 若它被页面激活时的旧请求挡掉，旧请求会把清理前状态重新写回界面。
@@ -137,6 +147,31 @@ export default function McpPanel() {
     loadQueue.current = task;
     return task;
   }, []);
+
+  const probeConnections = useCallback(() => {
+    const task = connectionQueue.current.catch(() => undefined).then(async () => {
+      setConnectionBusy(true);
+      try {
+        const report = await api.probeMcpConnections();
+        cachedConnectionReport = report;
+        cachedConnectionAt = Date.now();
+        setConnectionReport(report);
+      } catch (e) {
+        const report = { checks: [], errors: [String(e)] };
+        cachedConnectionReport = report;
+        cachedConnectionAt = Date.now();
+        setConnectionReport(report);
+      } finally {
+        setConnectionBusy(false);
+      }
+    });
+    connectionQueue.current = task;
+    return task;
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([load(), probeConnections()]);
+  }, [load, probeConnections]);
 
   // 「恢复使用共享配置」：**只有用户显式点它**才会撤销覆盖（决策 7.2）。
   const onRestoreSharedEntry = async (env: string, name: string) => {
@@ -177,9 +212,12 @@ export default function McpPanel() {
   };
 
   useEffect(() => {
-    load();
-  }, [load]);
-  usePageActivation(() => load(true));
+    void refreshAll();
+  }, [refreshAll]);
+  usePageActivation(() => {
+    void load(true);
+    if (Date.now() - cachedConnectionAt > 30_000) void probeConnections();
+  });
 
   useEffect(() => {
     let disposed = false;
@@ -266,6 +304,7 @@ export default function McpPanel() {
       } else {
         notifications.show({ color: "teal", message: "变更已应用", icon: <IconCheck size={16} /> });
       }
+      void probeConnections();
     } catch (e) {
       const msg = String(e);
       if (msg.includes("外部修改") || msg.includes("刷新")) {
@@ -425,7 +464,7 @@ export default function McpPanel() {
             写入共享库的会「自动分发」到每个环境，各环境也可单独覆盖。
           </Text>
         </div>
-        <StableRefreshButton busy={busy} label="刷新" onClick={load} />
+        <StableRefreshButton busy={busy || connectionBusy} label="刷新" onClick={refreshAll} />
       </Group>
 
       <McpSummaryGrid
@@ -589,8 +628,9 @@ export default function McpPanel() {
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th className="mcp-name-cell">服务名称</Table.Th>
-                  <Table.Th>使用范围</Table.Th>
-                  <Table.Th>状态</Table.Th>
+                  <Table.Th className="mcp-scope-column">使用范围</Table.Th>
+                  <Table.Th className="mcp-enabled-column">加载配置</Table.Th>
+                  <Table.Th className="mcp-connection-column">连接检测</Table.Th>
                   {syncTargetColumns.map((target) => (
                     <Table.Th className="mcp-target-column" key={target.targetId}>
                       {target.label}
@@ -614,6 +654,13 @@ export default function McpPanel() {
                         enabled,
                       })
                     }
+                    connectionChecks={(connectionReport?.checks ?? []).filter(
+                      (check) =>
+                        check.name === s.locator.name &&
+                        (instanceFilter === "all" || check.environment === instanceFilter)
+                    )}
+                    connectionBusy={connectionBusy}
+                    connectionErrors={connectionReport?.errors ?? []}
                     syncTargets={syncTargetsByKey.get(locatorKey(s.locator)) ?? []}
                     syncTargetColumns={syncTargetColumns}
                     syncBusyKey={syncBusyKey}
@@ -625,7 +672,7 @@ export default function McpPanel() {
                 ))}
                 {filtered.length === 0 && (
                   <Table.Tr>
-                    <Table.Td colSpan={4 + syncTargetColumns.length}>
+                    <Table.Td colSpan={5 + syncTargetColumns.length}>
                       <div className="mcp-empty-state">
                         <div className="extension-empty-icon"><IconPlus size={24} /></div>
                         <Text fw={650}>{query || scopeFilter !== "all" || instanceFilter !== "all" || projectFilter !== "all" ? "没有符合筛选条件的 MCP 服务" : "还没有 MCP 服务"}</Text>
@@ -729,11 +776,11 @@ export default function McpPanel() {
                       value={TRANSPORT_LABELS[detailService.transport]}
                     />
                     <Group justify="space-between" wrap="nowrap">
-                      <Text size="sm">启用服务</Text>
+                      <Text size="sm">允许 Claude 加载</Text>
                       <Switch
                         size="sm"
                         checked={detailService.enabled}
-                        label={detailService.enabled ? "已启用" : "已停用"}
+                        label={detailService.enabled ? "允许加载" : "不加载"}
                         labelPosition="left"
                         onChange={(event) =>
                           prepareChangeSafe({
@@ -800,7 +847,7 @@ export default function McpPanel() {
             <Box>
               <Text size="sm" fw={600}>受影响来源</Text>
               {previewState.preview.affectedSources.map((src) => (
-                <Text size="xs" c="dimmed" key={src.sourceId}>
+                <Text component="div" size="xs" c="dimmed" key={src.sourceId}>
                   <Badge color={SCOPE_BADGE_COLOR[src.scope]} size="xs" mr={6}>
                     {SCOPE_LABELS[src.scope]}
                   </Badge>
@@ -834,7 +881,7 @@ export default function McpPanel() {
                       <Stack gap={6}>
                         {items.map((it, i) => (
                           <Box key={i}>
-                            <Text size="xs" fw={600} mb={2}>
+                            <Text component="div" size="xs" fw={600} mb={2}>
                               <Badge color={SCOPE_BADGE_COLOR[it.scope]} size="xs" mr={6}>
                                 {SCOPE_LABELS[it.scope]}
                               </Badge>
@@ -954,6 +1001,9 @@ function ServiceRow({
   onCopy,
   onDelete,
   onEnabledChange,
+  connectionChecks,
+  connectionBusy,
+  connectionErrors,
   syncTargets,
   syncTargetColumns,
   syncBusyKey,
@@ -965,6 +1015,9 @@ function ServiceRow({
   onCopy: () => void;
   onDelete: () => void;
   onEnabledChange: (enabled: boolean) => void;
+  connectionChecks: McpConnectionCheck[];
+  connectionBusy: boolean;
+  connectionErrors: string[];
   syncTargets: McpSyncTargetInfo[];
   syncTargetColumns: SyncTargetColumn[];
   syncBusyKey: string;
@@ -987,7 +1040,7 @@ function ServiceRow({
           )}
         </Group>
       </Table.Td>
-      <Table.Td>
+      <Table.Td className="mcp-scope-column">
         <Stack gap={2}>
           <Badge
             color={SCOPE_BADGE_COLOR[loc.scope]}
@@ -999,12 +1052,12 @@ function ServiceRow({
           {context && <Text size="xs" c="dimmed">{context}</Text>}
         </Stack>
       </Table.Td>
-      <Table.Td>
+      <Table.Td className="mcp-enabled-column">
         <Tooltip
           label={
             service.enabled
-              ? "MCP 已开启，可以被已启用的目标端调用。点击关闭后只停用调用，不删除配置。"
-              : "MCP 已关闭，所有目标端都不能调用。点击可重新开启。"
+              ? "新的 Claude Code 会话会加载这项配置。关闭只会保留定义并停止后续会话加载，不会关闭 MCP 服务器；已经运行的会话可能要重启后才生效。"
+              : "新的 Claude Code 会话不会加载这项配置，但 MCP 服务器本身及其他客户端可能仍在运行。点击可恢复加载。"
           }
           multiline
           maw={300}
@@ -1012,10 +1065,19 @@ function ServiceRow({
           <Switch
             size="sm"
             checked={service.enabled}
-            aria-label={service.enabled ? "关闭 MCP 服务" : "开启 MCP 服务"}
+            aria-label={service.enabled ? "停止加载 MCP 配置" : "允许加载 MCP 配置"}
             onChange={(event) => onEnabledChange(event.currentTarget.checked)}
           />
         </Tooltip>
+      </Table.Td>
+      <Table.Td className="mcp-connection-column">
+        <McpConnectionBadge
+          enabled={service.enabled}
+          supported={loc.scope === "user"}
+          checks={connectionChecks}
+          busy={connectionBusy}
+          errors={connectionErrors}
+        />
       </Table.Td>
       {syncTargetColumns.map((column) => {
         const target = syncTargets.find((item) => item.targetId === column.targetId);
@@ -1091,12 +1153,12 @@ function TargetSyncSwitch({
   const hint = busy
     ? `正在处理 ${targetLabel} 配置，请稍候。`
     : !serviceEnabled
-      ? `请先开启 MCP 状态。当前 ${targetLabel} 使用选择会保留，但该 MCP 不能被调用。`
+      ? `请先允许 Claude 加载这项 MCP 配置。当前 ${targetLabel} 使用选择会保留。`
       : incompatible
         ? `当前服务无法接入 ${targetLabel}：${target.detail}`
         : target.connected
-          ? `${targetLabel} 使用开关已开启。关闭后将停止调用和自动同步，但保留 MCP 配置。`
-          : `${targetLabel} 使用开关已关闭。打开后会同步最新配置并允许调用。`;
+          ? `${targetLabel} 会加载并自动同步这项配置。关闭后不再向新的会话提供配置，但不会关闭 MCP 服务器。`
+          : `${targetLabel} 当前不加载这项配置。打开后会同步最新配置；已经运行的会话可能需要重启。`;
   return (
     <Tooltip label={hint} multiline maw={320}>
       <Switch
@@ -1105,8 +1167,8 @@ function TargetSyncSwitch({
         disabled={busy || !serviceEnabled || (incompatible && !target.connected)}
         aria-label={
           target.connected
-            ? `关闭 ${targetLabel} 使用`
-            : `开启 ${targetLabel} 使用并自动同步`
+            ? `停止 ${targetLabel} 加载 MCP 配置`
+            : `允许 ${targetLabel} 加载并自动同步 MCP 配置`
         }
         onChange={(event) => onChange(event.currentTarget.checked)}
       />

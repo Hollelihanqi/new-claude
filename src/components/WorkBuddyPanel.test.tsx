@@ -17,7 +17,20 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const state: WorkBuddyState = {
-  environment: { found: true, platform: "windows", configPath: "test", configExists: true, configValid: true, detail: "test" },
+  environment: {
+    found: true,
+    platform: "windows",
+    configPath: "test",
+    configExists: true,
+    configValid: true,
+    detail: "test",
+    platformUi: {
+      executablePickerTitle: "选择 WorkBuddy.exe",
+      executableFilterName: "WorkBuddy 应用程序",
+      executableExtensions: ["exe"],
+      caImportConsequences: ["Windows test copy"],
+    },
+  },
   gateway: { url: "https://a.example.test", hasApiKey: true },
   organizations: ["a", "b"].map((id) => ({ id, name: id, modelPrefix: "", url: `https://${id}.example.test`, selectedModels: [`${id}-model`], hasApiKey: true })),
   models: [], revision: "test", gatewayRevision: "test", organizationsRevision: "test", warnings: [],

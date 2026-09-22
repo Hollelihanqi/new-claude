@@ -579,7 +579,7 @@ pub(crate) fn preview_sync(
 ) -> Result<McpSyncPreview, String> {
     let service = source_service(state, locator)?;
     if !service.enabled {
-        return Err("请先开启 MCP 状态，再开启目标端使用开关".into());
+        return Err("请先允许 Claude 加载这项 MCP 配置，再开启目标端加载".into());
     }
     let converted = convert(service)?;
     let path = target_path(paths, locator)?;
@@ -627,7 +627,7 @@ pub(crate) fn preview_sync(
         expected_registry_revision: revision(&paths.openai_sync_registry()),
         restart_hint: "同步完成后需要重启 ChatGPT/Codex。".into(),
         preserved_fields_note:
-            "只更新目标 MCP 的连接配置和启用状态；目标端已有的工具白名单与审批设置会保留。".into(),
+            "只更新目标 MCP 的连接配置和加载设置；目标端已有的工具白名单与审批设置会保留。".into(),
     })
 }
 
@@ -823,7 +823,7 @@ pub(crate) fn apply_manual_sync(
     let _guard = write_guard()?;
     let service = source_service(state, &request.locator)?;
     if !service.enabled {
-        return Err("请先开启 MCP 状态，再开启目标端使用开关".into());
+        return Err("请先允许 Claude 加载这项 MCP 配置，再开启目标端加载".into());
     }
     if service.revision != request.expected_source_revision {
         return Err("Claude Code MCP 已被修改，请刷新预览后重试".into());

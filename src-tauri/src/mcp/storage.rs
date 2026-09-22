@@ -387,6 +387,46 @@ fn read_doc(path: &Path) -> DocRead {
     }
 }
 
+/// 热路径同时需要文档与修订号时只读取一次文件内容。
+/// 修订号仍保留 mtime + length + content hash 的原有格式，避免改变前端冲突检测协议。
+fn read_doc_with_revision(path: &Path) -> (DocRead, String) {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (DocRead::Missing, "missing".into());
+        }
+        Err(error) => {
+            return (
+                DocRead::Failed(format!("读取失败：{error}")),
+                revision(path),
+            );
+        }
+    };
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(error) => {
+            return (
+                DocRead::Failed(format!("读取文件元数据失败：{error}")),
+                revision(path),
+            );
+        }
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hash);
+    let revision = format!("{}:{}:{}", mtime, meta.len(), hash.finish());
+    let document = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) => DocRead::Value(value),
+        Err(error) => DocRead::Failed(format!("JSON 解析失败：{error}")),
+    };
+    (document, revision)
+}
+
 // ---------------- revision ----------------
 
 pub(crate) fn revision(path: &Path) -> String {
@@ -2767,8 +2807,9 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                 continue;
             }
         };
-        revisions.insert(source_id::user(inst), revision(&path));
-        match read_doc(&path) {
+        let (document, source_revision) = read_doc_with_revision(&path);
+        revisions.insert(source_id::user(inst), source_revision.clone());
+        match document {
             DocRead::Value(doc) if doc.is_object() => {
                 let user_map = match read_user_map(&doc) {
                     Ok(m) => m,
@@ -2829,7 +2870,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                             let cs = canon.display().to_string();
                             contexts.insert((inst.clone(), cs.clone()));
                             project_set.insert(cs.clone());
-                            revisions.insert(source_id::local(inst, &cs), revision(&path));
+                            revisions.insert(source_id::local(inst, &cs), source_revision.clone());
                             let local_map = match read_local_map(&doc, &cs) {
                                 Ok(m) => m,
                                 Err(e) => {
@@ -2920,7 +2961,8 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                 continue;
             }
         };
-        revisions.insert(source_id::project(proj), revision(&mcp_json));
+        let (project_document, project_revision) = read_doc_with_revision(&mcp_json);
+        revisions.insert(source_id::project(proj), project_revision);
         let settings_path = paths
             .project_local_settings(proj)
             .unwrap_or_else(|_| PathBuf::from(proj));
@@ -2930,7 +2972,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
             issues.push(i);
         }
         project_disabled.insert(proj.clone(), disabled_names);
-        match read_doc(&mcp_json) {
+        match project_document {
             DocRead::Value(doc) if doc.is_object() => {
                 let map = match read_project_mcp_map(&doc) {
                     Ok(m) => m,
@@ -3534,6 +3576,22 @@ mod tests {
             config,
             overwrite: false,
         }
+    }
+
+    #[test]
+    fn combined_document_read_preserves_revision_protocol() {
+        let (paths, _temp) = setup();
+        let path = paths.shared_mcp_json();
+        fs::write(&path, r#"{"mcpServers":{"demo":{"command":"demo"}}}"#).unwrap();
+
+        let (document, combined_revision) = read_doc_with_revision(&path);
+        assert!(matches!(document, DocRead::Value(_)));
+        assert_eq!(combined_revision, revision(&path));
+
+        let missing = path.with_file_name("missing.json");
+        let (document, combined_revision) = read_doc_with_revision(&missing);
+        assert!(matches!(document, DocRead::Missing));
+        assert_eq!(combined_revision, "missing");
     }
 
     /// 决策 7.2：同名但内容不同的环境条目**保留环境值**，但**必须报出来**

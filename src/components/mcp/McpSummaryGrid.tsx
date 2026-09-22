@@ -15,7 +15,7 @@ export default function McpSummaryGrid({
       aria-busy={!summary}
     >
       <SummaryCard label="全部定义" value={summary?.total} />
-      <SummaryCard label="已启用" value={summary?.enabled} color="teal" />
+      <SummaryCard label="允许加载" value={summary?.enabled} color="teal" />
       <SummaryCard label="存在警告" value={summary?.warnings} color="orange" />
       <SummaryCard
         label="环境覆盖"

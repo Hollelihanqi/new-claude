@@ -585,7 +585,7 @@ export default function McpServiceDrawer({
           >
             <Stack gap={4}>
               {testResult.stages.map((s, i) => (
-                <Text key={i} size="xs">
+                <Text component="div" key={i} size="xs">
                   <Badge color={stageColor(s.status)} mr={6}>{s.id}</Badge>
                   {s.detail}
                 </Text>
