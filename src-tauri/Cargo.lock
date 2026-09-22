@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "pathmux"
-version = "3.0.11"
+version = "3.0.12"
 dependencies = [
  "dirs 5.0.1",
  "hex",

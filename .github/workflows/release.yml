@@ -42,7 +42,7 @@ jobs:
       draft: ${{ steps.resolve.outputs.draft }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 解析发布目标
         id: target
         shell: bash
@@ -137,13 +137,13 @@ jobs:
       # 固定到**这个 Tag 指向的提交**，而不是运行时的分支。
       # 推送 Tag 时 github.ref 就是该 Tag；workflow_dispatch 建新 Tag 时用 when 消解到
       # 触发时的提交（tauri-action 会把 Tag 建在那个提交上）。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'push' && github.ref || github.sha }}
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: pnpm
@@ -201,15 +201,15 @@ jobs:
 
     steps:
       # 与 test 同样固定到该 Tag（推送时是 Tag 本身，手动建新 Tag 时是触发提交）
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'push' && github.ref || github.sha }}
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: 安装 Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: pnpm

@@ -3902,7 +3902,7 @@ mod tests {
         let source = include_str!("main.rs");
         let start = source.find("fn sync_all_blocking").unwrap();
         let end = source[start..]
-            .find("#[tauri::command]\nasync fn sync_all")
+            .find("async fn sync_all(")
             .map(|offset| start + offset)
             .unwrap();
         let body = &source[start..end];
