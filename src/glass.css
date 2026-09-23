@@ -1188,17 +1188,29 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
   border-radius: 15px;
 }
 .mcp-name-cell { min-width: 180px; }
+.mcp-version-column { min-width: 126px; white-space: nowrap; }
 .mcp-scope-column { min-width: 128px; }
 .mcp-enabled-column { min-width: 74px; }
 .mcp-connection-column { min-width: 112px; white-space: nowrap; }
+.mcp-update-check-column { min-width: 92px; text-align: center; }
 .mcp-target-column { min-width: 130px; }
 .mcp-actions-column {
   width: 1%;
-  min-width: 238px;
+  min-width: 306px;
   white-space: nowrap;
 }
 .mcp-service-row { cursor: default; }
 .mcp-service-row > td { padding-top: 14px; padding-bottom: 14px; }
+.mcp-version-stack { align-items: flex-start; }
+.mcp-version-current { color: var(--app-strong-text); }
+.mcp-version-unsupported { cursor: help; }
+.mcp-latest-version-badge {
+  width: fit-content;
+  text-transform: none;
+  letter-spacing: 0;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--mantine-color-red-6) 22%, transparent);
+}
+.mcp-update-switch-wrap { display: inline-flex; align-items: center; justify-content: center; }
 .mcp-connection-badge {
   min-width: 76px;
   height: 25px;

@@ -2495,13 +2495,14 @@ dependencies = [
 
 [[package]]
 name = "pathmux"
-version = "3.0.16"
+version = "3.0.17"
 dependencies = [
  "dirs 5.0.1",
  "hex",
  "reqwest",
  "rustls",
  "security-framework",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

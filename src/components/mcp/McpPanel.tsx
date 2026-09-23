@@ -28,6 +28,7 @@ import {
   IconAlertTriangle,
   IconCheck,
   IconCopy,
+  IconDownload,
   IconFolderPlus,
   IconFolderX,
   IconEye,
@@ -52,6 +53,8 @@ import type {
   McpSyncPreview,
   McpSyncTargetInfo,
   McpTestResult,
+  McpUpdateInfo,
+  McpUpdateReport,
 } from "../../api";
 import McpImportModal from "./McpImportModal";
 import StableRefreshButton from "../StableRefreshButton";
@@ -92,6 +95,7 @@ const EFFECTIVE_COLOR: Record<string, string> = {
 let cachedMcpState: McpState | null = null;
 let cachedConnectionReport: McpConnectionReport | null = null;
 let cachedConnectionAt = 0;
+let cachedUpdateReport: McpUpdateReport | null = null;
 
 function rememberMcpState(nextState: McpState) {
   cachedMcpState = nextState;
@@ -105,6 +109,12 @@ export default function McpPanel() {
     () => cachedConnectionReport
   );
   const [connectionBusy, setConnectionBusy] = useState(false);
+  const [updateReport, setUpdateReport] = useState<McpUpdateReport | null>(
+    () => cachedUpdateReport
+  );
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateToggleBusy, setUpdateToggleBusy] = useState("");
+  const [rowUpdateBusy, setRowUpdateBusy] = useState("");
   // 正在恢复哪一行（"环境:条目名"）—— 逐行 loading，不用整页的 busy
   const [restoringRow, setRestoringRow] = useState("");
   // 「一键清理死条目」进行中（RiskConfirm 的确认按钮与卡内按钮共用）
@@ -129,6 +139,7 @@ export default function McpPanel() {
 
   const loadQueue = useRef<Promise<void>>(Promise.resolve());
   const connectionQueue = useRef<Promise<void>>(Promise.resolve());
+  const updateQueue = useRef<Promise<unknown>>(Promise.resolve());
   const load = useCallback((quiet = false) => {
     // 刷新必须串行排队，不能在已有请求进行时静默丢弃。尤其是清理完成后的刷新：
     // 若它被页面激活时的旧请求挡掉，旧请求会把清理前状态重新写回界面。
@@ -169,9 +180,64 @@ export default function McpPanel() {
     return task;
   }, []);
 
-  const refreshAll = useCallback(async () => {
-    await Promise.all([load(), probeConnections()]);
-  }, [load, probeConnections]);
+  const loadUpdateInfo = useCallback(() => {
+    const task = updateQueue.current.catch(() => undefined).then(async () => {
+      try {
+        const report = await api.listMcpUpdateInfo();
+        cachedUpdateReport = report;
+        setUpdateReport(report);
+      } catch (e) {
+        notifications.show({
+          color: "red",
+          title: "无法读取更新设置",
+          message: String(e),
+        });
+      }
+    });
+    updateQueue.current = task;
+    return task;
+  }, []);
+
+  const checkUpdates = useCallback((target?: McpService["locator"]) => {
+    const task = updateQueue.current.catch(() => undefined).then(async () => {
+      if (!target) setUpdateBusy(true);
+      try {
+        const report = await api.checkMcpUpdates(target);
+        const next = target && cachedUpdateReport
+          ? {
+              entries: cachedUpdateReport.entries.map((entry) =>
+                locatorKey(entry.locator) === locatorKey(target)
+                  ? report.entries[0] ?? entry
+                  : entry
+              ),
+              errors: report.errors,
+            }
+          : report;
+        cachedUpdateReport = next;
+        setUpdateReport(next);
+        if (report.errors.length > 0) {
+          notifications.show({
+            color: "orange",
+            title: target ? "当前 MCP 版本检测未完成" : "部分版本检测未完成",
+            message: report.errors.join("；"),
+          });
+        }
+        return report;
+      } catch (e) {
+        notifications.show({ color: "red", title: "版本检测失败", message: String(e) });
+        return null;
+      } finally {
+        if (!target) setUpdateBusy(false);
+      }
+    });
+    updateQueue.current = task;
+    return task;
+  }, []);
+
+  const detectAll = useCallback(async () => {
+    await load();
+    await Promise.all([probeConnections(), checkUpdates()]);
+  }, [load, probeConnections, checkUpdates]);
 
   // 「恢复使用共享配置」：**只有用户显式点它**才会撤销覆盖（决策 7.2）。
   const onRestoreSharedEntry = async (env: string, name: string) => {
@@ -212,12 +278,70 @@ export default function McpPanel() {
   };
 
   useEffect(() => {
-    void refreshAll();
-  }, [refreshAll]);
+    void Promise.all([load(), probeConnections(), loadUpdateInfo()]);
+  }, [load, probeConnections, loadUpdateInfo]);
   usePageActivation(() => {
     void load(true);
+    void loadUpdateInfo();
     if (Date.now() - cachedConnectionAt > 30_000) void probeConnections();
   });
+
+  async function setUpdateCheck(service: McpService, enabled: boolean) {
+    const key = locatorKey(service.locator);
+    setUpdateToggleBusy(key);
+    try {
+      const entry = await api.setMcpUpdateCheck(service.locator, enabled);
+      const current = cachedUpdateReport ?? { entries: [], errors: [] };
+      const exists = current.entries.some(
+        (item) => locatorKey(item.locator) === key
+      );
+      const next = {
+        entries: exists
+          ? current.entries.map((item) => locatorKey(item.locator) === key ? entry : item)
+          : [...current.entries, entry],
+        errors: current.errors,
+      };
+      cachedUpdateReport = next;
+      setUpdateReport(next);
+    } catch (e) {
+      notifications.show({ color: "red", title: "无法修改更新检测", message: String(e) });
+    } finally {
+      setUpdateToggleBusy("");
+    }
+  }
+
+  async function updateCurrentService(service: McpService) {
+    const key = locatorKey(service.locator);
+    setRowUpdateBusy(key);
+    try {
+      const report = await checkUpdates(service.locator);
+      const entry = report?.entries.find(
+        (item) => locatorKey(item.locator) === key
+      );
+      if (!entry || report?.errors.length) return;
+      if (entry.updateAvailable && entry.nextConfig) {
+        await prepareChange({
+          op: "save",
+          original: service.locator,
+          target: service.locator,
+          config: entry.nextConfig,
+          overwrite: true,
+        });
+        return;
+      }
+      notifications.show({
+        color: "teal",
+        title: entry.currentVersion ? "当前已是最新版本" : "当前配置自动跟随最新版",
+        message: entry.latestVersion
+          ? `${entry.packageName ?? service.locator.name} · v${entry.latestVersion}`
+          : "未获得可比较的版本信息",
+      });
+    } catch (e) {
+      notifications.show({ color: "red", title: "无法准备更新", message: String(e) });
+    } finally {
+      setRowUpdateBusy("");
+    }
+  }
 
   useEffect(() => {
     let disposed = false;
@@ -295,6 +419,7 @@ export default function McpPanel() {
       setDrawerState(null);
       setDetailService(null);
       setImportOpened(false);
+      void loadUpdateInfo();
       if (next.operationWarnings.length > 0) {
         notifications.show({
           color: "orange",
@@ -464,7 +589,12 @@ export default function McpPanel() {
             写入共享库的会「自动分发」到每个环境，各环境也可单独覆盖。
           </Text>
         </div>
-        <StableRefreshButton busy={busy || connectionBusy} label="刷新" onClick={refreshAll} />
+        <StableRefreshButton
+          busy={busy || connectionBusy || updateBusy}
+          busyLabel="检测中…"
+          label="检测"
+          onClick={detectAll}
+        />
       </Group>
 
       <McpSummaryGrid
@@ -628,9 +758,11 @@ export default function McpPanel() {
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th className="mcp-name-cell">服务名称</Table.Th>
+                  <Table.Th className="mcp-version-column">版本</Table.Th>
                   <Table.Th className="mcp-scope-column">使用范围</Table.Th>
                   <Table.Th className="mcp-enabled-column">加载配置</Table.Th>
                   <Table.Th className="mcp-connection-column">连接检测</Table.Th>
+                  <Table.Th className="mcp-update-check-column">更新检测</Table.Th>
                   {syncTargetColumns.map((target) => (
                     <Table.Th className="mcp-target-column" key={target.targetId}>
                       {target.label}
@@ -661,6 +793,15 @@ export default function McpPanel() {
                     )}
                     connectionBusy={connectionBusy}
                     connectionErrors={connectionReport?.errors ?? []}
+                    updateInfo={(updateReport?.entries ?? []).find(
+                      (entry) => locatorKey(entry.locator) === locatorKey(s.locator)
+                    )}
+                    updateBusy={
+                      updateBusy || rowUpdateBusy === locatorKey(s.locator)
+                    }
+                    updateToggleBusy={updateToggleBusy === locatorKey(s.locator)}
+                    onUpdateCheckChange={(enabled) => void setUpdateCheck(s, enabled)}
+                    onUpdate={() => void updateCurrentService(s)}
                     syncTargets={syncTargetsByKey.get(locatorKey(s.locator)) ?? []}
                     syncTargetColumns={syncTargetColumns}
                     syncBusyKey={syncBusyKey}
@@ -672,7 +813,7 @@ export default function McpPanel() {
                 ))}
                 {filtered.length === 0 && (
                   <Table.Tr>
-                    <Table.Td colSpan={5 + syncTargetColumns.length}>
+                    <Table.Td colSpan={7 + syncTargetColumns.length}>
                       <div className="mcp-empty-state">
                         <div className="extension-empty-icon"><IconPlus size={24} /></div>
                         <Text fw={650}>{query || scopeFilter !== "all" || instanceFilter !== "all" || projectFilter !== "all" ? "没有符合筛选条件的 MCP 服务" : "还没有 MCP 服务"}</Text>
@@ -1004,6 +1145,11 @@ function ServiceRow({
   connectionChecks,
   connectionBusy,
   connectionErrors,
+  updateInfo,
+  updateBusy,
+  updateToggleBusy,
+  onUpdateCheckChange,
+  onUpdate,
   syncTargets,
   syncTargetColumns,
   syncBusyKey,
@@ -1018,6 +1164,11 @@ function ServiceRow({
   connectionChecks: McpConnectionCheck[];
   connectionBusy: boolean;
   connectionErrors: string[];
+  updateInfo?: McpUpdateInfo;
+  updateBusy: boolean;
+  updateToggleBusy: boolean;
+  onUpdateCheckChange: (enabled: boolean) => void;
+  onUpdate: () => void;
   syncTargets: McpSyncTargetInfo[];
   syncTargetColumns: SyncTargetColumn[];
   syncBusyKey: string;
@@ -1039,6 +1190,9 @@ function ServiceRow({
             </Tooltip>
           )}
         </Group>
+      </Table.Td>
+      <Table.Td className="mcp-version-column">
+        <VersionCell info={updateInfo} busy={updateBusy && updateInfo?.checkEnabled === true} />
       </Table.Td>
       <Table.Td className="mcp-scope-column">
         <Stack gap={2}>
@@ -1079,6 +1233,29 @@ function ServiceRow({
           errors={connectionErrors}
         />
       </Table.Td>
+      <Table.Td className="mcp-update-check-column">
+        <Tooltip
+          label={updateInfo?.reason ?? "正在识别更新来源"}
+          multiline
+          maw={300}
+        >
+          <span className="mcp-update-switch-wrap">
+            <Switch
+              size="sm"
+              checked={updateInfo?.checkEnabled ?? false}
+              disabled={!updateInfo?.supported || updateBusy || updateToggleBusy}
+              aria-label={
+                updateInfo?.supported
+                  ? updateInfo.checkEnabled
+                    ? "关闭该 MCP 的更新检测"
+                    : "开启该 MCP 的更新检测"
+                  : "该 MCP 不支持远程更新检测"
+              }
+              onChange={(event) => onUpdateCheckChange(event.currentTarget.checked)}
+            />
+          </span>
+        </Tooltip>
+      </Table.Td>
       {syncTargetColumns.map((column) => {
         const target = syncTargets.find((item) => item.targetId === column.targetId);
         const busy = target
@@ -1097,6 +1274,36 @@ function ServiceRow({
       })}
       <Table.Td className="mcp-actions-column">
         <Group gap={2} wrap="nowrap">
+          <Tooltip
+            label={
+              !updateInfo?.supported
+                ? updateInfo?.reason ?? "无法识别更新来源"
+                : !updateInfo.checkEnabled
+                  ? "请先开启更新检测"
+                  : updateInfo.updateAvailable
+                    ? `更新到 v${updateInfo.latestVersion}`
+                    : updateInfo.latestVersion
+                      ? "当前已是最新版本"
+                      : "点击顶部“检测”获取最新版本"
+            }
+          >
+            <span>
+              <Button
+                variant="subtle"
+                size="compact-sm"
+                leftSection={<IconDownload size={14} />}
+                disabled={
+                  updateBusy
+                  || !updateInfo?.supported
+                  || !updateInfo.checkEnabled
+                }
+                loading={updateBusy}
+                onClick={onUpdate}
+              >
+                更新
+              </Button>
+            </span>
+          </Tooltip>
           <Button
             variant="subtle"
             size="compact-sm"
@@ -1133,6 +1340,34 @@ function ServiceRow({
         </Group>
       </Table.Td>
     </Table.Tr>
+  );
+}
+
+function VersionCell({ info, busy }: { info?: McpUpdateInfo; busy: boolean }) {
+  if (!info) return <Text size="xs" c="dimmed">—</Text>;
+  if (!info.supported) {
+    return (
+      <Tooltip label={info.reason} multiline maw={280}>
+        <Text size="xs" c="dimmed" className="mcp-version-unsupported">—</Text>
+      </Tooltip>
+    );
+  }
+  return (
+    <Stack gap={4} className="mcp-version-stack">
+      <Group gap={6} wrap="nowrap">
+        <Text size="sm" fw={600} className="mcp-version-current">
+          {info.currentVersion ? `v${info.currentVersion}` : "自动"}
+        </Text>
+        {busy && <Loader size={12} />}
+      </Group>
+      {info.updateAvailable && info.latestVersion ? (
+        <Badge color="red" variant="filled" size="xs" className="mcp-latest-version-badge">
+          最新 v{info.latestVersion}
+        </Badge>
+      ) : !busy && !info.currentVersion && info.latestVersion ? (
+        <Text size="xs" c="dimmed">最新 v{info.latestVersion}</Text>
+      ) : null}
+    </Stack>
   );
 }
 

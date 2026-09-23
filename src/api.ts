@@ -385,6 +385,24 @@ export interface McpConnectionReport {
   errors: string[];
 }
 
+export interface McpUpdateInfo {
+  locator: McpLocator;
+  supported: boolean;
+  checkEnabled: boolean;
+  ecosystem?: string;
+  packageName?: string;
+  currentVersion?: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  reason: string;
+  nextConfig?: Record<string, unknown>;
+}
+
+export interface McpUpdateReport {
+  entries: McpUpdateInfo[];
+  errors: string[];
+}
+
 export interface UsageRow {
   datetime: string; // UTC，如 "2026-06-22T04"
   model: string;
@@ -585,6 +603,14 @@ export const api = {
   /** 调用 Claude Code 官方健康检查，返回各环境真实的 MCP 握手状态 */
   probeMcpConnections: (): Promise<McpConnectionReport> =>
     invoke("probe_mcp_connections"),
+  /** 本地分析更新来源与用户开关，不访问远程包仓库 */
+  listMcpUpdateInfo: (): Promise<McpUpdateReport> =>
+    invoke("list_mcp_update_info"),
+  /** target 省略时检测全部已开启条目；指定时只检测该条目 */
+  checkMcpUpdates: (target?: McpLocator): Promise<McpUpdateReport> =>
+    invoke("check_mcp_updates", { target: target ?? null }),
+  setMcpUpdateCheck: (target: McpLocator, enabled: boolean): Promise<McpUpdateInfo> =>
+    invoke("set_mcp_update_check", { target, enabled }),
   previewMcpTargetSync: (
     targetId: string,
     locator: McpLocator

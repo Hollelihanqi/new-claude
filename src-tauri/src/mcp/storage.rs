@@ -120,6 +120,10 @@ impl McpPaths {
         self.manager_dir.join("mcp-openai-sync.json")
     }
 
+    pub fn update_preferences(&self) -> PathBuf {
+        self.manager_dir.join("mcp-update-preferences.json")
+    }
+
     pub fn global_codex_config(&self) -> PathBuf {
         self.home.join(".codex").join("config.toml")
     }

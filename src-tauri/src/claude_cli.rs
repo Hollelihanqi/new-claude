@@ -117,6 +117,101 @@ fn split_path_value(value: &OsStr) -> Vec<PathBuf> {
         .collect()
 }
 
+fn resolve_command_in_directories(
+    command: &str,
+    directories: &[PathBuf],
+    windows: bool,
+) -> Option<PathBuf> {
+    let direct = PathBuf::from(command);
+    if direct.is_absolute() || direct.components().count() > 1 {
+        return direct.is_file().then_some(direct);
+    }
+    let extensions: &[&str] = if windows {
+        &["", ".exe", ".cmd", ".bat", ".com"]
+    } else {
+        &[""]
+    };
+    for directory in directories {
+        for extension in extensions {
+            let candidate = directory.join(format!("{command}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn live_windows_path() -> Option<OsString> {
+    // GUI 进程可能在 npm 安装/系统 PATH 更新前就已启动。直接从注册表对应的
+    // .NET API 重新读取 Machine + User PATH，避免要求用户重启 PathMux。
+    let script = concat!(
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);",
+        "$m=[Environment]::GetEnvironmentVariable('Path','Machine');",
+        "$u=[Environment]::GetEnvironmentVariable('Path','User');",
+        "$p=@($m,$u)|Where-Object{$_ -and $_.Trim()};",
+        "[Environment]::ExpandEnvironmentVariables(($p -join ';'))"
+    );
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoLogo")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(script);
+    hide_console_window(&mut command);
+    let output = run_with_timeout(command, COMMAND_TIMEOUT).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then(|| OsString::from(value))
+}
+
+/// 返回本次命令检查应使用的 PATH。Windows 每次从系统与用户环境重新读取，
+/// 同时保留进程已有目录和 npm 全局目录；其他平台沿用当前进程 PATH。
+pub(crate) fn refreshed_runtime_path() -> Option<OsString> {
+    let windows = Platform::current() == Platform::Windows;
+    let mut directories = Vec::new();
+    #[cfg(target_os = "windows")]
+    if let Some(value) = live_windows_path() {
+        directories.extend(split_path_value(&value));
+    }
+    if let Some(value) = std::env::var_os("PATH") {
+        directories.extend(split_path_value(&value));
+    }
+    if windows {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            directories.push(PathBuf::from(appdata).join("npm"));
+        }
+    }
+    let mut seen = HashSet::new();
+    directories.retain(|path| {
+        let key = if windows {
+            path.to_string_lossy().to_ascii_lowercase()
+        } else {
+            path.to_string_lossy().into_owned()
+        };
+        seen.insert(key)
+    });
+    std::env::join_paths(directories).ok()
+}
+
+/// 把用户填写的裸命令解析为实际启动文件。Windows 会自动补 `.exe/.cmd/.bat/.com`，
+/// 但不会修改或持久化用户配置。
+pub(crate) fn resolve_runtime_command(
+    command: &str,
+    runtime_path: Option<&OsStr>,
+) -> Option<PathBuf> {
+    let directories = runtime_path.map(split_path_value).unwrap_or_default();
+    resolve_command_in_directories(
+        command,
+        &directories,
+        Platform::current() == Platform::Windows,
+    )
+}
+
 fn find_executable_in_path(
     value: Option<&OsStr>,
     names: &[&str],
@@ -749,7 +844,10 @@ pub(crate) fn run_plugin_action(
 /// 这里有意不注入 PathMux 的网关地址或凭据：MCP 握手只需要服务自身配置，
 /// 自动刷新列表时也绝不能触发系统钥匙串授权。即使某个 MCP 连接失败，Claude
 /// 仍可能以非零状态退出；只要命令给出了可解析的结果，就把输出交给上层判断。
-pub(crate) fn run_mcp_health_list(config_dir: &Path) -> Result<String, String> {
+pub(crate) fn run_mcp_health_list(
+    config_dir: &Path,
+    runtime_path: Option<&OsStr>,
+) -> Result<String, String> {
     let detection = detect_claude();
     let executable = detection
         .path
@@ -769,6 +867,11 @@ pub(crate) fn run_mcp_health_list(config_dir: &Path) -> Result<String, String> {
         command.env_remove(name);
     }
     command.env("CLAUDE_CONFIG_DIR", config_dir);
+    if let Some(path) = runtime_path {
+        // Claude Code 会继续用此 PATH 启动 stdio MCP。Windows 上这里是刚从
+        // Machine/User 环境重新读取的值，不依赖 PathMux 启动时的旧快照。
+        command.env("PATH", path);
+    }
     let output = run_with_timeout(command, Duration::from_secs(30))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -969,6 +1072,26 @@ mod tests {
 
         assert!(!paths.is_empty());
         assert!(paths.iter().any(|path| path.ends_with("bin")));
+    }
+
+    #[test]
+    fn windows_bare_command_resolves_to_cmd_without_editing_config() {
+        let root = std::env::temp_dir().join(format!(
+            "pathmux-mcp-command-resolution-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let executable = root.join("codegraph.cmd");
+        std::fs::write(&executable, b"@echo off\r\n").unwrap();
+
+        let resolved = resolve_command_in_directories("codegraph", &[root.clone()], true);
+
+        assert_eq!(resolved, Some(executable));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

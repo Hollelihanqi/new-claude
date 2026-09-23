@@ -6,6 +6,7 @@
 mod codex_sync;
 mod storage;
 mod sync_targets;
+mod update;
 mod validation;
 
 use serde::{Deserialize, Serialize};
@@ -362,6 +363,8 @@ pub struct McpConnectionReport {
     pub errors: Vec<String>,
 }
 
+pub use update::{McpUpdateInfo, McpUpdateReport};
+
 // ---------------- 命令 ----------------
 
 use storage::{
@@ -639,15 +642,56 @@ pub async fn probe_mcp_connections() -> Result<McpConnectionReport, String> {
         .filter(|service| service.locator.scope == McpScope::User && service.enabled)
         .map(|service| service.locator.name.clone())
         .collect::<Vec<_>>();
+    let overridden_entries = state
+        .shared_overrides
+        .iter()
+        .map(|item| (item.env.clone(), item.name.clone()))
+        .collect::<std::collections::HashSet<_>>();
+    let stdio_commands = state
+        .services
+        .iter()
+        .filter(|service| {
+            service.locator.scope == McpScope::User
+                && service.enabled
+                && service.transport == McpTransport::Stdio
+        })
+        .filter_map(|service| {
+            let command = service.config.get("command")?.as_str()?;
+            (!command.contains("${")).then(|| (service.locator.name.clone(), command.to_string()))
+        })
+        .collect::<Vec<_>>();
 
     tauri::async_runtime::spawn_blocking(move || {
+        let runtime_path = crate::claude_cli::refreshed_runtime_path();
+        let unresolved = stdio_commands
+            .iter()
+            .filter(|(_, command)| {
+                crate::claude_cli::resolve_runtime_command(command, runtime_path.as_deref())
+                    .is_none()
+            })
+            .map(|(name, command)| (name.clone(), command.clone()))
+            .collect::<BTreeMap<_, _>>();
         let mut checks = Vec::new();
         let mut errors = Vec::new();
         for environment in instances {
             let config_dir = crate::sync::instance_dir(&environment);
-            match crate::claude_cli::run_mcp_health_list(&config_dir) {
+            match crate::claude_cli::run_mcp_health_list(&config_dir, runtime_path.as_deref()) {
                 Ok(output) => {
-                    checks.extend(parse_mcp_health_output(&environment, &names, &output));
+                    let mut environment_checks =
+                        parse_mcp_health_output(&environment, &names, &output);
+                    for check in &mut environment_checks {
+                        if !overridden_entries
+                            .contains(&(check.environment.clone(), check.name.clone()))
+                        {
+                            if let Some(command) = unresolved.get(&check.name) {
+                                check.status = McpConnectionState::Failed;
+                                check.detail = format!(
+                                    "找不到启动程序「{command}」；已重新读取系统 PATH，仍未找到"
+                                );
+                            }
+                        }
+                    }
+                    checks.extend(environment_checks);
                 }
                 Err(error) => errors.push(format!("{environment}：{error}")),
             }
@@ -656,6 +700,56 @@ pub async fn probe_mcp_connections() -> Result<McpConnectionReport, String> {
     })
     .await
     .map_err(|e| format!("MCP 连接检查任务异常：{e}"))
+}
+
+/// 只分析本地配置，不访问网络。用于列表首次展示版本来源和更新开关能力。
+#[tauri::command]
+pub fn list_mcp_update_info() -> Result<McpUpdateReport, String> {
+    update::list_update_info(&McpPaths::system(), &current_instances())
+}
+
+/// 检测可更新 MCP 的最新版本。`target=None` 时只检测已开启更新检测的全部条目；
+/// 指定 target 时也仍尊重该条目的开关，不会绕过用户选择。
+#[tauri::command]
+pub async fn check_mcp_updates(target: Option<McpLocator>) -> Result<McpUpdateReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update::check_updates(&McpPaths::system(), &current_instances(), target.as_ref())
+    })
+    .await
+    .map_err(|error| format!("MCP 版本检测任务异常：{error}"))?
+}
+
+/// 更新检测偏好属于 PathMux 自身，不写入或污染 Claude MCP 配置。
+#[tauri::command]
+pub fn set_mcp_update_check(target: McpLocator, enabled: bool) -> Result<McpUpdateInfo, String> {
+    update::set_update_check(&McpPaths::system(), &current_instances(), &target, enabled)
+}
+
+fn safe_mcp_connection_detail(status: &McpConnectionState, result: &str) -> String {
+    let normalized = result.to_ascii_lowercase();
+    match status {
+        McpConnectionState::Connected => "Claude Code：已连接".into(),
+        McpConnectionState::Pending => "Claude Code：等待授权".into(),
+        McpConnectionState::Unknown => "Claude Code：状态无法识别".into(),
+        McpConnectionState::Failed => {
+            if normalized.contains("enoent")
+                || normalized.contains("not found")
+                || normalized.contains("not recognized")
+                || normalized.contains("failed to spawn")
+            {
+                "Claude Code：找不到启动程序".into()
+            } else if normalized.contains("timed out") || normalized.contains("timeout") {
+                "Claude Code：连接超时".into()
+            } else if normalized.contains("exited")
+                || normalized.contains("exit code")
+                || normalized.contains("terminated")
+            {
+                "Claude Code：服务进程启动后退出".into()
+            } else {
+                "Claude Code：MCP 握手失败".into()
+            }
+        }
+    }
 }
 
 fn parse_mcp_health_output(
@@ -699,15 +793,11 @@ fn parse_mcp_health_output(
                     };
                     // `claude mcp list` 在状态前还会回显完整 command / URL；其中可能
                     // 带令牌或查询参数。界面只需要状态结论，绝不能把整条命令送到前端。
-                    let detail = line
+                    let result = line
                         .rsplit_once(" - ")
-                        .map(|(_, result)| format!("Claude Code：{}", result.trim()))
-                        .unwrap_or_else(|| match status {
-                            McpConnectionState::Connected => "Claude Code：已连接".into(),
-                            McpConnectionState::Failed => "Claude Code：连接失败".into(),
-                            McpConnectionState::Pending => "Claude Code：等待授权".into(),
-                            McpConnectionState::Unknown => "Claude Code：状态无法识别".into(),
-                        });
+                        .map(|(_, result)| result.trim())
+                        .unwrap_or_default();
+                    let detail = safe_mcp_connection_detail(&status, result);
                     (status, detail)
                 }
                 None => (
@@ -1399,6 +1489,26 @@ mod tests {
         );
         assert_eq!(checks[0].status, McpConnectionState::Failed);
         assert_eq!(checks[1].status, McpConnectionState::Connected);
+    }
+
+    #[test]
+    fn health_parser_explains_distinct_failure_stages_without_exposing_commands() {
+        let cases = [
+            ("spawn ENOENT", "找不到启动程序"),
+            ("connection timed out", "连接超时"),
+            ("process exited with exit code 1", "服务进程启动后退出"),
+            ("Failed to connect", "MCP 握手失败"),
+        ];
+        for (raw, expected) in cases {
+            let checks = parse_mcp_health_output(
+                "hq",
+                &["codegraph".into()],
+                &format!("codegraph: secret-command --token abc - ✗ {raw}"),
+            );
+            assert!(checks[0].detail.contains(expected), "{}", checks[0].detail);
+            assert!(!checks[0].detail.contains("secret-command"));
+            assert!(!checks[0].detail.contains("abc"));
+        }
     }
 
     #[test]

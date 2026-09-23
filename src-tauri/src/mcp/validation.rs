@@ -382,40 +382,17 @@ pub(crate) fn redact(config: &Value, paths: &[String]) -> Value {
 // ---------------- 基础可达性测试 ----------------
 
 enum CommandStatus {
-    Found,
+    Found(PathBuf),
     NotFound,
-    NpxWarn,
 }
 
-/// command 是绝对路径：检查存在且是文件；否则按 PATH 搜索，Windows 补 .exe/.cmd/.bat。
+/// command 是绝对路径：检查存在且是文件；否则使用本次重新读取的 PATH 搜索。
+/// Windows 的 `.exe/.cmd/.bat/.com` 由 PathMux 自动补全，不要求用户改写配置。
 fn resolve_command(command: &str) -> CommandStatus {
-    let pb = PathBuf::from(command);
-    if pb.is_absolute() {
-        if pb.is_file() {
-            return CommandStatus::Found;
-        }
-        return CommandStatus::NotFound;
-    }
-    if cfg!(target_os = "windows") && command.eq_ignore_ascii_case("npx") {
-        return CommandStatus::NpxWarn;
-    }
-    let exts: &[&str] = if cfg!(target_os = "windows") {
-        &["", ".exe", ".cmd", ".bat"]
-    } else {
-        &[""]
-    };
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for ext in exts {
-                let mut candidate = dir.clone();
-                candidate.push(format!("{command}{ext}"));
-                if candidate.is_file() {
-                    return CommandStatus::Found;
-                }
-            }
-        }
-    }
-    CommandStatus::NotFound
+    let runtime_path = crate::claude_cli::refreshed_runtime_path();
+    crate::claude_cli::resolve_runtime_command(command, runtime_path.as_deref())
+        .map(CommandStatus::Found)
+        .unwrap_or(CommandStatus::NotFound)
 }
 
 fn stage(id: McpTestStageId, status: McpTestStatus, detail: impl Into<String>) -> McpTestStage {
@@ -449,20 +426,15 @@ pub(crate) fn test_basic(_name: &str, config: &Map<String, Value>) -> McpTestRes
                 ));
             } else {
                 match resolve_command(cmd) {
-                    CommandStatus::Found => stages.push(stage(
+                    CommandStatus::Found(path) => stages.push(stage(
                         McpTestStageId::Command,
                         McpTestStatus::Ok,
-                        "命令可在 PATH 中找到",
+                        format!("已找到启动程序：{}", path.display()),
                     )),
                     CommandStatus::NotFound => stages.push(stage(
                         McpTestStageId::Command,
                         McpTestStatus::Fail,
                         format!("未在 PATH 中找到命令「{cmd}」"),
-                    )),
-                    CommandStatus::NpxWarn => stages.push(stage(
-                        McpTestStageId::Command,
-                        McpTestStatus::Warn,
-                        "Windows 原生环境请把 command 改为 cmd，并把 /c、npx 放在 args 最前面",
                     )),
                 }
             }
