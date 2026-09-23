@@ -596,10 +596,10 @@ html[data-theme="apple"] .app-header {
 }
 
 /* ---------------- 使用帮助 ---------------- */
+.guide-scroll { padding-right: 0; }
 .guide-page {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 1px 2px 18px;
+  width: 100%;
+  padding: 1px 0 18px;
 }
 .guide-hero,
 .guide-section-card,
@@ -613,19 +613,6 @@ html[data-theme="apple"] .app-header {
   position: relative;
   overflow: hidden;
 }
-.guide-hero::after {
-  content: "";
-  position: absolute;
-  width: 250px;
-  height: 250px;
-  top: -150px;
-  right: -70px;
-  pointer-events: none;
-  border-radius: 50%;
-  background: var(--theme-glow);
-  filter: blur(6px);
-}
-.guide-hero > * { position: relative; z-index: 1; }
 .guide-hero-description { max-width: 660px; }
 .guide-step {
   min-height: 86px;
@@ -1259,14 +1246,89 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
 }
 .extension-manager { padding-bottom: 4px; }
 .extension-control-card { padding: 18px 20px; }
-.extension-toolbar { flex: 1 1 620px; justify-content: flex-end; }
-.extension-check-summary {
-  padding-top: 12px;
-  border-top: 1px solid var(--app-subtle-border);
+.resource-manager-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.resource-manager-copy { min-width: 220px; }
+.resource-manager-copy .mantine-Text-root + .mantine-Text-root { margin-top: 3px; }
+.resource-manager-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.resource-target-select { min-width: 240px; }
+.resource-target-select .mantine-Input-label {
+  margin-bottom: 5px;
+  color: var(--app-secondary-text);
+  font-size: 11px;
+  font-weight: 650;
+}
+.extension-inline-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 11px 13px;
+  color: var(--app-strong-text);
+  background: color-mix(in srgb, var(--mantine-color-red-6) 4%, var(--app-surface));
+  border: 1px solid color-mix(in srgb, var(--mantine-color-red-6) 20%, var(--app-border));
+  border-radius: 14px;
+}
+.resource-source-badges { min-height: 28px; }
+.resource-status-switch {
+  width: max-content;
+  min-height: 34px;
+  padding: 5px 10px;
+  background: color-mix(in srgb, #00a675 9%, var(--app-surface-soft));
+  border-radius: 11px;
+}
+.resource-status-switch .mantine-Switch-label {
+  color: var(--app-secondary-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.resource-row-actions { flex-wrap: nowrap; }
+.resource-add-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 82px;
+  padding: 15px 16px;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 15px;
+}
+.resource-add-option-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.resource-add-option-heading > div:last-child { min-width: 0; }
+.resource-add-actions { justify-content: flex-end; flex-wrap: nowrap; }
+.resource-auto-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 4px 2px;
 }
 .extension-table-card { overflow: hidden; }
 .extension-table-card .mantine-Table-th,
 .extension-table-card .mantine-Table-td { padding-inline: 16px; }
+
+@media (max-width: 1100px) {
+  .resource-manager-heading { align-items: stretch; flex-direction: column; }
+  .resource-manager-actions { justify-content: stretch; }
+  .resource-target-select { flex: 1 1 240px; }
+  .resource-add-option { align-items: stretch; flex-direction: column; }
+  .resource-add-actions { justify-content: flex-start; flex-wrap: wrap; }
+}
 
 .plugin-identity-icon {
   display: grid;

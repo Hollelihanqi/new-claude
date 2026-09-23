@@ -665,7 +665,7 @@ fn sync_target(
                 next.insert(name, written);
             }
             (Some(_), Some(_), _) => warnings.push(format!(
-                "{} 的 {}「{}」使用自己的版本，共享更新未覆盖",
+                "{} 的 {}「{}」使用自己的版本，PathMux 未覆盖",
                 target.label,
                 kind.label(),
                 name
@@ -673,7 +673,7 @@ fn sync_target(
             (Some(_), None, Some(previous)) => {
                 next.insert(name.clone(), previous.clone());
                 warnings.push(format!(
-                    "{} 已删除 {}「{}」，保持排除状态",
+                    "{} 已删除 {}「{}」，不会自动重新添加",
                     target.label,
                     kind.label(),
                     name
@@ -712,7 +712,7 @@ fn materialize_shared_links(kind: Kind, shared: &Path) -> Vec<String> {
         }
         if let Err(e) = replace_with_snapshot(&path, &path) {
             warnings.push(format!(
-                "共享 {}「{}」仍是外部链接，转为独立副本失败：{}",
+                "受管理的 {}「{}」仍是外部链接，转为独立副本失败：{}",
                 kind.label(),
                 name,
                 e
@@ -874,21 +874,21 @@ fn status_for(
         .and_then(|v| v.get(&target.id))
         .and_then(|v| v.get(name));
     let (mut status, mut reason) = if excluded {
-        ("excluded", "该目标已明确排除共享版本")
+        ("excluded", "当前环境未启用")
     } else if let (Some(shared), Some(current)) = (shared, current.as_deref()) {
         if shared == current {
-            ("inherited", "正在使用共享版本")
+            ("inherited", "由 PathMux 管理并保持更新")
         } else {
-            ("override", "目标中存在自己的同名版本")
+            ("override", "当前环境使用自己的同名版本")
         }
     } else if shared.is_some() && current.is_none() && previous.is_some() {
-        ("excluded", "目标删除了应用此前分发的版本")
+        ("excluded", "当前环境未启用")
     } else if shared.is_some() {
-        ("missing", "共享版本尚未写入该目标")
+        ("missing", "尚未添加到当前环境")
     } else if current.is_some() {
-        ("local", "仅存在于该目标")
+        ("local", "当前环境使用自己的版本")
     } else {
-        ("missing", "该目标没有此项")
+        ("missing", "当前环境没有此项")
     };
     let mut issues = vec![];
     if kind == Kind::Agents && current.is_some() && status != "excluded" {
@@ -1376,7 +1376,7 @@ fn install_resource_from_path_blocking(
         let destination = destination_root.join(&name);
         if fs::symlink_metadata(&destination).is_ok() {
             return Err(format!(
-                "共享库已存在同名 {}「{}」，未覆盖",
+                "PathMux 中已存在同名 {}「{}」，未覆盖",
                 kind.label(),
                 name
             ));
@@ -1395,14 +1395,10 @@ fn install_resource_from_path_blocking(
         );
         save_state(&state)?;
         if warnings.is_empty() {
-            Ok(format!(
-                "已把 {}「{}」安装到共享库并更新所有目标",
-                kind.label(),
-                name
-            ))
+            Ok(format!("已把 {}「{}」添加到所有环境", kind.label(), name))
         } else {
             Ok(format!(
-                "共享 {}「{}」已安装；{}",
+                "{}「{}」已添加；{}",
                 kind.label(),
                 name,
                 warnings.join("；")
@@ -1450,12 +1446,12 @@ fn set_resource_excluded_blocking(
     let warnings = sync_target(kind, &shared_root(kind), target, &mut state)?;
     save_state(&state)?;
     if warnings.is_empty() {
-        Ok(if excluded {
-            "已排除共享版本"
-        } else {
-            "已恢复共享版本"
-        }
-        .into())
+        Ok(format!(
+            "{}已在 {} {}",
+            kind.label(),
+            target.label,
+            if excluded { "停用" } else { "启用" }
+        ))
     } else {
         Ok(warnings.join("；"))
     }
@@ -1499,7 +1495,7 @@ fn restore_resource_inheritance_blocking(
     state.exclusions_mut(kind, &target_id).remove(&name);
     state.ledger_mut(kind, &target_id).insert(name, written);
     save_state(&state)?;
-    Ok("已恢复使用共享版本".into())
+    Ok(format!("{}已在 {} 启用", kind.label(), target.label))
 }
 
 #[tauri::command]
@@ -1523,7 +1519,7 @@ fn delete_shared_resource_blocking(kind: String, name: String) -> Result<String,
     let _guard = crate::sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
     let source = shared_root(kind).join(&name);
     if fs::symlink_metadata(&source).is_err() {
-        return Err("共享库中不存在这一项".into());
+        return Err("PathMux 中不存在这一项".into());
     }
     remove_entry(&source)?;
     let mut state = read_state()?;
@@ -1540,9 +1536,9 @@ fn delete_shared_resource_blocking(kind: String, name: String) -> Result<String,
     );
     save_state(&state)?;
     if warnings.is_empty() {
-        Ok("已从共享库删除；环境自己的版本保持不变".into())
+        Ok("已从所有受管理环境移除；环境自己的版本保持不变".into())
     } else {
-        Ok(format!("共享项已删除；{}", warnings.join("；")))
+        Ok(format!("已移除；{}", warnings.join("；")))
     }
 }
 

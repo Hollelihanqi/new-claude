@@ -126,15 +126,17 @@ describe("扩展中心的插件管理", () => {
   });
 
   it("自动导入可以关闭，并保留手动导入入口", async () => {
-    const autoImport = switches().find((node) => node.props.label === "自动导入新增项")!;
+    const autoImport = switches().find((node) => node.props["aria-label"] === "自动发现新增 Skill")!;
     await act(async () => { await autoImport.props.onChange({ currentTarget: { checked: false } }); });
     expect(api.setResourceAutoImport).toHaveBeenCalledWith(false);
-    expect(renderer.root.findAllByType(Button).some((button) => textOf(button.props.children) === "从默认 Claude 导入新增项")).toBe(true);
+    expect(renderer.root.findAllByType(Button).some((button) => textOf(button.props.children) === "查找并导入")).toBe(true);
   });
 
-  it("可以把本地 Skill 安装到共享库", async () => {
+  it("可以把本地 Skill 添加到所有环境", async () => {
     vi.mocked(open).mockResolvedValue("C:/local/reviewer" as never);
-    const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装到共享库")!;
+    const add = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "添加 Skill")!;
+    await act(async () => { add.props.onClick(); });
+    const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "添加到所有环境")!;
     await act(async () => { await install.props.onClick(); });
     expect(api.installResourceFromPath).toHaveBeenCalledWith("skills", "C:/local/reviewer", undefined);
   });
@@ -175,12 +177,45 @@ describe("扩展中心的插件管理", () => {
     expect(allText()).toContain("Skills");
     expect(allText()).toContain("Plugins");
     expect(allText()).toContain("Agents");
-    expect(allText()).toContain("Commands 已退出独立管理");
+    expect(allText()).not.toContain("Commands");
   });
 
-  it("不在 Skills 与 Agents 界面暴露共享库的本机路径", () => {
-    expect(allText()).not.toContain("共享库：");
+  it("不在 Skills 与 Agents 界面暴露底层共享机制", () => {
+    expect(allText()).not.toContain("共享库");
     expect(allText()).not.toContain("C:/shared/");
+    expect(allText()).not.toContain("恢复共享版本");
+    expect(allText()).not.toContain("管理共享设置");
+  });
+
+  it("Skill 列表直接显示环境开关和明确操作，不要求用户理解底层策略", async () => {
+    act(() => renderer.unmount());
+    vi.mocked(api.resourceOverview).mockImplementation(async (kind) => ({
+      ...resources(kind),
+      items: kind === "skills" ? [{
+        name: "reviewer",
+        inShared: true,
+        inDefaultClaude: true,
+        targets: [{
+          target: "corp",
+          label: "Claude 环境 corp",
+          state: "inherited",
+          reason: "由 PathMux 管理并保持更新",
+          issues: [],
+        }],
+      }] : [],
+    }));
+    await act(async () => { renderer = create(<ExtensionsPanel />); });
+
+    const status = switches().find((node) => node.props["aria-label"] === "reviewer 在 Claude 环境 corp 中停用")!;
+    expect(status.props.checked).toBe(true);
+    expect(textOf(status.props.label)).toBe("已启用");
+    expect(allText()).toContain("更新");
+    expect(allText()).toContain("移除");
+    expect(allText()).not.toContain("继承");
+    expect(allText()).not.toContain("排除");
+
+    await act(async () => { await status.props.onChange(); });
+    expect(api.setResourceExcluded).toHaveBeenCalledWith("skills", "corp", "reviewer", true);
   });
 
   it("点击绿色环境按钮会通过官方插件命令停用对应环境", async () => {
