@@ -64,10 +64,10 @@ const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
 
 const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDashboard }[] = [
   { id: "environment", label: "环境", desc: "环境、网关与模型", icon: IconLayoutDashboard },
+  { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
   { id: "workbuddy", label: "WorkBuddy", desc: "公司网关模型", icon: IconBrandOpenai },
   { id: "mcp", label: "MCP 服务", desc: "配置、作用域与测试", icon: IconServerCog },
   { id: "extensions", label: "扩展", desc: "Skills、Plugins 与 Agents", icon: IconStack2 },
-  { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
   { id: "diagnostics", label: "诊断", desc: "检查、日志与修复", icon: IconStethoscope },
   { id: "settings", label: "设置", desc: "更新、证书与安全", icon: IconSettings },
 ];
