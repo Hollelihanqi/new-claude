@@ -1,10 +1,10 @@
-# 并路 PathMux
+# PathMux
 
 > **同一项目，多终端、多网关并行工作。**
 
-并路 PathMux 是面向 Claude Code 的桌面管理工具。在 Windows 和 macOS 上创建网关环境或独立登录环境，然后直接在终端中使用。个人工作与公司项目可以同时进行，各用各的配置。
+PathMux 是面向 Claude Code 的桌面管理工具。在 Windows 和 macOS 上创建网关环境或独立登录环境，然后直接在终端中使用。个人工作与公司项目可以同时进行，各用各的配置。
 
-## 为什么用并路
+## 为什么选择 PathMux
 
 - **并行使用，互不干扰**：每次命令独立选择环境。同一项目中，不同终端可以同时连接不同网关；默认 Claude 保持原样。
 - **配置一次，终端直用**：创建环境并接入终端后，用 `claude <环境名>` 启动。桌面应用无需一直开着。
@@ -19,7 +19,7 @@ claude corp     # 使用名为 corp 的环境启动
 
 1. 先安装 [Claude Code](https://code.claude.com/docs/en/setup)，确认终端可以运行 `claude`。
 2. 从 [Releases](https://github.com/Hollelihanqi/new-claude/releases) 下载适合 Windows 或 macOS 的安装包。
-3. 在并路 PathMux 的「环境」页面创建环境，点击「保存更改」，重新打开终端即可使用（Windows 使用 PowerShell）。
+3. 在 PathMux 的「环境」页面创建环境，点击「保存更改」，重新打开终端即可使用（Windows 使用 PowerShell）。
 
 需要接入公司网关时，准备管理员提供的网关地址和 Key；如果网关使用自签名证书，可在「设置」中导入 CA 证书。更多操作说明见应用内「使用帮助」。
 
