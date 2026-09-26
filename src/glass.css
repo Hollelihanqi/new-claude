@@ -812,15 +812,26 @@ html[data-mantine-color-scheme="dark"] .guide-command-row code {
 }
 .environment-info-note > svg { flex: 0 0 auto; margin-top: 1px; color: var(--mantine-primary-color-7); }
 .environment-command-preview {
-  display: grid; grid-template-columns: minmax(150px, .7fr) minmax(280px, 1.3fr); align-items: center; gap: 16px;
-  padding: 14px; background: var(--app-surface); border: 1px solid var(--app-subtle-border); border-radius: 12px;
+  display: grid; grid-template-columns: minmax(132px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 16px;
+  padding: 2px 0 0;
 }
 .environment-command-heading { display: flex; align-items: center; gap: 10px; }
 .environment-command-heading > svg { color: var(--mantine-primary-color-7); }
-.environment-command-heading > div { display: flex; flex-direction: column; }
 .environment-command-heading strong { color: var(--app-strong-text); font-size: 12px; }
-.environment-command-heading span { color: var(--app-secondary-text); font-size: 9px; }
-.environment-command-preview .mantine-Code-root { margin: 0; }
+.environment-command-line {
+  min-width: 0; display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px; border-radius: 10px;
+  background: linear-gradient(110deg, color-mix(in srgb, var(--theme-deep) 66%, #08141c), #102431);
+  box-shadow: 0 9px 22px rgba(4, 13, 21, .20);
+}
+.environment-command-prompt {
+  flex: 0 0 auto; color: #70cfff; font: 700 15px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.environment-command-line code {
+  min-width: 0; overflow: auto; color: #f2f8fc; background: transparent;
+  font: 600 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
 .environment-advanced-section > .mantine-Stack-root { gap: 12px; }
 .environment-terminal-hint { padding: 0 4px; line-height: 1.65; }
 .instance-health-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 3px currentColor; opacity: .75; }
@@ -1101,7 +1112,7 @@ html[data-mantine-color-scheme="dark"] .workbuddy-model-checklist .mantine-Card-
   .instance-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .environment-field-grid { grid-template-columns: 1fr; }
   .environment-field-wide { grid-column: auto; }
-  .environment-command-preview { grid-template-columns: 1fr; }
+  .environment-command-preview { grid-template-columns: minmax(104px, .55fr) minmax(0, 1.45fr); gap: 10px; }
   .environment-editor-content { padding: 16px; }
   .editor-toolbar { padding: 15px 16px; }
   .workbuddy-grid { grid-template-columns: 210px minmax(0, 1fr); }

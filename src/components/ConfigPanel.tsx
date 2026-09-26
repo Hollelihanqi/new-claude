@@ -323,6 +323,7 @@ export default function ConfigPanel({
   const selProfile = profiles.find((p) => p.name === sel);
   const selRuntime = runtime.find((item) => item.name === sel);
   const isRouter = form.type === "router";
+  const launchCommand = `claude ${sel || form.name.trim() || "<名称>"}`;
 
   const usageFor = (name: string) => {
     const today = new Date().toLocaleDateString("en-CA");
@@ -764,13 +765,12 @@ export default function ConfigPanel({
               <div className="environment-command-preview">
                 <div className="environment-command-heading">
                   <IconTerminal2 size={17} />
-                  <div><strong>启动命令</strong><span>保存后在新终端窗口中使用</span></div>
+                  <strong>启动命令</strong>
                 </div>
-                <Code block>
-                  {`claude            # 默认 Claude\nclaude ${
-                    form.name.trim() || "<名称>"
-                  }     # 使用该环境`}
-                </Code>
+                <div className="environment-command-line" aria-label="当前环境的启动命令">
+                  <span className="environment-command-prompt" aria-hidden="true">$</span>
+                  <code>{launchCommand}</code>
+                </div>
               </div>
             </section>
 

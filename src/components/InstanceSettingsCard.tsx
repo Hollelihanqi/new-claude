@@ -152,14 +152,6 @@ export default function InstanceSettingsCard({ name }: { name: string }) {
         }}
       />
 
-      {data?.bypassEnabled && (
-        <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
-          <Text size="xs">
-            该环境内的文件修改、命令执行不再二次确认。建议只在你信任的项目里长期开启。
-          </Text>
-        </Alert>
-      )}
-
       {data?.overriddenBy && (
         <Alert variant="light" color="yellow" icon={<IconAlertTriangle size={16} />}>
           <Text size="xs">
