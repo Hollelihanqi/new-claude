@@ -56,8 +56,9 @@ const DiagnosticsPanel = lazy(() => import("./components/DiagnosticsPanel"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
 
 const WorkBuddyPanel = lazy(() => import("./components/WorkBuddyPanel"));
+const ChatGptPanel = lazy(() => import("./components/ChatGptPanel"));
 
-type ViewId = "environment" | "workbuddy" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
+type ViewId = "environment" | "workbuddy" | "chatgpt" | "mcp" | "extensions" | "insights" | "diagnostics" | "settings" | "guide";
 
 const USAGE_AUTO_KEY = "cc-usage-auto-refresh";
 const USAGE_AUTO_CHOICES = USAGE_AUTO_OPTIONS.map((o) => o.value);
@@ -66,6 +67,7 @@ const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDas
   { id: "environment", label: "环境", desc: "环境、网关与模型", icon: IconLayoutDashboard },
   { id: "insights", label: "洞察", desc: "用量、模型与趋势", icon: IconChartLine },
   { id: "workbuddy", label: "WorkBuddy", desc: "公司网关模型", icon: IconBrandOpenai },
+  { id: "chatgpt", label: "ChatGPT 多开", desc: "独立账号与工作接续", icon: IconBrandOpenai },
   { id: "mcp", label: "MCP 服务", desc: "配置、作用域与测试", icon: IconServerCog },
   { id: "extensions", label: "扩展", desc: "Skills、Plugins 与 Agents", icon: IconStack2 },
   { id: "diagnostics", label: "诊断", desc: "检查、日志与修复", icon: IconStethoscope },
@@ -75,6 +77,7 @@ const NAV: { id: ViewId; label: string; desc: string; icon: typeof IconLayoutDas
 const VIEW_TITLES: Record<ViewId, string> = {
   environment: "环境管理",
   workbuddy: "WorkBuddy 模型",
+  chatgpt: "ChatGPT 多开",
   mcp: "MCP 服务管理",
   extensions: "扩展中心",
   insights: "用量洞察",
@@ -394,12 +397,12 @@ export default function App({
       <main className="app-main">
         <header className="app-header">
           <div>
-            <Text className="page-kicker">{view === "workbuddy" ? "WORKBUDDY GATEWAY" : "CLAUDE ENVIRONMENT"}</Text>
+            <Text className="page-kicker">{view === "chatgpt" ? "CHATGPT PROFILES" : view === "workbuddy" ? "WORKBUDDY GATEWAY" : "CLAUDE ENVIRONMENT"}</Text>
             <Text className="page-title">{VIEW_TITLES[view]}</Text>
           </div>
           <div className="app-header-actions">
             <ColorSchemeControl value={colorScheme} onChange={setColorScheme} />
-            {view !== "workbuddy" && <EnvironmentStatus env={env} />}
+            {view !== "workbuddy" && view !== "chatgpt" && <EnvironmentStatus env={env} />}
           </div>
         </header>
 
@@ -476,6 +479,7 @@ export default function App({
               />
             </PersistentPage>
             <PersistentPage active={view === "workbuddy"} warmupDelay={700}><WorkBuddyPanel active={view === "workbuddy"} /></PersistentPage>
+            <PersistentPage active={view === "chatgpt"} warmupDelay={900}><ChatGptPanel active={view === "chatgpt"} /></PersistentPage>
             <PersistentPage active={view === "mcp"} warmupDelay={1100}><McpPanel /></PersistentPage>
             <PersistentPage active={view === "extensions"} warmupDelay={1500}><ExtensionsPanel /></PersistentPage>
             <PersistentPage active={view === "insights"} warmupDelay={1900}>

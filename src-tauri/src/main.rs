@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
+mod chatgpt;
 mod claude_cli;
 mod credentials;
 mod extensions;
@@ -3485,6 +3486,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            chatgpt::chatgpt_state,
+            chatgpt::chatgpt_set_installation,
+            chatgpt::chatgpt_create_profile,
+            chatgpt::chatgpt_profile_action,
+            chatgpt::chatgpt_history,
+            chatgpt::chatgpt_transfer,
             list_profiles,
             save_profile,
             delete_profile,

@@ -1,5 +1,61 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface ChatGptProfile {
+  id: string;
+  name: string;
+  createdAt: number;
+  directory: string;
+  status: "running" | "stopped" | "closing" | "error";
+  pid: number | null;
+  issue: string | null;
+}
+
+export interface ChatGptState {
+  installation: {
+    path: string;
+    version: string;
+    compatible: boolean;
+    detail: string;
+    cli: string | null;
+  } | null;
+  installationIssue: string | null;
+  profiles: ChatGptProfile[];
+  pickerExtensions: string[];
+  pickerTitle: string;
+  dataRoot: string;
+}
+
+export interface ChatGptHistoryItem {
+  key: string;
+  threadId: string;
+  title: string;
+  revision: string;
+  bytes: number;
+  modifiedAt: number;
+  transferable: boolean;
+  detail: string;
+}
+
+export interface ChatGptHistory {
+  items: ChatGptHistoryItem[];
+  warnings: string[];
+}
+
+export interface ChatGptTransferRequest {
+  sourceId: string;
+  targetId: string;
+  key: string;
+  revision: string;
+}
+
+export interface ChatGptTransferResult {
+  targetThreadId: string;
+  duplicate: boolean;
+  detail: string;
+}
+
+export type ChatGptAction = "launch" | "focus" | "stop" | "rename" | "delete";
+
 // 与 src-tauri 里的 #[tauri::command] 及 serde 结构一一对应
 
 /** Profile（serde rename_all = camelCase） */
@@ -534,6 +590,13 @@ export interface WorkBuddyCertificateStatus {
 
 // 与 src-tauri 里的 #[tauri::command] 一一对应
 export const api = {
+  chatGptState: (): Promise<ChatGptState> => invoke("chatgpt_state"),
+  chatGptSetInstallation: (path: string): Promise<ChatGptState> => invoke("chatgpt_set_installation", { path }),
+  chatGptCreateProfile: (name: string): Promise<ChatGptState> => invoke("chatgpt_create_profile", { name }),
+  chatGptProfileAction: (id: string, action: ChatGptAction, name?: string): Promise<ChatGptState> =>
+    invoke("chatgpt_profile_action", { request: { id, action, name: name ?? null } }),
+  chatGptHistory: (sourceId: string): Promise<ChatGptHistory> => invoke("chatgpt_history", { sourceId }),
+  chatGptTransfer: (request: ChatGptTransferRequest): Promise<ChatGptTransferResult> => invoke("chatgpt_transfer", { request }),
   listProfiles: (): Promise<Profile[]> => invoke("list_profiles"),
   saveProfile: (
     profile: Omit<Profile, "hasToken" | "tokenEnc">,
