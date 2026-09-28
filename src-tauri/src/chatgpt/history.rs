@@ -63,6 +63,8 @@ struct TransferJournal {
     title: String,
     #[serde(default)]
     content_hash: String,
+    #[serde(default)]
+    display_import: bool,
 }
 
 fn source_home(root: &Path, r: &Registry, id: &str) -> Result<PathBuf, String> {
@@ -220,26 +222,61 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
             .take(256 * 1024)
             .read_to_end(&mut prefix)
             .map_err(|_| "会话摘要读取失败")?;
+        let mut fallback = None;
         for line in prefix.split(|b| *b == b'\n').take(300) {
             if let Ok(value) = serde_json::from_slice::<Value>(line) {
-                if value["type"] == "event_msg" && value["payload"]["type"] == "user_message" {
-                    if let Some(text) = value["payload"]["message"].as_str() {
-                        item.title = text
-                            .split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .chars()
-                            .take(100)
-                            .collect();
+                if value["type"] == "event_msg"
+                    && value["payload"]["type"] == "item_completed"
+                    && value["payload"]["item"]["type"] == "UserMessage"
+                {
+                    let text = value["payload"]["item"]["content"]
+                        .as_array()
+                        .and_then(|parts| parts.iter().find_map(|part| part["text"].as_str()));
+                    if let Some(title) = text.and_then(short_title) {
+                        item.title = title;
                         break;
                     }
                 }
+                if fallback.is_none() {
+                    let text = if value["type"] == "event_msg"
+                        && value["payload"]["type"] == "user_message"
+                    {
+                        value["payload"]["message"].as_str()
+                    } else if value["type"] == "response_item" && value["payload"]["role"] == "user"
+                    {
+                        value["payload"]["content"]
+                            .as_array()
+                            .and_then(|parts| parts.iter().find_map(|part| part["text"].as_str()))
+                    } else {
+                        None
+                    };
+                    fallback = text.and_then(short_title);
+                }
             }
         }
+        if item.title == item.thread_id {
+            if let Some(title) = fallback {
+                item.title = title;
+            }
+        }
+    }
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "jsonl")
+        && item.bytes > snapshot::LIMIT
+    {
+        item.detail = "记录超过 32 MB，当前版本无法完整复制".into();
+        return Ok(item);
     }
     item.transferable = true;
     item.detail = "支持独立复制；完整父链与附件将在复制前检查".into();
     Ok(item)
+}
+
+fn short_title(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title: String = normalized.chars().take(80).collect();
+    (!title.is_empty()).then_some(title)
 }
 
 pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, String> {
@@ -293,11 +330,14 @@ fn has_source_attachment(value: &Value, home: &Path) -> bool {
                 (matches!(
                     key.as_str(),
                     "path" | "file_path" | "filePath" | "attachment_path"
-                ) && item.as_str().is_some_and(|raw| {
-                    let path = raw.replace('\\', "/").to_lowercase();
-                    path.starts_with(&format!("{home_text}/"))
-                        && path.split('/').any(|part| part == "attachments")
-                })) || check(item, home_text)
+                ) && !(key == "path"
+                    && map.get("type").and_then(Value::as_str) == Some("local_image"))
+                    && item.as_str().is_some_and(|raw| {
+                        let path = raw.replace('\\', "/").to_lowercase();
+                        path.starts_with(&format!("{home_text}/"))
+                            && path.split('/').any(|part| part == "attachments")
+                    }))
+                    || check(item, home_text)
             }),
             Value::Array(items) => items.iter().any(|item| check(item, home_text)),
             _ => false,
@@ -413,7 +453,7 @@ fn verify_copied_context(source: &[u8], target: &[u8]) -> Result<(), String> {
 
 fn transfer_key(request: &TransferRequest, fingerprint: &str) -> String {
     hex::encode(Sha256::digest(format!(
-        "{}:{}:{}",
+        "visible-v2:{}:{}:{}",
         request.source_id, request.key, fingerprint
     )))
 }
@@ -508,7 +548,8 @@ pub fn transfer(
     }
     let candidates = paths(&home)?.0;
     let raw = snapshot::materialize(&path, &candidates, completed_only)?;
-    let (bytes, _, _) = prepare(raw, &home, request.workspace.as_deref())?;
+    let (prepared, _, _) = prepare(raw, &home, request.workspace.as_deref())?;
+    let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
     if request
         .fingerprint
         .as_ref()
@@ -529,6 +570,7 @@ pub fn transfer(
     if let Some(result) = existing_transfer(cli, &target, &key)? {
         return Ok(result);
     }
+    persist_display_images(&assets)?;
     let stage = transfers.join(format!("{key}.jsonl"));
     let stage_id = uuid::Uuid::new_v4().to_string();
     let mut lines: Vec<Value> = std::str::from_utf8(&bytes)
@@ -537,8 +579,20 @@ pub fn transfer(
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()
         .map_err(|_| "记录内容无效")?;
+    let display_import = lines[0]["payload"]["history_mode"] == "paginated";
     lines[0]["payload"]["id"] = json!(stage_id);
     lines[0]["payload"]["session_id"] = json!(stage_id);
+    if display_import {
+        for line in lines.iter_mut().skip(1) {
+            if matches!(
+                line["type"].as_str(),
+                Some("event_msg" | "token_usage_record")
+            ) && line["payload"]["thread_id"].is_string()
+            {
+                line["payload"]["thread_id"] = json!(stage_id);
+            }
+        }
+    }
     let mut staged = Vec::new();
     for line in lines {
         serde_json::to_writer(&mut staged, &line).map_err(|e| e.to_string())?;
@@ -554,6 +608,7 @@ pub fn transfer(
         stage_id,
         title: item.title,
         content_hash: hex::encode(Sha256::digest(&staged)),
+        display_import,
     };
     storage::write_json(&journal_path, &journal)?;
     resume_transfer(cli, &target, &key, false)
@@ -571,6 +626,8 @@ pub struct Preview {
 }
 
 pub fn preview(root: &Path, r: &Registry, request: &TransferRequest) -> Result<Preview, String> {
+    selected(r, &request.target_id)?;
+    let target = storage::profile_dir(root, &request.target_id)?;
     let home = source_home(root, r, &request.source_id)?;
     let completed_only = source_running(root, r, &request.source_id)?;
     let candidates = paths(&home)?.0;
@@ -587,16 +644,17 @@ pub fn preview(root: &Path, r: &Registry, request: &TransferRequest) -> Result<P
     if item.revision != request.revision && !completed_only {
         return Err("记录已变化，请刷新".into());
     }
-    let (bytes, images, workspace) = prepare(
+    let (prepared, images, workspace) = prepare(
         snapshot::materialize(path, &candidates, completed_only)?,
         &home,
         request.workspace.as_deref(),
     )?;
+    let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
     Ok(Preview {
         key: item.key,
         title: item.title,
         bytes: bytes.len(),
-        images,
+        images: images.max(assets.len()),
         workspace,
         fingerprint: hex::encode(Sha256::digest(bytes)),
     })
@@ -637,7 +695,9 @@ fn prepare(
                 record["payload"]["runtime_workspace_roots"] = json!([cwd]);
             }
         }
-        embed_images(record, &mut images)?;
+        if record["type"] != "event_msg" {
+            embed_images(record, &mut images)?;
+        }
         serde_json::to_writer(&mut output, record).map_err(|e| e.to_string())?;
         output.push(b'\n');
         if output.len() as u64 > MAX_ROLLOUT {
@@ -648,34 +708,50 @@ fn prepare(
     Ok((output, images, cwd.to_string_lossy().into()))
 }
 
+fn read_local_image(path: &str) -> Result<(Vec<u8>, &'static str, &'static str), String> {
+    let original = Path::new(path);
+    if !original.is_absolute() {
+        return Err("附件必须使用绝对路径".into());
+    }
+    #[cfg(target_os = "macos")]
+    let resolved = if let Ok(suffix) = original.strip_prefix("/var") {
+        if Path::new("/var").canonicalize().ok().as_deref() != Some(Path::new("/private/var")) {
+            return Err("系统临时目录映射异常".into());
+        }
+        Path::new("/private/var").join(suffix)
+    } else {
+        original.to_path_buf()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let resolved = original.to_path_buf();
+    storage::plain(&resolved)?;
+    let mut bytes = vec![];
+    fs::File::open(&resolved)
+        .map_err(|_| "本地图片附件缺失或无法读取")?
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("单张图片超过 8 MB 上限".into());
+    }
+    let format = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ("image/png", "png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        ("image/jpeg", "jpg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        ("image/gif", "gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        ("image/webp", "webp")
+    } else {
+        return Err("附件不是受支持的 PNG/JPEG/GIF/WebP 图片".into());
+    };
+    Ok((bytes, format.0, format.1))
+}
+
 fn embed_images(value: &mut Value, count: &mut usize) -> Result<(), String> {
     use base64::Engine;
     fn data(path: &str) -> Result<String, String> {
-        let p = Path::new(path);
-        storage::plain(p)?;
-        if !p.is_absolute() {
-            return Err("附件必须使用绝对路径".into());
-        }
-        let mut bytes = vec![];
-        fs::File::open(p)
-            .map_err(|_| "本地图片附件缺失或无法读取")?
-            .take(8 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > 8 * 1024 * 1024 {
-            return Err("单张图片超过 8 MB 上限".into());
-        }
-        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            "image/png"
-        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-            "image/jpeg"
-        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-            "image/gif"
-        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-            "image/webp"
-        } else {
-            return Err("附件不是受支持的 PNG/JPEG/GIF/WebP 图片".into());
-        };
+        let (bytes, mime, _) = read_local_image(path)?;
         Ok(format!(
             "data:{mime};base64,{}",
             base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -754,6 +830,112 @@ fn embed_images(value: &mut Value, count: &mut usize) -> Result<(), String> {
     Ok(())
 }
 
+struct DisplayImageAsset {
+    source: String,
+    destination: PathBuf,
+    digest: String,
+}
+
+fn remap_display_images(
+    value: &mut Value,
+    target: &Path,
+    assets: &mut Vec<DisplayImageAsset>,
+) -> Result<(), String> {
+    fn remap(
+        path: &str,
+        target: &Path,
+        assets: &mut Vec<DisplayImageAsset>,
+    ) -> Result<String, String> {
+        let (bytes, _, extension) = read_local_image(path)?;
+        let digest = hex::encode(Sha256::digest(&bytes));
+        let destination = target
+            .join("codex/pathmux-images")
+            .join(format!("{digest}.{extension}"));
+        if !assets.iter().any(|asset| asset.destination == destination) {
+            assets.push(DisplayImageAsset {
+                source: path.to_owned(),
+                destination: destination.clone(),
+                digest,
+            });
+        }
+        Ok(destination.to_string_lossy().into_owned())
+    }
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("local_image") {
+                let path = map
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("图片路径缺失")?;
+                map.insert("path".into(), json!(remap(path, target, assets)?));
+            }
+            if let Some(paths) = map.get_mut("local_images").and_then(Value::as_array_mut) {
+                for path in paths {
+                    let original = path.as_str().ok_or("图片路径无效")?;
+                    *path = json!(remap(original, target, assets)?);
+                }
+            }
+            for child in map.values_mut() {
+                remap_display_images(child, target, assets)?;
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                remap_display_images(child, target, assets)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn rewrite_display_images(
+    bytes: &[u8],
+    target: &Path,
+) -> Result<(Vec<u8>, Vec<DisplayImageAsset>), String> {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut assets = Vec::new();
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let mut record: Value = serde_json::from_slice(line).map_err(|_| "历史内容无效")?;
+        if record["type"] == "event_msg" {
+            remap_display_images(&mut record, target, &mut assets)?;
+        }
+        serde_json::to_writer(&mut output, &record).map_err(|e| e.to_string())?;
+        output.push(b'\n');
+        if output.len() as u64 > MAX_ROLLOUT {
+            return Err("历史和内嵌附件超过 32 MB 上限".into());
+        }
+    }
+    Ok((output, assets))
+}
+
+fn persist_display_images(assets: &[DisplayImageAsset]) -> Result<(), String> {
+    let mut pending = Vec::with_capacity(assets.len());
+    for asset in assets {
+        let (bytes, _, _) = read_local_image(&asset.source)?;
+        if hex::encode(Sha256::digest(&bytes)) != asset.digest {
+            return Err("预览后图片附件已变化，请重新预览".into());
+        }
+        pending.push((asset, bytes));
+    }
+    for (asset, bytes) in pending {
+        storage::private_dir(asset.destination.parent().ok_or("附件目录无效")?)?;
+        storage::plain(&asset.destination)?;
+        if asset.destination.exists() {
+            if fs::read(&asset.destination).map_err(|e| e.to_string())? != bytes {
+                return Err("目标图片附件校验失败".into());
+            }
+        } else {
+            crate::sync::write_bytes_atomic(&asset.destination, &bytes)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingTransfer {
@@ -821,6 +1003,212 @@ pub fn recover(
     )
 }
 
+fn direct_session_path(target: &Path, bytes: &[u8], id: &str) -> Result<PathBuf, String> {
+    storage::validate_id(id)?;
+    let header = snapshot::header(bytes)?;
+    let timestamp = header["payload"]["timestamp"]
+        .as_str()
+        .ok_or("新版会话缺少创建时间，无法安全导入")?;
+    let stamp = timestamp.get(..19).ok_or("新版会话创建时间无效")?;
+    let valid = stamp.bytes().enumerate().all(|(i, byte)| match i {
+        4 | 7 => byte == b'-',
+        10 => byte == b'T',
+        13 | 16 => byte == b':',
+        _ => byte.is_ascii_digit(),
+    });
+    if !valid {
+        return Err("新版会话创建时间无效".into());
+    }
+    Ok(target
+        .join("codex/sessions")
+        .join(&stamp[..4])
+        .join(&stamp[5..7])
+        .join(&stamp[8..10])
+        .join(format!("rollout-{}-{id}.jsonl", stamp.replace(':', "-"))))
+}
+
+fn visible_message_counts(bytes: &[u8]) -> Result<(usize, usize), String> {
+    let paginated = snapshot::header(bytes)?["payload"]["history_mode"] == "paginated";
+    let mut user = 0;
+    let mut agent = 0;
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let value: Value = serde_json::from_slice(line).map_err(|_| "会话展示记录损坏")?;
+        if value["type"] == "event_msg" {
+            if paginated && value["payload"]["type"] == "item_completed" {
+                match value["payload"]["item"]["type"].as_str() {
+                    Some("UserMessage") => user += 1,
+                    Some("AgentMessage") => agent += 1,
+                    _ => {}
+                }
+            } else if !paginated {
+                match value["payload"]["type"].as_str() {
+                    Some("user_message") => user += 1,
+                    Some("agent_message") => agent += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok((user, agent))
+}
+
+fn verify_visible_history(client: &mut rpc::Client, id: &str, bytes: &[u8]) -> Result<(), String> {
+    let (required_user, required_agent) = visible_message_counts(bytes)?;
+    if required_user == 0 || required_agent == 0 {
+        return Err("来源会话缺少可展示的完整问答记录，不能标记为可视接续".into());
+    }
+    let mut user = 0;
+    let mut agent = 0;
+    if snapshot::header(bytes)?["payload"]["history_mode"] != "paginated" {
+        let read = client.call("thread/read", json!({"threadId":id,"includeTurns":true}))?;
+        let turns = read["thread"]["turns"]
+            .as_array()
+            .ok_or("官方客户端未返回旧版会话内容")?;
+        for item in turns
+            .iter()
+            .filter_map(|turn| turn["items"].as_array())
+            .flatten()
+        {
+            match item["type"].as_str() {
+                Some("userMessage") => user += 1,
+                Some("agentMessage") => agent += 1,
+                _ => {}
+            }
+        }
+        if user >= required_user && agent >= required_agent {
+            return Ok(());
+        }
+        return Err(format!(
+            "目标会话展示不完整：用户消息 {user}/{required_user}，回复 {agent}/{required_agent}；已停止迁移"
+        ));
+    }
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_SCAN {
+        let response = client.call(
+            "thread/items/list",
+            json!({"threadId":id,"limit":100,"cursor":cursor}),
+        )?;
+        let items = response["data"]
+            .as_array()
+            .ok_or("官方客户端未返回展示记录")?;
+        for item in items {
+            match item["item"]["type"].as_str() {
+                Some("userMessage") => user += 1,
+                Some("agentMessage") => agent += 1,
+                _ => {}
+            }
+        }
+        if user >= required_user && agent >= required_agent {
+            return Ok(());
+        }
+        cursor = response["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Err(format!(
+        "目标会话展示不完整：用户消息 {user}/{required_user}，回复 {agent}/{required_agent}；已停止迁移"
+    ))
+}
+
+fn resume_display_import(
+    cli: &str,
+    target: &Path,
+    journal_path: &Path,
+    stage: &Path,
+    record: &Path,
+    mut journal: TransferJournal,
+    discard: bool,
+) -> Result<TransferResult, String> {
+    let bytes = snapshot::read(stage)?;
+    if hex::encode(Sha256::digest(&bytes)) != journal.content_hash {
+        return Err("恢复快照校验失败，请撤回后重新复制".into());
+    }
+    let id = journal.stage_id.clone();
+    let path = direct_session_path(target, &bytes, &id)?;
+    if discard {
+        if path.exists() {
+            let mut client = rpc::Client::start(cli, target)?;
+            if client
+                .call("thread/read", json!({"threadId":id,"includeTurns":false}))
+                .is_ok()
+            {
+                client.call("thread/delete", json!({"threadId":id}))?;
+            } else {
+                storage::plain(&path)?;
+                if snapshot::read(&path)? != bytes {
+                    return Err("目标副本已变化，无法自动撤回，请保留并检查该会话".into());
+                }
+                fs::remove_file(&path).map_err(|e| e.to_string())?;
+            }
+        }
+        fs::remove_file(journal_path).map_err(|e| e.to_string())?;
+        fs::remove_file(stage).map_err(|e| e.to_string())?;
+        return Ok(TransferResult {
+            target_thread_id: String::new(),
+            duplicate: false,
+            detail: "未完成副本已撤回，来源及其他会话保留。".into(),
+        });
+    }
+    let result: Result<TransferResult, String> = (|| {
+        storage::private_dir(path.parent().ok_or("目标会话目录无效")?)?;
+        if path.exists() {
+            let existing = snapshot::read(&path)?;
+            verify_copied_context(&bytes, &existing)?;
+        } else {
+            crate::sync::write_bytes_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+        }
+        journal.target_thread_id = Some(id.clone());
+        storage::write_json(journal_path, &journal)?;
+        let mut client = rpc::Client::start(cli, target)?;
+        client.call(
+            "thread/resume",
+            json!({"threadId":id,"excludeTurns":true,"approvalPolicy":"on-request","sandbox":"read-only","deferGoalContinuation":true}),
+        )?;
+        let read = client.call("thread/read", json!({"threadId":id,"includeTurns":false}))?;
+        let actual = read
+            .pointer("/thread/path")
+            .and_then(Value::as_str)
+            .ok_or("客户端未返回目标路径")?;
+        if fs::canonicalize(actual).map_err(|e| e.to_string())?
+            != fs::canonicalize(&path).map_err(|e| e.to_string())?
+        {
+            return Err("官方客户端打开了其他会话文件，已停止迁移".into());
+        }
+        verify_copied_context(&bytes, &snapshot::read(&path)?)?;
+        verify_visible_history(&mut client, &id, &bytes)?;
+        client.call(
+            "thread/name/set",
+            json!({"threadId":id,"name":format!("接续 · {}",journal.title)}),
+        )?;
+        let result = TransferResult {
+            target_thread_id: id,
+            duplicate: false,
+            detail: "已校验模型上下文与可见对话，目标账号可打开独立副本继续。".into(),
+        };
+        storage::write_json(record, &result)?;
+        Ok(result)
+    })();
+    match result {
+        Ok(result) => {
+            fs::remove_file(journal_path).map_err(|e| e.to_string())?;
+            fs::remove_file(stage).map_err(|e| e.to_string())?;
+            Ok(result)
+        }
+        Err(error) => {
+            journal.state = "needsReview".into();
+            storage::write_json(journal_path, &journal)?;
+            Err(format!(
+                "复制未完成：{}。快照已保留，请从恢复列表继续或撤回。",
+                error.trim_end_matches('。')
+            ))
+        }
+    }
+}
+
 fn resume_transfer(
     cli: &str,
     target: &Path,
@@ -841,6 +1229,17 @@ fn resume_transfer(
         fs::remove_file(&journal_path).map_err(|e| e.to_string())?;
         let _ = fs::remove_file(stage);
         return Ok(result);
+    }
+    if journal.display_import {
+        return resume_display_import(
+            cli,
+            target,
+            &journal_path,
+            &stage,
+            &record,
+            journal,
+            discard,
+        );
     }
     // Recover an RPC response lost after the official client persisted a fork.
     // A fresh staging UUID uniquely identifies this import, including after a crash.
@@ -925,6 +1324,7 @@ fn resume_transfer(
         }
         let copied = snapshot::read(Path::new(path))?;
         verify_copied_context(&bytes, &copied)?;
+        verify_visible_history(&mut client, &id, &bytes)?;
         client.call(
             "thread/name/set",
             json!({"threadId":id,"name":format!("接续 · {}", journal.title)}),
@@ -1001,6 +1401,44 @@ mod tests {
     }
 
     #[test]
+    fn paginated_history_uses_visible_user_message_as_title() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().canonicalize().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = home.join(format!("rollout-{id}.jsonl"));
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":id,"history_mode":"paginated"}}),
+                json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"项目 A 的\n 登录问题"}]}}})
+            ),
+        )
+        .unwrap();
+        assert_eq!(inspect(&home, &path).unwrap().title, "项目 A 的 登录问题");
+    }
+
+    #[test]
+    fn oversized_plain_history_is_not_offered_for_project_copy() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().canonicalize().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = home.join(format!("rollout-{id}.jsonl"));
+        let mut file = fs::File::create(&path).unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"session_meta","payload":{"id":id,"history_mode":"paginated"}})
+        )
+        .unwrap();
+        file.set_len(snapshot::LIMIT + 1).unwrap();
+        let item = inspect(&home, &path).unwrap();
+        assert!(!item.transferable);
+        assert!(item.detail.contains("32 MB"));
+    }
+
+    #[test]
     fn context_validation_detects_missing_or_reordered_messages() {
         let a = b"{\"type\":\"response_item\",\"payload\":1}\n{\"type\":\"response_item\",\"payload\":2}\n";
         assert!(verify_copied_context(a, a).is_ok());
@@ -1065,6 +1503,11 @@ mod tests {
                 json!({"threadId":result.target_thread_id,"includeTurns":true}),
             )
             .unwrap();
+        assert!(read["thread"]["turns"].as_array().is_some_and(|turns| turns
+            .iter()
+            .filter_map(|turn| turn["items"].as_array())
+            .flatten()
+            .any(|item| item["type"] == "agentMessage")));
         assert!(
             read.to_string().contains("cyan"),
             "Imported dialogue must remain readable after deleting the source"
@@ -1120,7 +1563,8 @@ mod tests {
         use std::io::Write;
         use std::net::TcpListener;
         use std::time::{Duration, Instant};
-        let completed = snapshot::materialize(&source, &paths(&home).unwrap().0, true).unwrap();
+        let completed =
+            snapshot::read(Path::new(read["thread"]["path"].as_str().unwrap())).unwrap();
         let last_user = completed
             .split(|b| *b == b'\n')
             .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
@@ -1132,7 +1576,7 @@ mod tests {
             })
             .last()
             .unwrap();
-        let marker = last_user.chars().take(20).collect::<String>();
+        let marker = last_user.trim().chars().take(20).collect::<String>();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -1191,7 +1635,7 @@ mod tests {
         });
         let imported = result.target_thread_id;
         client.call("thread/resume",json!({"threadId":imported,"model":"gpt-5.4","modelProvider":"pathmux_test","excludeTurns":true,
-            "config":{"model_context_window":2000000,"model_auto_compact_token_limit":1800000,"model_providers.pathmux_test":{"name":"PathMux local test","base_url":format!("http://{address}/v1"),"wire_api":"responses","requires_openai_auth":false,"supports_websockets":false,"request_max_retries":0}}})).unwrap();
+            "config":{"model_context_window":20000000,"model_auto_compact_token_limit":18000000,"model_providers.pathmux_test":{"name":"PathMux local test","base_url":format!("http://{address}/v1"),"wire_api":"responses","requires_openai_auth":false,"supports_websockets":false,"request_max_retries":0}}})).unwrap();
         client.call("turn/start",json!({"threadId":imported,"input":[{"type":"text","text":"PATHMUX_LIVE_CONTINUATION","text_elements":[]}]})).unwrap();
         let checks = server.join().unwrap();
         assert!(
@@ -1204,6 +1648,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let home = root.join("codex");
+        let target = root.join("other");
         storage::private_dir(&home).unwrap();
         let image = home.join("attachment.png");
         let make = |text: &[u8]| {
@@ -1227,27 +1672,31 @@ mod tests {
             .collect::<String>()
             .into_bytes();
         make(b"one");
-        let first = prepare(raw.clone(), &home, None).unwrap();
+        let first =
+            rewrite_display_images(&prepare(raw.clone(), &home, None).unwrap().0, &target).unwrap();
         make(b"two");
-        let second = prepare(raw.clone(), &home, None).unwrap();
+        let second =
+            rewrite_display_images(&prepare(raw.clone(), &home, None).unwrap().0, &target).unwrap();
         let event: Value = std::str::from_utf8(&first.0)
             .unwrap()
             .lines()
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
             .find(|v| v["type"] == "event_msg" && v["payload"]["type"] == "user_message")
             .unwrap();
-        assert!(event["payload"]["images"][0]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/png;base64,"));
-        assert_eq!(event["payload"]["local_images"], json!([]));
-        assert_eq!(first.1, 1);
+        assert_eq!(
+            event["payload"]["local_images"][0],
+            json!(first.1[0].destination)
+        );
+        assert_eq!(first.1.len(), 1);
         assert_ne!(first.0, second.0);
         assert!(!String::from_utf8(first.0)
             .unwrap()
             .contains(home.to_str().unwrap()));
+        assert!(persist_display_images(&first.1).is_err());
+        persist_display_images(&second.1).unwrap();
         fs::remove_file(image).unwrap();
-        assert!(prepare(raw, &home, None).is_err());
+        assert!(second.1[0].destination.exists());
+        assert!(rewrite_display_images(&prepare(raw, &home, None).unwrap().0, &target).is_err());
     }
 
     #[test]
@@ -1278,13 +1727,25 @@ mod tests {
     }
 
     fn fixture(id: &str, cwd: &Path, mode: &str, text: &str) -> String {
-        [
+        let mut records = vec![
             json!({"type":"session_meta","payload":{"id":id,"session_id":id,"history_mode":mode,"timestamp":"2026-09-28T00:00:00Z","cwd":cwd,"originator":"codex_cli_rs","cli_version":"0.158.0","source":"cli","model_provider":"openai"}}),
             json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
             json!({"type":"event_msg","payload":{"type":"user_message","message":text,"images":[],"local_images":[],"text_elements":[]}}),
             json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Remembered."}]}}),
             json!({"type":"event_msg","payload":{"type":"agent_message","message":"Remembered."}}),
-        ].into_iter().map(|mut v| { v["timestamp"] = json!("2026-09-28T00:00:00Z"); format!("{v}\n") }).collect()
+        ];
+        if mode == "paginated" {
+            let turn_id = uuid::Uuid::new_v4().to_string();
+            records.push(json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":id,"turn_id":turn_id,"item":{"type":"UserMessage","id":uuid::Uuid::new_v4().to_string(),"content":[{"type":"text","text":text}]}}}));
+            records.push(json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":id,"turn_id":turn_id,"item":{"type":"AgentMessage","id":format!("msg_{}",uuid::Uuid::new_v4().simple()),"content":[{"type":"Text","text":"Remembered."}],"phase":"final_answer"}}}));
+        }
+        records
+            .into_iter()
+            .map(|mut v| {
+                v["timestamp"] = json!("2026-09-28T00:00:00Z");
+                format!("{v}\n")
+            })
+            .collect()
     }
 
     #[test]
@@ -1321,8 +1782,7 @@ mod tests {
                 .lines()
                 .map(|l| serde_json::from_str(l).unwrap())
                 .collect();
-        child_lines[0]["payload"]["history_base"] =
-            json!({"thread_id":parent_id,"end_ordinal_exclusive":5,"end_byte_offset":prefix.len()});
+        child_lines[0]["payload"]["history_base"] = json!({"thread_id":parent_id,"end_ordinal_exclusive":prefix.lines().count(),"end_byte_offset":prefix.len()});
         let child_text = child_lines
             .iter()
             .map(|v| format!("{v}\n"))
@@ -1349,7 +1809,7 @@ mod tests {
         assert!(paused.last_error.is_some());
         fs::remove_file(invalid_journal).unwrap();
         let done = super::super::batch::step(&root, &registry, &b.id, &job.id, false).unwrap();
-        assert!(done.last_error.is_none());
+        assert!(done.last_error.is_none(), "{:?}", done.last_error);
         assert!(
             done.outcomes[0].error.is_none(),
             "{:?}",
@@ -1398,6 +1858,7 @@ mod tests {
             stage_id: staged_id.clone(),
             title: "Recovery".into(),
             content_hash: hex::encode(Sha256::digest(staged.as_bytes())),
+            display_import: false,
         };
         storage::write_json(&transfers.join(format!("{key}.pending.json")), &journal).unwrap();
         let mut client = rpc::Client::start(cli, &bdir).unwrap();
@@ -1507,5 +1968,47 @@ mod tests {
             .starts_with("data:image/png;base64,"));
         fs::remove_file(&image).unwrap();
         assert!(embed_images(&mut json!({"local_images":[image]}), &mut 0).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_images_accept_macos_system_var_alias_but_reject_other_links() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let Ok(suffix) = root.strip_prefix("/private/var") else {
+            return;
+        };
+        let image = root.join("image.png");
+        fs::write(&image, b"\x89PNG\r\n\x1a\nsynthetic").unwrap();
+        let alias = Path::new("/var").join(suffix).join("image.png");
+        let mut value = json!({"local_images":[alias]});
+        embed_images(&mut value, &mut 0).unwrap();
+        assert_eq!(value["local_images"], json!([]));
+        let linked = root.join("linked.png");
+        symlink(&image, &linked).unwrap();
+        assert!(embed_images(&mut json!({"local_images":[linked]}), &mut 0).is_err());
+    }
+
+    #[test]
+    fn local_display_image_is_copied_but_other_source_attachments_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("codex");
+        let source = home.join("attachments/image.png");
+        storage::private_dir(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"\x89PNG\r\n\x1a\nsynthetic").unwrap();
+        let target = root.join("other");
+        let mut image = json!({"type":"local_image","path":source});
+        assert!(!has_source_attachment(&image, &home));
+        remap_display_images(&mut image, &target, &mut Vec::new()).unwrap();
+        assert!(image["path"]
+            .as_str()
+            .unwrap()
+            .starts_with(target.to_str().unwrap()));
+        assert!(has_source_attachment(
+            &json!({"attachment_path":source}),
+            &home
+        ));
     }
 }

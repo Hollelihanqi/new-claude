@@ -170,7 +170,8 @@ pub fn materialize(
     }
     let mut meta = leaf.ok_or("记录为空")?;
     let payload = meta["payload"].as_object_mut().ok_or("元数据无效")?;
-    payload.insert("history_mode".into(), Value::String("legacy".into()));
+    // Keep the leaf's history format. New paginated sessions persist UI-visible
+    // item events that the official reader does not project in legacy mode.
     for key in [
         "history_base",
         "forked_from_id",
@@ -182,10 +183,19 @@ pub fn materialize(
     ] {
         payload.remove(key);
     }
+    let paginated = meta["payload"]["history_mode"] == "paginated";
+    if paginated {
+        meta["ordinal"] = 0.into();
+    }
+    let mut ordinal = 1_u64;
     let mut output = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;
     output.push(b'\n');
     for segment in segments.into_iter().rev() {
-        for line in segment {
+        for mut line in segment {
+            if paginated {
+                line["ordinal"] = ordinal.into();
+                ordinal += 1;
+            }
             serde_json::to_writer(&mut output, &line).map_err(|e| e.to_string())?;
             output.push(b'\n');
         }

@@ -140,7 +140,8 @@ it("remembers the selected project for the same account pair", async () => {
   expect(JSON.parse(saved.get("pathmux:chatgpt-sync:a:b")!).project).toBe("/project");
   act(() => renderer.unmount());
   await act(async () => { renderer = create(<ChatGptPanel />); });
-  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  expect(select("来源实例").props.value).toBe("a");
+  expect(select("目标实例").props.value).toBe("b");
   expect(select("同步范围").props.value).toBe("project");
   expect(select("选择项目").props.value).toBe("/project");
 });

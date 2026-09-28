@@ -16,7 +16,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   const [loadedPair, setLoadedPair] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [busy, setBusy] = useState("");
-  const busyRef = useRef(false), alive = useRef(true), historyGen = useRef(0), targetGen = useRef(0), stop = useRef(false);
+  const busyRef = useRef(false), alive = useRef(true), historyGen = useRef(0), targetGen = useRef(0), stop = useRef(false), restoredPair = useRef(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [previews, setPreviews] = useState<ChatGptPreview[] | null>(null);
@@ -46,6 +46,20 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   useEffect(() => {
     if (initialCopy) { void load(initialCopy.source); void loadTarget(initialCopy.target); }
   }, [initialCopy]);
+  useEffect(() => {
+    if (restoredPair.current || initialCopy) return;
+    restoredPair.current = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem("pathmux:chatgpt-last-pair") ?? "null");
+      const savedSource = saved?.source === "default" || state.profiles.some(p => p.id === saved?.source) ? saved.source : null;
+      const savedTarget = state.profiles.some(p => p.id === saved?.target) ? saved.target : null;
+      if (savedSource && savedTarget && savedSource !== savedTarget) { void load(savedSource); void loadTarget(savedTarget); }
+    } catch { /* A missing or old preference leaves the selectors empty. */ }
+  }, [initialCopy, state.profiles]);
+  useEffect(() => {
+    if (!source || !target || source === target) return;
+    try { localStorage.setItem("pathmux:chatgpt-last-pair", JSON.stringify({ source, target })); } catch { /* The current selection still works. */ }
+  }, [source, target]);
   useEffect(() => {
     if (target && !state.profiles.some(p => p.id === target)) void loadTarget(null);
     if (source && source !== "default" && !state.profiles.some(p => p.id === source)) void load(null);
@@ -157,7 +171,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   }
   const unfinished = jobs.filter(j => !j.cancelled && j.outcomes.length < j.requests.length);
   return <Card withBorder radius="md" p="lg"><Stack gap="md">
-    <div><Title order={4}>跨账号接续本地会话</Title><Text size="sm" c="dimmed">选择单条会话、整个项目或全部本地记录，切换时把已完成的进度复制到目标账号。两边的后续进展各自保留。</Text></div>
+    <div><Title order={4}>跨账号接续本地会话</Title><Text size="sm" c="dimmed">选择单条会话、整个项目或全部本地记录，切换时把已完成的进度复制到目标账号。两边的后续进展各自保留。</Text><Text size="xs" c="dimmed">此功能按次复制快照；两个窗口同时运行时，后续对话不会自动实时同步。</Text></div>
     <Alert color="blue">来源账号可以保持打开；目标账号在同步时会关闭并重新打开。普通 ChatGPT 云端聊天不在本地 Codex 会话列表中，无法用此功能跨账号接续。</Alert>
     {error && <Alert role="alert" color="red">{error}</Alert>}
     {message && <Alert role="status" color="teal">{message}</Alert>}
