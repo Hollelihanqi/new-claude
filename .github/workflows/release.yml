@@ -238,7 +238,12 @@ jobs:
         with:
           tagName: ${{ needs.channel.outputs.tag }}
           releaseName: "PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
-          releaseBody: "下载对应你系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。本应用未做代码签名，首次打开时系统会提示无法验证开发者，手动放行一次即可——具体步骤见仓库 README 的『安装说明』。"
+          releaseBody: |
+            ChatGPT 多开（验证阶段）：可创建相互隔离的账号实例，并按次复制单条、整个项目或全部本地 Codex 会话。目标窗口正在运行时，关闭前会先征求确认；复制成功后重新打开。
+
+            已知限制：普通 ChatGPT 云端聊天不能通过此功能复制；两个窗口之间的后台实时同步尚未实现。大型真实项目完整复制及 Windows 真机流程仍待验收。请勿将按次复制当作无感实时接续。
+
+            下载对应系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。本应用未做代码签名，首次打开时系统可能提示无法验证开发者；安装说明见仓库 README。
           # **一律先建成 draft**：先完成的平台立刻公开的话，第二个平台失败时
           # 用户会看到一个缺一半安装包的公开版本。是否公开交给下面的 publish job 统一决定。
           releaseDraft: true
