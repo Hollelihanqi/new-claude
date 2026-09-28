@@ -23,6 +23,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   const [pending, setPending] = useState<ChatGptPending[]>([]);
   const [jobs, setJobs] = useState<ChatGptJob[]>([]);
   const [discarding, setDiscarding] = useState<ChatGptPending | null>(null);
+  const [confirmClosingTarget, setConfirmClosingTarget] = useState<string | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; historyGen.current++; targetGen.current++; stop.current = true; }; }, []);
 
   async function load(sourceId: string | null) {
@@ -120,7 +121,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   const scopeItems = scope === "selected" ? history?.items.filter(i => selected.includes(i.key)) ?? []
     : scope === "project" ? history?.items.filter(i => i.workspace === project) ?? [] : history?.items ?? [];
   const visibleItems = (history?.items ?? []).filter(i => !query || `${i.title} ${i.workspace}`.toLowerCase().includes(query.toLowerCase()));
-  async function syncAndSwitch() {
+  async function syncAndSwitch(confirmedTarget: string | null = null) {
     await run("准备同步", async () => {
       if (!source || !target || !history || source === target || !state.installation?.compatible || !state.installation.cli) return;
       if (scope === "all" && workspace.trim()) throw new Error("全部会话包含不同项目，请清空接续项目目录后再同步。");
@@ -128,6 +129,11 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
       if (scopeItems.length === 0) throw new Error("请先选择会话、项目或全部记录。");
       const unsupported = scopeItems.filter(i => !i.transferable);
       if (unsupported.length) throw new Error(`所选范围中有 ${unsupported.length} 条记录暂不能迁移。请改选可迁移的会话。`);
+      const current = await api.chatGptState();
+      if (current.profiles.find(p => p.id === target)?.status === "running" && confirmedTarget !== target) {
+        setConfirmClosingTarget(target);
+        return;
+      }
       const plans: ChatGptTransferRequest[] = [];
       for (let index = 0; index < scopeItems.length; index++) {
         if (stop.current) break;
@@ -140,6 +146,10 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
       const latest = await api.chatGptState();
       const status = latest.profiles.find(p => p.id === target)?.status;
       if (status === "running") {
+        if (confirmedTarget !== target) {
+          setConfirmClosingTarget(target);
+          return;
+        }
         setBusy("正在关闭目标实例");
         await api.chatGptProfileAction(target, "stop");
         let stopped = false;
@@ -172,7 +182,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   const unfinished = jobs.filter(j => !j.cancelled && j.outcomes.length < j.requests.length);
   return <Card withBorder radius="md" p="lg"><Stack gap="md">
     <div><Title order={4}>跨账号接续本地会话</Title><Text size="sm" c="dimmed">选择单条会话、整个项目或全部本地记录，切换时把已完成的进度复制到目标账号。两边的后续进展各自保留。</Text><Text size="xs" c="dimmed">此功能按次复制快照；两个窗口同时运行时，后续对话不会自动实时同步。</Text></div>
-    <Alert color="blue">来源账号可以保持打开；目标账号在同步时会关闭并重新打开。普通 ChatGPT 云端聊天不在本地 Codex 会话列表中，无法用此功能跨账号接续。</Alert>
+    <Alert color="blue">来源账号可以保持打开。目标账号如果正在运行，程序会先请你确认关闭，复制成功后再重新打开；关闭可能打断目标账号当前的工作。普通 ChatGPT 云端聊天不在本地 Codex 会话列表中，无法用此功能跨账号接续。</Alert>
     {error && <Alert role="alert" color="red">{error}</Alert>}
     {message && <Alert role="status" color="teal">{message}</Alert>}
     <Group grow align="flex-start">
@@ -199,7 +209,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
     </Group></Card>)}
     {visibleItems.length > 200 && <Text size="sm" c="dimmed">列表只渲染前 200 条。可用项目或全部范围同步其余记录，也可搜索具体会话。</Text>}
     <Group><Button disabled={locked || !ready || selected.length === 0} onClick={() => void inspect(selected)}>预览选中的 {selected.length} 条记录</Button>{busy && <Text role="status" size="sm">{busy}</Text>}</Group>
-    {source && target && !ready && <Text size="sm" c="orange">单独复制需要先关闭目标实例；“同步并切换账号”会自动关闭目标后接续。</Text>}
+    {source && target && !ready && <Text size="sm" c="orange">单独复制需要先关闭目标实例；“同步并切换账号”会在关闭运行中的目标前请你确认。</Text>}
     {target && <Stack gap="xs"><Group justify="space-between"><Title order={5}>复制队列与中断恢复</Title><Button size="xs" variant="subtle" disabled={locked} onClick={() => void loadTarget(target)}>刷新队列</Button></Group>
       {pending.map(p => <Card key={p.key} withBorder p="sm"><Text>{p.title || "未完成的副本"}</Text><Group mt="xs">
         <Button size="xs" disabled={locked || targetProfile?.status !== "stopped"} onClick={() => void run("恢复副本", async () => { const value = await api.chatGptRecover(target,p.key,false); if (alive.current) setMessage(value.detail); })}>继续恢复</Button>
@@ -224,6 +234,11 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
       <Text>仅删除这次尚未完成的目标副本与临时快照。来源及其他已完成的记录保留。</Text>
       <Alert color="orange">如果你曾打开并修改过这份未完成副本，撤回也会删除其中的修改。</Alert>
       <Button color="red" disabled={locked} onClick={() => void run("撤回复制", async () => { if (!target || !discarding) return; const value = await api.chatGptRecover(target,discarding.key,true); setDiscarding(null); setMessage(value.detail); })}>确认撤回</Button>
+    </Stack></Modal>
+    <Modal opened={active && confirmClosingTarget !== null} onClose={() => setConfirmClosingTarget(null)} title="关闭目标窗口后同步？" centered><Stack>
+      <Text>目标实例正在运行。继续会关闭它；复制成功后才会重新打开。正在进行的问答或任务可能中断，请先在目标窗口完成当前工作。</Text>
+      <Group justify="flex-end"><Button variant="default" onClick={() => setConfirmClosingTarget(null)}>暂不关闭</Button>
+        <Button color="orange" onClick={() => { const confirmed = confirmClosingTarget; setConfirmClosingTarget(null); if (confirmed) void syncAndSwitch(confirmed); }}>确认关闭并同步</Button></Group>
     </Stack></Modal>
   </Stack></Card>;
 }

@@ -107,6 +107,39 @@ it("syncs only the chosen project and opens its newest copy", async () => {
   expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "new-thread");
 });
 
+it("does not close a running target until the user explicitly confirms", async () => {
+  let running = true;
+  vi.mocked(api.chatGptState).mockImplementation(async () => ({ ...state, profiles: state.profiles.map(profile =>
+    profile.id === "b" ? { ...profile, status: running ? "running" : "stopped" } : profile) }));
+  vi.mocked(api.chatGptProfileAction).mockImplementation(async (_id, action) => {
+    if (action === "stop") running = false;
+    return { ...state, profiles: state.profiles.map(profile =>
+      profile.id === "b" ? { ...profile, status: running ? "running" : "stopped" } : profile) };
+  });
+  const job: ChatGptJob = { id: "confirmed", targetId: "b", requests: [{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }], outcomes: [], cancelled: false };
+  vi.mocked(api.chatGptBatchCreate).mockResolvedValue(job);
+  vi.mocked(api.chatGptBatchStep).mockResolvedValue({ ...job, outcomes: [{ key: "record", result: { targetThreadId: "copied", duplicate: false, detail: "done" }, error: null }] });
+  vi.mocked(api.chatGptOpenThread).mockResolvedValue(state);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  act(() => renderer.root.findAllByType(Checkbox)[0].props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("同步并切换账号").props.onClick(); });
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+  expect(renderer.root.findAllByType(Modal).find(modal => modal.props.title === "关闭目标窗口后同步？")!.props.opened).toBe(true);
+  act(() => button("暂不关闭").props.onClick());
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+  expect(api.chatGptPreview).not.toHaveBeenCalled();
+  expect(api.chatGptBatchCreate).not.toHaveBeenCalled();
+  await act(async () => { button("同步并切换账号").props.onClick(); });
+  await act(async () => {
+    button("确认关闭并同步").props.onClick();
+    await vi.advanceTimersByTimeAsync(500);
+  });
+  expect(api.chatGptProfileAction).toHaveBeenCalledWith("b", "stop");
+  expect(api.chatGptBatchCreate).toHaveBeenCalledWith(job.requests);
+  expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "copied");
+});
+
 it("syncs all local records through durable 100-item batches", async () => {
   const items = Array.from({ length: 101 }, (_, n) => ({ ...history.items[0], key: `record-${n}`, threadId: `thread-${n}`, title: `Record ${n}` }));
   vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items });
