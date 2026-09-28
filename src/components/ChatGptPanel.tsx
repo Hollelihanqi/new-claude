@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Alert, Badge, Button, Card, Group, Modal, Select, SimpleGrid, Stack, Text, TextInput, Title } from "@mantine/core";
-import { IconBrandOpenai, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh, IconTransfer } from "@tabler/icons-react";
-import { api, type ChatGptAction, type ChatGptHistory, type ChatGptHistoryItem, type ChatGptProfile, type ChatGptState } from "../api";
+import { IconBrandOpenai, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh } from "@tabler/icons-react";
+import { api, type ChatGptAction, type ChatGptProfile, type ChatGptState } from "../api";
 import RiskConfirm from "./RiskConfirm";
+import ChatGptPanelHistory from "./ChatGptPanelHistory";
 
 const STATUS = {
   running: { label: "运行中", color: "teal" },
@@ -17,20 +18,15 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
   const [busy, setBusy] = useState("");
   const busyRef = useRef(false);
   const stateGeneration = useRef(0);
-  const historyGeneration = useRef(0);
   const alive = useRef(true);
   const [message, setMessage] = useState<{ error: boolean; text: string } | null>(null);
   const [editing, setEditing] = useState<ChatGptProfile | "new" | null>(null);
   const [name, setName] = useState("");
   const [deleting, setDeleting] = useState<ChatGptProfile | null>(null);
-  const [source, setSource] = useState<string | null>(null);
-  const [target, setTarget] = useState<string | null>(null);
-  const [history, setHistory] = useState<ChatGptHistory | null>(null);
-  const [historyBusy, setHistoryBusy] = useState(false);
-  const [historyError, setHistoryError] = useState("");
-  const [transferring, setTransferring] = useState<ChatGptHistoryItem | null>(null);
+  const [copySource, setCopySource] = useState<string | null>(null);
+  const [initialCopy, setInitialCopy] = useState<{ source: string | null; target: string } | null>(null);
 
-  useEffect(() => { alive.current = true; return () => { alive.current = false; stateGeneration.current++; historyGeneration.current++; }; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; stateGeneration.current++; }; }, []);
   const refresh = useCallback(async () => {
     if (busyRef.current) return;
     const generation = ++stateGeneration.current;
@@ -61,26 +57,15 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     if (!alive.current) return;
     setState(next);
     setMessage({ error: false, text: kind === "stop"
-      ? "已请求关闭该实例。若仍有后台进程，请在 ChatGPT 中选择退出后刷新。"
+      ? next.profiles.find(item => item.id === p.id)?.status === "stopped"
+        ? "实例已关闭，登录和记录保留在独立目录中。"
+        : "已请求关闭该实例。若仍有后台进程，请在 ChatGPT 中选择退出后刷新。"
+      : kind === "cleanup" ? "已检查并清理该实例遗留的崩溃报告进程。"
       : kind === "delete" ? "实例数据已删除，其他实例及已复制的记录保持完整。"
+      : kind === "rename" ? "实例名称已更新，账号和记录保持原样。"
       : "已打开实例，请在官方窗口核对登录账号。首次登录请依次完成。" });
-    if (kind === "delete") { setDeleting(null); if (source === p.id) { historyGeneration.current++; setSource(null); setHistory(null); setHistoryBusy(false); setTransferring(null); } if (target === p.id) setTarget(null); }
+    if (kind === "delete") setDeleting(null);
   });
-
-  const loadHistory = async (sourceId: string | null) => {
-    const generation = ++historyGeneration.current;
-    setHistory(null); setHistoryError(""); setTransferring(null);
-    if (!sourceId) { setHistoryBusy(false); return; }
-    setHistoryBusy(true);
-    try {
-      const result = await api.chatGptHistory(sourceId);
-      if (alive.current && generation === historyGeneration.current) setHistory(result);
-    } catch (error) {
-      if (alive.current && generation === historyGeneration.current) setHistoryError(String(error));
-    } finally {
-      if (alive.current && generation === historyGeneration.current) setHistoryBusy(false);
-    }
-  };
 
   const pick = () => run("pick", async () => {
     if (!state) return;
@@ -91,21 +76,16 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
   const save = () => run("save", async () => {
     if (!editing || !name.trim()) return;
     const next = editing === "new" ? await api.chatGptCreateProfile(name.trim()) : await api.chatGptProfileAction(editing.id, "rename", name.trim());
-    if (alive.current) { setState(next); setEditing(null); setName(""); }
-  });
-
-  const send = () => run("transfer", async () => {
-    if (!source || !target || !transferring) return;
-    const result = await api.chatGptTransfer({ sourceId: source, targetId: target, key: transferring.key, revision: transferring.revision });
-    if (alive.current) { setMessage({ error: false, text: result.detail }); setTransferring(null); }
+    if (alive.current) {
+      if (editing === "new") {
+        const added = next.profiles.find(p => !state?.profiles.some(old => old.id === p.id));
+        if (added) setInitialCopy({ source: copySource, target: added.id });
+      }
+      setState(next); setEditing(null); setName(""); setCopySource(null);
+    }
   });
 
   const profiles = state?.profiles ?? [];
-  const sourceProfile = profiles.find((p) => p.id === source);
-  const targetProfile = profiles.find((p) => p.id === target);
-  const sourceLabel = source === "default" ? "默认 ChatGPT" : sourceProfile?.name ?? "";
-  const canTransfer = !!targetProfile && targetProfile.status === "stopped" && source !== target
-    && (source === "default" || sourceProfile?.status === "stopped") && !!state?.installation?.cli && !!state?.installation?.compatible;
 
   return <Stack gap="lg">
     <Group justify="space-between" align="flex-start">
@@ -119,7 +99,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
       </Group>
     </Group>
 
-    {message && <Alert color={message.error ? "red" : "teal"} role={message.error ? "alert" : "status"}>{message.text}</Alert>}
+    {message && <Alert color={message.error ? "red" : "teal"} role={message.error ? "alert" : "status"}><Text size="sm" style={{ whiteSpace: "pre-line" }}>{message.text}</Text></Alert>}
     {!state ? <Text role="status">正在检测客户端与实例…</Text> : <>
       <Card withBorder radius="md" p="lg">
         <Group justify="space-between" wrap="wrap">
@@ -149,7 +129,9 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
                 loading={busy === `launch:${p.id}` || busy === `focus:${p.id}`}
                 disabled={!!busy || p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
                 onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
+              {p.status === "closing" && <Button size="xs" variant="default" disabled={!!busy} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
               <Button size="xs" variant="default" disabled={!!busy || p.status !== "running"} onClick={() => void action(p, "stop")}>关闭</Button>
+              <Button size="xs" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
               <Button size="xs" variant="subtle" disabled={!!busy} onClick={() => { setEditing(p); setName(p.name); }}>改名</Button>
               <Button size="xs" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
             </Group>
@@ -157,42 +139,14 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
         </Card>)}
       </SimpleGrid>}
 
-      <Card withBorder radius="md" p="lg">
-        <Stack gap="md">
-          <div><Title order={4}>复制工作记录</Title><Text size="sm" c="dimmed" mt={4}>选定一条本地记录，创建独立副本。双方的后续进展分别保留。</Text></div>
-          <Alert color="blue">导入前需关闭来源和目标实例。分页历史、云端记录及外部附件暂不支持完整迁移；记录列表会标明限制。首次跨账号续聊仍需实际验证。</Alert>
-          <SimpleGrid cols={{ base: 1, sm: 2 }}>
-            <Select label="来源实例" placeholder="选择要读取的工作记录" value={source} disabled={!!busy}
-              data={[{ value: "default", label: "默认 ChatGPT（只读来源）" }, ...profiles.map((p) => ({ value: p.id, label: p.name }))]}
-              onChange={(value) => { setSource(value); if (value === target) setTarget(null); void loadHistory(value); }} />
-            <Select label="目标实例" placeholder="选择接续账号所在实例" value={target} disabled={!!busy}
-              data={profiles.filter((p) => p.id !== source).map((p) => ({ value: p.id, label: p.name }))}
-              onChange={(value) => { setTarget(value); setTransferring(null); }} />
-          </SimpleGrid>
-          {source && <Group justify="space-between"><Text size="sm" c="dimmed">{history ? `${history.items.length} 条记录` : ""}</Text><Button variant="subtle" size="xs" loading={historyBusy} disabled={!!busy} onClick={() => void loadHistory(source)}>重新读取记录</Button></Group>}
-          {historyError && <Alert color="red" role="alert">{historyError}</Alert>}
-          {historyBusy && <Text role="status" size="sm">正在读取工作记录…</Text>}
-          {history?.warnings.map((w) => <Text key={w} c="dimmed" size="xs">{w}</Text>)}
-          {history && history.items.length === 0 && <Text c="dimmed" size="sm">没有找到可列出的本地工作记录。</Text>}
-          {history?.items.map((item) => <Card key={item.key} withBorder radius="sm" p="sm">
-            <Group justify="space-between" align="flex-start" wrap="wrap">
-              <Stack gap={3} style={{ flex: 1, minWidth: 180 }}>
-                <Text size="sm" fw={500} style={{ overflowWrap: "anywhere" }}>{item.title}</Text>
-                <Text size="xs" c="dimmed">{new Date(item.modifiedAt * 1000).toLocaleString()} · {Math.ceil(item.bytes / 1024)} KB</Text>
-                <Text size="xs" c={item.transferable ? "dimmed" : "orange"}>{item.detail}</Text>
-              </Stack>
-              <Button size="xs" variant="light" leftSection={<IconTransfer size={14} />} disabled={!!busy || !canTransfer || !item.transferable} onClick={() => setTransferring(item)}>复制到目标</Button>
-            </Group>
-          </Card>)}
-          {source && target && !canTransfer && <Text size="xs" c="orange">请确认来源和目标已关闭，且已选择包含会话服务的兼容客户端。</Text>}
-        </Stack>
-      </Card>
+      <ChatGptPanelHistory state={state} active={active} initialCopy={initialCopy} disabled={!!busy && busy !== "history"} onBusy={(value) => { busyRef.current = value; setBusy(value ? "history" : ""); }} />
       <Text size="xs" c="dimmed">账号与运行数据按实例保存；同一系统用户仍可访问本机文件。PathMux 关闭后，已启动的 ChatGPT 窗口继续运行。</Text>
     </>}
 
     <Modal opened={active && editing !== null} onClose={() => { if (!busy) setEditing(null); }} title={editing === "new" ? "创建 ChatGPT 实例" : "修改实例名称"} centered>
       <Stack>
         <TextInput label="实例名称" placeholder="例如：工作账号" value={name} maxLength={40} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) void save(); }} />
+        {editing === "new" && <Select label="创建后导入已有记录（可选）" clearable value={copySource} onChange={setCopySource} data={[{ value: "default", label: "默认 ChatGPT" }, ...profiles.map(p => ({ value: p.id, label: p.name }))]} />}
         <Text size="sm" c="dimmed">账号登录在官方 ChatGPT 窗口中完成。创建后可从“复制工作记录”导入已有历史。</Text>
         <Group justify="flex-end"><Button loading={busy === "save"} disabled={!!busy || !name.trim()} onClick={() => void save()}>保存</Button></Group>
       </Stack>
@@ -200,14 +154,5 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     <RiskConfirm opened={active && deleting !== null} level="high" title={`删除实例：${deleting?.name ?? ""}`}
       consequences={["永久删除此实例的本地记录、缓存及保存在实例内的登录数据。", "其他实例、默认账号及已复制到其他实例的记录保持完整。", "云端账号和云端记录不会被此操作删除。"]}
       confirmLabel="删除实例数据" busy={!!busy} onCancel={() => { if (!busy) setDeleting(null); }} onConfirm={() => { if (deleting) void action(deleting, "delete"); }} />
-    <Modal opened={active && transferring !== null} onClose={() => { if (!busy) setTransferring(null); }} title="复制到另一实例" centered>
-      <Stack>
-        <Text>{sourceLabel} → {targetProfile?.name}</Text>
-        <Text fw={500}>{transferring?.title}</Text>
-        <Text size="sm">目标实例将得到独立的对话副本。续聊时，对话内容可能由目标账号发送处理。原项目文件仍在原工作目录，两边继续工作会形成各自的记录。</Text>
-        <Text size="sm" c="dimmed">登录凭证和工具授权保持独立。当前版本只接受能独立读取且通过附件检查的历史格式。</Text>
-        <Button loading={busy === "transfer"} disabled={!!busy || !canTransfer} onClick={() => void send()}>创建独立副本</Button>
-      </Stack>
-    </Modal>
   </Stack>;
 }

@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+mod batch;
 mod discovery;
 mod history;
 mod process;
 mod rpc;
+mod snapshot;
 mod storage;
 
 static OPERATIONS: Mutex<()> = Mutex::new(());
@@ -184,6 +186,7 @@ pub enum Action {
     Launch,
     Focus,
     Stop,
+    Cleanup,
     Rename,
     Delete,
 }
@@ -223,7 +226,15 @@ pub async fn chatgpt_profile_action(request: ActionRequest) -> Result<State, Str
                     .ok_or("该实例尚未由 PathMux 启动")?;
                 let live = process::main_process(&all, &dir, Path::new(exe))
                     .ok_or("实例没有运行中的主窗口，请刷新")?;
-                process::window_action(live, matches!(request.action, Action::Stop))?;
+                if matches!(request.action, Action::Stop) {
+                    process::close_profile(live, &dir)?;
+                } else {
+                    process::window_action(live, false)?;
+                }
+            }
+            Action::Cleanup => {
+                process::cleanup_reporters(&dir)?;
+                process::require_stopped(&process::snapshot()?, &dir)?;
             }
             Action::Rename => {
                 let name = storage::name(request.name.as_deref().unwrap_or(""))?;
@@ -283,6 +294,123 @@ pub async fn chatgpt_transfer(
         let root = storage::root()?;
         let r = storage::registry(&root)?;
         history::transfer(&root, &r, request)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_preview(
+    request: history::TransferRequest,
+) -> Result<history::Preview, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        history::preview(&root, &r, &request)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_pending(target_id: String) -> Result<Vec<history::PendingTransfer>, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        history::pending(&root, &r, &target_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_recover(
+    target_id: String,
+    key: String,
+    discard: bool,
+) -> Result<history::TransferResult, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        history::recover(&root, &r, &target_id, &key, discard)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_batch_create(
+    requests: Vec<history::TransferRequest>,
+) -> Result<batch::Job, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        batch::create(&root, &r, requests)
+    })
+    .await
+}
+#[tauri::command]
+pub async fn chatgpt_batch_list(target_id: String) -> Result<Vec<batch::Job>, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        batch::list(&root, &r, &target_id)
+    })
+    .await
+}
+#[tauri::command]
+pub async fn chatgpt_batch_step(
+    target_id: String,
+    id: String,
+    cancel: bool,
+) -> Result<batch::Job, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        batch::step(&root, &r, &target_id, &id, cancel)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_diagnose(id: String) -> Result<Vec<String>, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let r = storage::registry(&root)?;
+        selected(&r, &id)?;
+        let dir = storage::profile_dir(&root, &id)?;
+        storage::verify_config(&dir)?;
+        process::require_stopped(&process::snapshot()?, &dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [&dir, &dir.join("codex"), &dir.join("desktop")] {
+                if fs::metadata(p)
+                    .map_err(|e| e.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o077
+                    != 0
+                {
+                    return Err("实例目录允许其他用户访问，请恢复私有目录权限后重试".into());
+                }
+            }
+        }
+        let app = discovery::discover(r.installation.as_deref())?;
+        if !app.compatible {
+            return Err(app.detail);
+        }
+        let mut client = rpc::Client::start(app.cli.as_deref().ok_or("客户端没有会话服务")?, &dir)?;
+        let account = client.call("account/read", serde_json::json!({"refreshToken":false}))?;
+        let identity = match account.get("account").filter(|a| !a.is_null()) {
+            Some(a) if a["type"] == "chatgpt" => format!(
+                "客户端保存的 ChatGPT 账号：{}（未刷新网络授权）",
+                a["email"].as_str().unwrap_or("未返回邮箱")
+            ),
+            Some(_) => "客户端返回了非 ChatGPT 登录方式，请在官方窗口重新登录。".into(),
+            None => "客户端未返回已登录账号，请在官方窗口完成登录。".into(),
+        };
+        Ok(vec![
+            "独立目录、配置与所有权检查通过。".into(),
+            "官方会话服务已确认使用此实例的数据目录。".into(),
+            identity,
+        ])
     })
     .await
 }

@@ -2,6 +2,19 @@ use super::*;
 use std::io;
 
 pub fn root() -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("CC_MANAGER_TEST_CHATGPT_ROOT") {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err("测试目录必须为绝对路径".into());
+        }
+        plain(&path)?;
+        return Ok(path);
+    }
+    #[cfg(debug_assertions)]
+    if std::env::var_os("CC_MANAGER_TEST_HOME").is_some() {
+        return Ok(crate::home().join(".pathmux-test/chatgpt"));
+    }
     let base = dirs::data_local_dir().ok_or("无法定位本地应用数据目录")?;
     Ok(base.join("PathMux").join("chatgpt"))
 }

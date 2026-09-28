@@ -112,7 +112,7 @@ describe("术语统一（P1-5）", () => {
         .forEach((line, index) => {
           const cleaned = line.split("单实例").join("");
           // ChatGPT 多开中的“实例”指独立桌面进程与数据目录；Claude 的环境术语保持原约束。
-          const forbidden = file.endsWith("ChatGptPanel.tsx") ? FORBIDDEN.filter((word) => word !== "实例") : FORBIDDEN;
+          const forbidden = ["ChatGptPanel.tsx", "ChatGptPanelHistory.tsx"].some(name => file.endsWith(name)) ? FORBIDDEN.filter((word) => word !== "实例") : FORBIDDEN;
           if (forbidden.some((word) => cleaned.includes(word))) {
             hits.push(`${file}:${index + 1}`);
           }

@@ -152,6 +152,16 @@ pub fn owned<'a>(all: &'a [Live], dir: &Path) -> Vec<&'a Live> {
         .iter()
         .filter(|p| {
             argument_path(&p.args, "--user-data-dir", &desktop, cfg!(windows))
+                || p.args.windows(2).any(|pair| {
+                    pair[0] == "--config"
+                        && pair[1]
+                            == format!(
+                                "sqlite_home={}",
+                                serde_json::to_string(&dir.join("codex/db").to_string_lossy())
+                                    .unwrap()
+                            )
+                            .as_str()
+                })
                 || argument_path(
                     &p.args,
                     "--database",
@@ -183,6 +193,80 @@ pub fn main_process<'a>(all: &'a [Live], dir: &Path, exe: &Path) -> Option<&'a L
                 .iter()
                 .any(|a| a.to_string_lossy().starts_with("--type="))
     })
+}
+
+/// Electron crash reporters can outlive a closed app. Only retire reporters when
+/// every remaining owned process is a reporter; never terminate a live workload.
+fn is_reporter(exe: &Path) -> bool {
+    exe.file_name().is_some_and(|n| {
+        matches!(
+            n.to_str(),
+            Some(
+                "chrome_crashpad_handler"
+                    | "chrome_crashpad_handler.exe"
+                    | "browser_crashpad_handler"
+                    | "browser_crashpad_handler.exe"
+            )
+        )
+    })
+}
+
+pub fn cleanup_reporters(dir: &Path) -> Result<(), String> {
+    let all = snapshot()?;
+    let remaining = owned(&all, dir);
+    if remaining.iter().any(|p| !is_reporter(&p.exe)) {
+        return Ok(());
+    }
+    let had_reporters = !remaining.is_empty();
+    for live in remaining {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(live.pid)]),
+            true,
+            ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+        );
+        if let Some(p) = system.process(sysinfo::Pid::from_u32(live.pid)) {
+            if p.start_time() == live.started
+                && p.exe()
+                    .is_some_and(|exe| path_eq(exe, &live.exe, cfg!(windows)))
+            {
+                #[cfg(unix)]
+                if p.kill_with(sysinfo::Signal::Term) != Some(true) {
+                    let _ = p.kill();
+                }
+                #[cfg(windows)]
+                let _ = p.kill();
+            }
+        }
+    }
+    if had_reporters {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let all = snapshot()?;
+            if owned(&all, dir).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    Ok(())
+}
+
+pub fn close_profile(live: &Live, dir: &Path) -> Result<(), String> {
+    window_action(live, true)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let all = snapshot()?;
+        if !all
+            .iter()
+            .any(|p| p.pid == live.pid && p.started == live.started)
+        {
+            cleanup_reporters(dir)?;
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 pub fn require_stopped(all: &[Live], dir: &Path) -> Result<(), String> {
@@ -275,6 +359,7 @@ pub fn launch(app: &discovery::Installation, dir: &Path) -> Result<(), String> {
         return Err(app.detail.clone());
     }
     storage::verify_config(dir)?;
+    cleanup_reporters(dir)?;
     let all = snapshot()?;
     if let Some(live) = main_process(&all, dir, Path::new(&app.executable)) {
         return window_action(live, false);
@@ -310,6 +395,18 @@ pub fn launch(app: &discovery::Installation, dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reporter_names_cover_both_desktop_variants() {
+        for name in [
+            "browser_crashpad_handler",
+            "browser_crashpad_handler.exe",
+            "chrome_crashpad_handler",
+            "chrome_crashpad_handler.exe",
+        ] {
+            assert!(is_reporter(Path::new(name)));
+        }
+        assert!(!is_reporter(Path::new("ChatGPT.exe")));
+    }
     #[test]
     fn exact_arguments_and_both_platform_paths() {
         for (win, path) in [
@@ -419,7 +516,7 @@ mod tests {
             assert!(!dir.join("codex/auth.json").exists());
         }
         window_action(first, false).unwrap();
-        window_action(first, true).unwrap();
+        close_profile(first, &a).unwrap();
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
             let all = snapshot().unwrap();

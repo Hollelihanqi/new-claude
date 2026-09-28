@@ -34,6 +34,13 @@ impl Client {
         let mut command = Command::new(cli);
         process::configure(&mut command, dir);
         let mut child = process::quiet(&mut command)
+            .args([
+                "--config",
+                &format!(
+                    "sqlite_home={}",
+                    serde_json::to_string(&dir.join("codex/db").to_string_lossy()).unwrap()
+                ),
+            ])
             .arg("app-server")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

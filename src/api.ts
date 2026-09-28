@@ -46,7 +46,14 @@ export interface ChatGptTransferRequest {
   targetId: string;
   key: string;
   revision: string;
+  workspace?: string;
+  fingerprint?: string;
 }
+
+export interface ChatGptPreview { key: string; title: string; bytes: number; images: number; workspace: string; fingerprint: string }
+export interface ChatGptPending { key: string; title: string; state: string }
+export interface ChatGptJob { id: string; targetId: string; requests: ChatGptTransferRequest[]; outcomes: ChatGptBatchItem[]; cancelled: boolean; lastError?: string | null }
+export interface ChatGptBatchItem { key: string; result: ChatGptTransferResult | null; error: string | null }
 
 export interface ChatGptTransferResult {
   targetThreadId: string;
@@ -54,7 +61,7 @@ export interface ChatGptTransferResult {
   detail: string;
 }
 
-export type ChatGptAction = "launch" | "focus" | "stop" | "rename" | "delete";
+export type ChatGptAction = "launch" | "focus" | "stop" | "cleanup" | "rename" | "delete";
 
 // 与 src-tauri 里的 #[tauri::command] 及 serde 结构一一对应
 
@@ -590,6 +597,13 @@ export interface WorkBuddyCertificateStatus {
 
 // 与 src-tauri 里的 #[tauri::command] 一一对应
 export const api = {
+  chatGptBatchCreate: (requests: ChatGptTransferRequest[]): Promise<ChatGptJob> => invoke("chatgpt_batch_create", { requests }),
+  chatGptBatchList: (targetId: string): Promise<ChatGptJob[]> => invoke("chatgpt_batch_list", { targetId }),
+  chatGptBatchStep: (targetId: string, id: string, cancel = false): Promise<ChatGptJob> => invoke("chatgpt_batch_step", { targetId, id, cancel }),
+  chatGptPreview: (request: ChatGptTransferRequest): Promise<ChatGptPreview> => invoke("chatgpt_preview", { request }),
+  chatGptPending: (targetId: string): Promise<ChatGptPending[]> => invoke("chatgpt_pending", { targetId }),
+  chatGptRecover: (targetId: string, key: string, discard: boolean): Promise<ChatGptTransferResult> => invoke("chatgpt_recover", { targetId, key, discard }),
+  chatGptDiagnose: (id: string): Promise<string[]> => invoke("chatgpt_diagnose", { id }),
   chatGptState: (): Promise<ChatGptState> => invoke("chatgpt_state"),
   chatGptSetInstallation: (path: string): Promise<ChatGptState> => invoke("chatgpt_set_installation", { path }),
   chatGptCreateProfile: (name: string): Promise<ChatGptState> => invoke("chatgpt_create_profile", { name }),

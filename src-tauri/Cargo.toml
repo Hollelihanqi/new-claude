@@ -27,6 +27,8 @@ hex = "0.4"
 sysinfo = { version = "0.33.1", default-features = false, features = ["system"] }
 uuid = { version = "1", features = ["v4"] }
 semver = "1"
+zstd = "0.13"
+base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

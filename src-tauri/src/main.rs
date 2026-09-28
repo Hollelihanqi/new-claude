@@ -3487,11 +3487,18 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             chatgpt::chatgpt_state,
+            chatgpt::chatgpt_diagnose,
             chatgpt::chatgpt_set_installation,
             chatgpt::chatgpt_create_profile,
             chatgpt::chatgpt_profile_action,
             chatgpt::chatgpt_history,
             chatgpt::chatgpt_transfer,
+            chatgpt::chatgpt_preview,
+            chatgpt::chatgpt_batch_create,
+            chatgpt::chatgpt_batch_list,
+            chatgpt::chatgpt_batch_step,
+            chatgpt::chatgpt_pending,
+            chatgpt::chatgpt_recover,
             list_profiles,
             save_profile,
             delete_profile,
