@@ -355,6 +355,28 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
 }
 
 pub fn launch(app: &discovery::Installation, dir: &Path) -> Result<(), String> {
+    launch_at(app, dir, None)
+}
+
+pub fn launch_thread(
+    app: &discovery::Installation,
+    dir: &Path,
+    thread_id: &str,
+) -> Result<(), String> {
+    thread_route(thread_id)?;
+    launch_at(app, dir, Some(thread_id))
+}
+
+fn thread_route(thread_id: &str) -> Result<String, String> {
+    storage::validate_id(thread_id)?;
+    Ok(format!("codex://threads/{thread_id}"))
+}
+
+fn launch_at(
+    app: &discovery::Installation,
+    dir: &Path,
+    thread_id: Option<&str>,
+) -> Result<(), String> {
     if !app.compatible {
         return Err(app.detail.clone());
     }
@@ -362,12 +384,27 @@ pub fn launch(app: &discovery::Installation, dir: &Path) -> Result<(), String> {
     cleanup_reporters(dir)?;
     let all = snapshot()?;
     if let Some(live) = main_process(&all, dir, Path::new(&app.executable)) {
+        if let Some(id) = thread_id {
+            let mut command = Command::new(&app.executable);
+            configure(&mut command, dir);
+            command.arg(format!("--user-data-dir={}", dir.join("desktop").display()));
+            command.arg(thread_route(id)?);
+            quiet(&mut command)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("无法打开目标会话：{e}"))?;
+        }
         return window_action(live, false);
     }
     require_stopped(&all, dir)?;
     let mut command = Command::new(&app.executable);
     configure(&mut command, dir);
     command.arg(format!("--user-data-dir={}", dir.join("desktop").display()));
+    if let Some(id) = thread_id {
+        command.arg(thread_route(id)?);
+    }
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -395,6 +432,12 @@ pub fn launch(app: &discovery::Installation, dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thread_deep_link_requires_a_managed_uuid() {
+        let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(thread_route(&id).unwrap(), format!("codex://threads/{id}"));
+        assert!(thread_route("../../other").is_err());
+    }
     #[test]
     fn reporter_names_cover_both_desktop_variants() {
         for name in [

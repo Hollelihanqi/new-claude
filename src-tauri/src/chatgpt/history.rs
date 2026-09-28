@@ -12,6 +12,7 @@ pub struct HistoryItem {
     key: String,
     thread_id: String,
     title: String,
+    workspace: String,
     revision: String,
     bytes: u64,
     modified_at: u64,
@@ -24,6 +25,7 @@ pub struct HistoryItem {
 pub struct HistoryList {
     items: Vec<HistoryItem>,
     warnings: Vec<String>,
+    complete: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -71,6 +73,27 @@ fn source_home(root: &Path, r: &Registry, id: &str) -> Result<PathBuf, String> {
     }
     selected(r, id)?;
     Ok(storage::profile_dir(root, id)?.join("codex"))
+}
+
+fn source_running(root: &Path, r: &Registry, id: &str) -> Result<bool, String> {
+    let all = process::snapshot()?;
+    if id == "default" {
+        let app = discovery::discover(r.installation.as_deref())?;
+        Ok(all.iter().any(|p| {
+            process::path_eq(&p.exe, Path::new(&app.executable), cfg!(windows))
+                && !r.profiles.iter().any(|profile| {
+                    storage::profile_dir(root, &profile.id)
+                        .ok()
+                        .is_some_and(|dir| {
+                            process::owned(&all, &dir)
+                                .iter()
+                                .any(|owned| owned.pid == p.pid)
+                        })
+                })
+        }))
+    } else {
+        Ok(!process::owned(&all, &storage::profile_dir(root, id)?).is_empty())
+    }
 }
 
 fn paths(home: &Path) -> Result<(Vec<PathBuf>, bool), String> {
@@ -138,6 +161,7 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
         key: path_key(home, path)?,
         thread_id: String::new(),
         title: "本地工作记录".into(),
+        workspace: String::new(),
         revision: revision(&meta),
         bytes: meta.len(),
         modified_at: meta
@@ -149,13 +173,21 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
         transferable: false,
         detail: "当前格式尚未通过迁移验证".into(),
     };
-    let bytes = snapshot::read(path)?;
-    let first = bytes.split(|b| *b == b'\n').next().ok_or("记录为空")?;
-    let line: Value = serde_json::from_slice(first).map_err(|_| "会话头格式无法识别")?;
+    let line = snapshot::header_file(path)?;
     if line["type"] != "session_meta" {
         return Ok(item);
     }
     let payload = &line["payload"];
+    item.workspace = payload["cwd"]
+        .as_str()
+        .map(|cwd| {
+            Path::new(cwd)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(cwd))
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default();
     item.thread_id = payload["id"].as_str().unwrap_or("").into();
     if uuid::Uuid::parse_str(&item.thread_id).is_err() {
         item.detail = "会话标识无法识别".into();
@@ -177,7 +209,18 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
         return Ok(item);
     }
     if payload.get("title").and_then(Value::as_str).is_none() {
-        for line in bytes.split(|b| *b == b'\n').take(300) {
+        let file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let reader: Box<dyn Read> = if path.to_string_lossy().ends_with(".jsonl.zst") {
+            Box::new(zstd::stream::read::Decoder::new(file).map_err(|_| "压缩记录无法解码")?)
+        } else {
+            Box::new(file)
+        };
+        let mut prefix = vec![];
+        reader
+            .take(256 * 1024)
+            .read_to_end(&mut prefix)
+            .map_err(|_| "会话摘要读取失败")?;
+        for line in prefix.split(|b| *b == b'\n').take(300) {
             if let Ok(value) = serde_json::from_slice::<Value>(line) {
                 if value["type"] == "event_msg" && value["payload"]["type"] == "user_message" {
                     if let Some(text) = value["payload"]["message"].as_str() {
@@ -203,8 +246,6 @@ pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, S
     let home = source_home(root, r, source_id)?;
     let (mut paths, truncated) = paths(&home)?;
     paths.sort_by_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
-    let more = paths.len() > 300;
-    paths.truncate(300);
     let mut warnings =
         vec!["支持本地旧版、分页、分支与 zstd 压缩记录。云端文件权限不能跨账号复制。".into()];
     let mut items = Vec::new();
@@ -222,10 +263,11 @@ pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, S
     if invalid > 0 {
         warnings.push(format!("有 {invalid} 条记录无法读取，已跳过。"));
     }
-    if more {
-        warnings.push("当前显示最近 300 条记录。".into());
-    }
-    Ok(HistoryList { items, warnings })
+    Ok(HistoryList {
+        items,
+        warnings,
+        complete: !truncated && invalid == 0,
+    })
 }
 
 fn validate_snapshot(bytes: &[u8], home: &Path) -> Result<(), String> {
@@ -233,19 +275,35 @@ fn validate_snapshot(bytes: &[u8], home: &Path) -> Result<(), String> {
     if !text.ends_with('\n') {
         return Err("会话仍在写入或数据不完整，请关闭来源实例后重试".into());
     }
-    let source = home.to_string_lossy();
-    // Internal paths need an attachment/path migration adapter. Do not silently
-    // leave the new thread dependent on a profile that may later be deleted.
-    if text.contains(source.as_ref()) || text.contains(&source.replace('\\', "\\\\")) {
-        return Err("记录引用来源实例内部文件，当前不能保证独立附件接续".into());
-    }
     for line in text.lines() {
         let v: Value = serde_json::from_str(line).map_err(|_| "会话包含不完整记录")?;
-        if has_external_attachment(&v) {
+        if has_external_attachment(&v) || has_source_attachment(&v, home) {
             return Err("记录包含外部附件或云端文件引用，当前不支持完整迁移".into());
         }
     }
     Ok(())
+}
+
+fn has_source_attachment(value: &Value, home: &Path) -> bool {
+    let home_text = home.to_string_lossy().replace('\\', "/").to_lowercase();
+    let home_text = home_text.trim_end_matches('/');
+    fn check(value: &Value, home_text: &str) -> bool {
+        match value {
+            Value::Object(map) => map.iter().any(|(key, item)| {
+                (matches!(
+                    key.as_str(),
+                    "path" | "file_path" | "filePath" | "attachment_path"
+                ) && item.as_str().is_some_and(|raw| {
+                    let path = raw.replace('\\', "/").to_lowercase();
+                    path.starts_with(&format!("{home_text}/"))
+                        && path.split('/').any(|part| part == "attachments")
+                })) || check(item, home_text)
+            }),
+            Value::Array(items) => items.iter().any(|item| check(item, home_text)),
+            _ => false,
+        }
+    }
+    check(value, home_text)
 }
 
 fn has_external_attachment(v: &Value) -> bool {
@@ -278,9 +336,13 @@ fn verify_copied_context(source: &[u8], target: &[u8]) -> Result<(), String> {
                 let mut payload = value["payload"].clone();
                 // The official reader assigns IDs to legacy messages lacking one.
                 // IDs identify items; their text, role and tool references must match.
-                if payload["type"] == "message" {
-                    if let Some(object) = payload.as_object_mut() {
-                        object.remove("id");
+                if let Some(object) = payload.as_object_mut() {
+                    object.remove("id");
+                    if object.get("type").and_then(Value::as_str) == Some("reasoning") {
+                        // The official reader materializes an empty `content` field
+                        // for older reasoning items while preserving their summary
+                        // and encrypted payload.
+                        object.remove("content");
                     }
                 }
                 result.push(payload);
@@ -300,7 +362,51 @@ fn verify_copied_context(source: &[u8], target: &[u8]) -> Result<(), String> {
         }
     }
     if next != source.len() {
-        return Err("目标副本未保留完整的模型上下文，已停止迁移".into());
+        let kind = |value: &Value| {
+            format!(
+                "{}/{}",
+                value["type"].as_str().unwrap_or("?"),
+                value["role"].as_str().unwrap_or("?")
+            )
+        };
+        let changed_fields: Vec<&str> = source
+            .get(next)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|a| {
+                a.keys().filter_map(|key| {
+                    (a.get(key)
+                        != target
+                            .get(next)
+                            .and_then(Value::as_object)
+                            .and_then(|b| b.get(key)))
+                    .then_some(key.as_str())
+                })
+            })
+            .collect();
+        let extra_fields: Vec<&str> = target
+            .get(next)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|b| {
+                b.keys().filter_map(|key| {
+                    (!source
+                        .get(next)
+                        .and_then(Value::as_object)
+                        .is_some_and(|a| a.contains_key(key)))
+                    .then_some(key.as_str())
+                })
+            })
+            .collect();
+        return Err(format!(
+            "目标副本未保留完整的模型上下文（已核对 {next}/{} 条，目标有 {} 条；首个差异：来源 {}，目标 {}，字段 {:?}，目标新增字段 {:?}），已停止迁移",
+            source.len(),
+            target.len(),
+            source.get(next).map(kind).unwrap_or_default(),
+            target.get(next).map(kind).unwrap_or_default(),
+            changed_fields,
+            extra_fields
+        ));
     }
     Ok(())
 }
@@ -380,18 +486,7 @@ pub fn transfer(
         }
     }
     let home = source_home(root, r, &request.source_id)?;
-    if request.source_id == "default" {
-        // Conservatively require all official main instances of this installation
-        // to be closed before snapshotting the default profile.
-        if all
-            .iter()
-            .any(|p| process::path_eq(&p.exe, Path::new(&app.executable), cfg!(windows)))
-        {
-            return Err("复制默认实例记录前，请先退出该客户端的所有窗口".into());
-        }
-    } else {
-        process::require_stopped(&all, &storage::profile_dir(root, &request.source_id)?)?;
-    }
+    let completed_only = source_running(root, r, &request.source_id)?;
     let mut source = None;
     for p in paths(&home)?.0 {
         if path_key(&home, &p)? != request.key {
@@ -408,11 +503,11 @@ pub fn transfer(
     if !item.transferable {
         return Err(item.detail);
     }
-    if item.revision != request.revision {
+    if item.revision != request.revision && !completed_only {
         return Err("来源记录已变化，请刷新后重新选择".into());
     }
     let candidates = paths(&home)?.0;
-    let raw = snapshot::materialize(&path, &candidates)?;
+    let raw = snapshot::materialize(&path, &candidates, completed_only)?;
     let (bytes, _, _) = prepare(raw, &home, request.workspace.as_deref())?;
     if request
         .fingerprint
@@ -421,7 +516,9 @@ pub fn transfer(
     {
         return Err("预览后记录或附件已变化，请重新预览".into());
     }
-    if revision(&fs::metadata(&path).map_err(|e| e.to_string())?) != item.revision {
+    if !completed_only
+        && revision(&fs::metadata(&path).map_err(|e| e.to_string())?) != item.revision
+    {
         return Err("读取期间来源记录发生变化，请刷新后重试".into());
     }
     validate_snapshot(&bytes, &home)?;
@@ -475,6 +572,7 @@ pub struct Preview {
 
 pub fn preview(root: &Path, r: &Registry, request: &TransferRequest) -> Result<Preview, String> {
     let home = source_home(root, r, &request.source_id)?;
+    let completed_only = source_running(root, r, &request.source_id)?;
     let candidates = paths(&home)?.0;
     let (path, item) = candidates
         .iter()
@@ -486,11 +584,11 @@ pub fn preview(root: &Path, r: &Registry, request: &TransferRequest) -> Result<P
                 .map(|i| (p, i))
         })
         .ok_or("记录不存在，请刷新")?;
-    if item.revision != request.revision {
+    if item.revision != request.revision && !completed_only {
         return Err("记录已变化，请刷新".into());
     }
     let (bytes, images, workspace) = prepare(
-        snapshot::materialize(path, &candidates)?,
+        snapshot::materialize(path, &candidates, completed_only)?,
         &home,
         request.workspace.as_deref(),
     )?;
@@ -872,6 +970,19 @@ mod tests {
             home
         )
         .is_err());
+        assert!(validate_snapshot(
+            b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":[{\"text\":\"Mention /profiles/source/codex in discussion\"}]}}\n",
+            home
+        ).is_ok());
+        let windows_path = format!(
+            "{}\n",
+            json!({"path":r"c:\profiles\source\CODEX\attachments\x"})
+        );
+        assert!(validate_snapshot(
+            windows_path.as_bytes(),
+            Path::new(r"C:\Profiles\Source\codex")
+        )
+        .is_err());
         assert!(
             validate_snapshot(b"{\"image_url\":\"data:image/png;base64,test\"}\n", home).is_ok()
         );
@@ -957,6 +1068,135 @@ mod tests {
         assert!(
             read.to_string().contains("cyan"),
             "Imported dialogue must remain readable after deleting the source"
+        );
+    }
+
+    #[test]
+    #[ignore = "set PATHMUX_TEST_LIVE_ROLLOUT to a local Codex session; uses a temporary target without login or inference"]
+    fn official_client_migrates_completed_live_session_without_credentials() {
+        let source = PathBuf::from(std::env::var("PATHMUX_TEST_LIVE_ROLLOUT").unwrap());
+        let home = crate::home().join(".codex");
+        assert!(source.starts_with(&home));
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut registry = Registry::default();
+        registry.installation = std::env::var("PATHMUX_TEST_CHATGPT_APP").ok();
+        let target = storage::create(&root, &mut registry, "Temporary target").unwrap();
+        let item = inspect(&home, &source).unwrap();
+        let request = TransferRequest {
+            source_id: "default".into(),
+            target_id: target.id.clone(),
+            key: item.key,
+            revision: item.revision,
+            workspace: None,
+            fingerprint: None,
+        };
+        let preview = preview(&root, &registry, &request).unwrap();
+        let result = transfer(
+            &root,
+            &registry,
+            TransferRequest {
+                fingerprint: Some(preview.fingerprint),
+                ..request
+            },
+        )
+        .unwrap();
+        assert!(!result.target_thread_id.is_empty());
+        let app = discovery::discover(registry.installation.as_deref()).unwrap();
+        let dir = storage::profile_dir(&root, &target.id).unwrap();
+        let mut client = rpc::Client::start(app.cli.as_deref().unwrap(), &dir).unwrap();
+        let read = client
+            .call(
+                "thread/read",
+                json!({"threadId":result.target_thread_id,"includeTurns":true}),
+            )
+            .unwrap();
+        assert!(read["thread"]["turns"]
+            .as_array()
+            .is_some_and(|turns| !turns.is_empty()));
+        assert!(!dir.join("codex/auth.json").exists());
+        // Continue the imported live chat against a loopback-only model stub.
+        // The request must contain the latest completed user turn and the new input.
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        let completed = snapshot::materialize(&source, &paths(&home).unwrap().0, true).unwrap();
+        let last_user = completed
+            .split(|b| *b == b'\n')
+            .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+            .filter(|value| value["type"] == "response_item" && value["payload"]["role"] == "user")
+            .filter_map(|value| {
+                value["payload"]["content"][0]["text"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .last()
+            .unwrap();
+        let marker = last_user.chars().take(20).collect::<String>();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut saw_history = false;
+            let mut saw_new_input = false;
+            let mut requests = 0;
+            let mut sizes = Vec::new();
+            while Instant::now() < deadline && requests < 3 && !saw_new_input {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+                };
+                requests += 1;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut bytes = vec![];
+                let mut chunk = [0u8; 16384];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if bytes.len() > 32 * 1024 * 1024 {
+                        break;
+                    }
+                    if let Some(split) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..split]);
+                        let length = header.lines().find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|text| text.trim().parse::<usize>().ok())
+                        });
+                        if length.is_some_and(|len| bytes.len() >= split + 4 + len) {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8_lossy(&bytes);
+                sizes.push((
+                    bytes.len(),
+                    hex::encode(Sha256::digest(&bytes))[..12].to_string(),
+                ));
+                saw_history |= request.contains(&marker);
+                saw_new_input |= request.contains("PATHMUX_LIVE_CONTINUATION");
+                let response = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_pathmux_live_test\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Local continuation test summary.\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+                let _ = write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response);
+            }
+            (saw_history, saw_new_input, requests, sizes)
+        });
+        let imported = result.target_thread_id;
+        client.call("thread/resume",json!({"threadId":imported,"model":"gpt-5.4","modelProvider":"pathmux_test","excludeTurns":true,
+            "config":{"model_context_window":2000000,"model_auto_compact_token_limit":1800000,"model_providers.pathmux_test":{"name":"PathMux local test","base_url":format!("http://{address}/v1"),"wire_api":"responses","requires_openai_auth":false,"supports_websockets":false,"request_max_retries":0}}})).unwrap();
+        client.call("turn/start",json!({"threadId":imported,"input":[{"type":"text","text":"PATHMUX_LIVE_CONTINUATION","text_elements":[]}]})).unwrap();
+        let checks = server.join().unwrap();
+        assert!(
+            checks.0 && checks.1,
+            "local provider must receive completed history and new input: {checks:?}"
         );
     }
     #[test]

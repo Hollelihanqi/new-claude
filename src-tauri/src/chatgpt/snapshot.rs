@@ -63,7 +63,11 @@ pub fn header_file(path: &Path) -> Result<Value, String> {
     header(&bytes[..end])
 }
 
-pub fn materialize(path: &Path, candidates: &[PathBuf]) -> Result<Vec<u8>, String> {
+pub fn materialize(
+    path: &Path,
+    candidates: &[PathBuf],
+    completed_only: bool,
+) -> Result<Vec<u8>, String> {
     let mut seen = HashSet::new();
     let mut segments: Vec<Vec<Value>> = vec![];
     let mut next = path.to_path_buf();
@@ -75,6 +79,9 @@ pub fn materialize(path: &Path, candidates: &[PathBuf]) -> Result<Vec<u8>, Strin
             return Err("会话父链存在循环或超过 128 层".into());
         }
         let mut bytes = read(&next)?;
+        if leaf.is_none() && completed_only {
+            bytes = completed_prefix(&bytes)?;
+        }
         let meta = header(&bytes)?;
         if leaf.is_none() {
             leaf = Some(meta.clone());
@@ -118,7 +125,14 @@ pub fn materialize(path: &Path, candidates: &[PathBuf]) -> Result<Vec<u8>, Strin
             let value: Value = serde_json::from_slice(line).map_err(|_| "历史包含损坏的记录")?;
             if !matches!(
                 value["type"].as_str(),
-                Some("response_item" | "event_msg" | "turn_context" | "compacted")
+                Some(
+                    "response_item"
+                        | "event_msg"
+                        | "turn_context"
+                        | "compacted"
+                        | "token_usage_record"
+                        | "world_state"
+                )
             ) {
                 return Err("历史包含尚未适配的记录类型".into());
             }
@@ -179,10 +193,54 @@ pub fn materialize(path: &Path, candidates: &[PathBuf]) -> Result<Vec<u8>, Strin
     Ok(output)
 }
 
+fn completed_prefix(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut end = None;
+    let mut offset = 0;
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        offset += line.len();
+        if !line.ends_with(b"\n") {
+            break;
+        }
+        let value: Value = serde_json::from_slice(line).map_err(|_| "会话记录尚未完整写入")?;
+        if value["type"] == "event_msg" && value["payload"]["type"] == "task_complete" {
+            end = Some(offset);
+        }
+    }
+    let end = end.ok_or("会话尚无完成的回复，请等待当前回复结束后重试")?;
+    Ok(bytes[..end].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn running_session_uses_only_last_completed_reply() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = root.join(format!("rollout-{id}.jsonl"));
+        let lines = [
+            json!({"type":"session_meta","payload":{"id":id,"history_mode":"legacy"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before"}]}}),
+            json!({"type":"token_usage_record","payload":{"thread_id":id}}),
+            json!({"type":"world_state","payload":{"full":true,"state":{}}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"unfinished"}]}}),
+        ];
+        fs::write(
+            &path,
+            lines.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let snapshot = materialize(&path, &[], true).unwrap();
+        let text = String::from_utf8(snapshot).unwrap();
+        assert!(text.contains("before"));
+        assert!(!text.contains("unfinished"));
+        assert!(text.contains("world_state"));
+        assert!(text.contains("token_usage_record"));
+        assert!(materialize(&path, &[], false).unwrap().len() > text.len());
+    }
     #[test]
     fn compressed_parent_cutoff_ignores_later_parent_work() {
         let temp = tempfile::tempdir().unwrap();
@@ -205,13 +263,13 @@ mod tests {
         .unwrap();
         let child = root.join("rollout-child.jsonl");
         fs::write(&child, format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":uuid::Uuid::new_v4(),"history_mode":"paginated","history_base":{"thread_id":parent_id,"end_ordinal_exclusive":2,"end_byte_offset":prefix.len()}}}), json!({"type":"response_item","payload":{"text":"child"}}))).unwrap();
-        let bytes = materialize(&child, &[parent.clone()]).unwrap();
+        let bytes = materialize(&child, &[parent.clone()], false).unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("inherited"));
         assert!(text.contains("child"));
         assert!(!text.contains("later-parent-only"));
         assert!(!text.contains("history_base"));
         fs::remove_file(parent).unwrap();
-        assert!(materialize(&child, &[]).is_err());
+        assert!(materialize(&child, &[], false).is_err());
     }
 }

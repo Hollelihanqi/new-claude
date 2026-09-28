@@ -29,6 +29,7 @@ export interface ChatGptHistoryItem {
   key: string;
   threadId: string;
   title: string;
+  workspace: string;
   revision: string;
   bytes: number;
   modifiedAt: number;
@@ -39,6 +40,7 @@ export interface ChatGptHistoryItem {
 export interface ChatGptHistory {
   items: ChatGptHistoryItem[];
   warnings: string[];
+  complete: boolean;
 }
 
 export interface ChatGptTransferRequest {
@@ -603,6 +605,7 @@ export const api = {
   chatGptPreview: (request: ChatGptTransferRequest): Promise<ChatGptPreview> => invoke("chatgpt_preview", { request }),
   chatGptPending: (targetId: string): Promise<ChatGptPending[]> => invoke("chatgpt_pending", { targetId }),
   chatGptRecover: (targetId: string, key: string, discard: boolean): Promise<ChatGptTransferResult> => invoke("chatgpt_recover", { targetId, key, discard }),
+  chatGptOpenThread: (targetId: string, threadId: string): Promise<ChatGptState> => invoke("chatgpt_open_thread", { targetId, threadId }),
   chatGptDiagnose: (id: string): Promise<string[]> => invoke("chatgpt_diagnose", { id }),
   chatGptState: (): Promise<ChatGptState> => invoke("chatgpt_state"),
   chatGptSetInstallation: (path: string): Promise<ChatGptState> => invoke("chatgpt_set_installation", { path }),

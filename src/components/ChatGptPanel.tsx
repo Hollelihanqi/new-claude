@@ -91,7 +91,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     <Group justify="space-between" align="flex-start">
       <div>
         <Group gap="xs"><IconBrandOpenai size={24} /><Title order={3}>ChatGPT 多开</Title><Badge color="orange" variant="light">验证阶段</Badge></Group>
-        <Text c="dimmed" size="sm" mt={6}>各账号分别登录、同时使用。按需复制工作记录，在另一实例继续。</Text>
+        <Text c="dimmed" size="sm" mt={6}>各账号分别登录、同时使用。可选择复制本地 Codex 工作记录，在另一实例继续。</Text>
       </div>
       <Group gap="xs">
         <Button variant="default" leftSection={<IconRefresh size={16} />} disabled={!!busy} onClick={() => void refresh()}>刷新</Button>
@@ -146,8 +146,8 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     <Modal opened={active && editing !== null} onClose={() => { if (!busy) setEditing(null); }} title={editing === "new" ? "创建 ChatGPT 实例" : "修改实例名称"} centered>
       <Stack>
         <TextInput label="实例名称" placeholder="例如：工作账号" value={name} maxLength={40} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) void save(); }} />
-        {editing === "new" && <Select label="创建后导入已有记录（可选）" clearable value={copySource} onChange={setCopySource} data={[{ value: "default", label: "默认 ChatGPT" }, ...profiles.map(p => ({ value: p.id, label: p.name }))]} />}
-        <Text size="sm" c="dimmed">账号登录在官方 ChatGPT 窗口中完成。创建后可从“复制工作记录”导入已有历史。</Text>
+        {editing === "new" && <Select label="创建后选择本地记录（可选）" clearable value={copySource} onChange={setCopySource} data={[{ value: "default", label: "默认实例的本地 Codex 记录" }, ...profiles.map(p => ({ value: p.id, label: p.name }))]} />}
+        <Text size="sm" c="dimmed">账号登录在官方 ChatGPT 窗口中完成。创建后可选择复制本地 Codex 工作记录。</Text>
         <Group justify="flex-end"><Button loading={busy === "save"} disabled={!!busy || !name.trim()} onClick={() => void save()}>保存</Button></Group>
       </Stack>
     </Modal>

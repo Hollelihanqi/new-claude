@@ -299,6 +299,52 @@ pub async fn chatgpt_transfer(
 }
 
 #[tauri::command]
+pub async fn chatgpt_open_thread(target_id: String, thread_id: String) -> Result<State, String> {
+    blocking(move || {
+        storage::validate_id(&thread_id)?;
+        let root = storage::root()?;
+        let mut r = storage::registry(&root)?;
+        selected(&r, &target_id)?;
+        let dir = storage::profile_dir(&root, &target_id)?;
+        storage::verify_config(&dir)?;
+        let app = discovery::discover(r.installation.as_deref())?;
+        if !app.compatible {
+            return Err(app.detail);
+        }
+        let cli = app.cli.as_deref().ok_or("客户端缺少会话服务")?;
+        let mut client = rpc::Client::start(cli, &dir)?;
+        let read = client.call(
+            "thread/read",
+            serde_json::json!({"threadId":thread_id,"includeTurns":false}),
+        )?;
+        let path = read
+            .pointer("/thread/path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("无法确认会话位置")?;
+        if !std::fs::canonicalize(path)
+            .map_err(|e| e.to_string())?
+            .starts_with(
+                dir.join("codex")
+                    .canonicalize()
+                    .map_err(|e| e.to_string())?,
+            )
+        {
+            return Err("会话不属于目标账号实例".into());
+        }
+        drop(client);
+        r.profiles
+            .iter_mut()
+            .find(|p| p.id == target_id)
+            .unwrap()
+            .last_executable = Some(app.executable.clone());
+        storage::save(&root, &r)?;
+        process::launch_thread(&app, &dir, &thread_id)?;
+        state_at(&root)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn chatgpt_preview(
     request: history::TransferRequest,
 ) -> Result<history::Preview, String> {
