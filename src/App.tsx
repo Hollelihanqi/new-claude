@@ -39,6 +39,7 @@ import PersistentPage from "./components/PersistentPage";
 import TitleBar from "./components/TitleBar";
 import { USAGE_AUTO_OPTIONS } from "./components/usageAutoOptions";
 import StableRefreshButton from "./components/StableRefreshButton";
+import UsageLoading from "./components/UsageLoading";
 import { describeUpdateCheckError, UPDATE_CHECK_OPTIONS } from "./updateCheck";
 import type { Scheme } from "./themeScheme";
 import type { SystemColorScheme } from "./systemColorScheme";
@@ -482,8 +483,8 @@ export default function App({
             <PersistentPage active={view === "chatgpt"} warmupDelay={900}><ChatGptPanel active={view === "chatgpt"} /></PersistentPage>
             <PersistentPage active={view === "mcp"} warmupDelay={1100}><McpPanel /></PersistentPage>
             <PersistentPage active={view === "extensions"} warmupDelay={1500}><ExtensionsPanel /></PersistentPage>
-            <PersistentPage active={view === "insights"} warmupDelay={1900}>
-              <div className="view-scroll">
+            <PersistentPage active={view === "insights"} warmupDelay={1900} fallback={<div className="view-scroll insights-scroll"><UsageLoading /></div>}>
+              <div className="view-scroll insights-scroll">
                 <UsagePanel
                   data={usageData}
                   err={usageErr}

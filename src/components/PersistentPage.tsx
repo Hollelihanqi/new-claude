@@ -18,10 +18,11 @@ export function usePageActivation(refresh: () => void, activeOverride?: boolean)
 }
 
 // 分批预热页面及其只读数据；切换只改变可见性，不销毁表单和请求状态。
-export default function PersistentPage({ active, warmupDelay, children }: {
+export default function PersistentPage({ active, warmupDelay, children, fallback }: {
   active: boolean;
   warmupDelay: number;
   children: ReactNode;
+  fallback?: ReactNode;
 }) {
   const [ready, setReady] = useState(active);
   useEffect(() => {
@@ -36,7 +37,7 @@ export default function PersistentPage({ active, warmupDelay, children }: {
     <div hidden={!active} style={{ display: active ? "contents" : "none" }}>
       <PageActiveContext.Provider value={active}>
         <PageErrorBoundary>
-          <Suspense fallback={<div role="status" style={{ padding: 24 }}>正在准备页面…</div>}>
+          <Suspense fallback={fallback ?? <div role="status" style={{ padding: 24 }}>正在准备页面…</div>}>
             {children}
           </Suspense>
         </PageErrorBoundary>

@@ -3487,6 +3487,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             chatgpt::chatgpt_state,
+            chatgpt::chatgpt_open_primary,
             chatgpt::chatgpt_diagnose,
             chatgpt::chatgpt_set_installation,
             chatgpt::chatgpt_create_profile,

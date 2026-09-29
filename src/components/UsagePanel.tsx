@@ -26,6 +26,7 @@ import type { EChartsOption } from "echarts";
 import type { UsageStats } from "../api";
 import StableRefreshButton from "./StableRefreshButton";
 import { buildUsageProfileOptions } from "./usageProfileOptions";
+import UsageLoading from "./UsageLoading";
 
 function EChart({ option, height = 340 }: { option: EChartsOption; height?: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -360,8 +361,10 @@ export default function UsagePanel({
 
   const hasData = rows.length > 0;
 
+  if (!data) return <UsageLoading error={err || undefined} onRetry={err ? load : undefined} />;
+
   return (
-    <Stack gap="md">
+    <Stack gap="md" className="usage-page">
       <Card withBorder padding="md" radius="lg" className="usage-layout-card">
         <Group gap="xl" align="center" wrap="wrap">
           <Group gap="xs" align="center">
@@ -427,8 +430,8 @@ export default function UsagePanel({
 
       {err && <Alert color="red" icon={<IconInfoCircle size={16} />} radius="lg">{err}</Alert>}
 
-      {!hasData && !busy && (
-        <Card withBorder padding="xl" radius="lg" className="usage-layout-card">
+      {!hasData && (
+        <Card withBorder padding="xl" radius="lg" className="usage-layout-card usage-empty-state">
           <Stack align="center" gap="xs">
             <IconChartLine size={40} opacity={0.4} />
             <Text c="dimmed" size="sm">当前筛选下没有数据。换个时间范围，或用 claude 跑几次对话——数据会自动刷新。</Text>

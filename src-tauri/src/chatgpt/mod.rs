@@ -192,6 +192,17 @@ pub async fn chatgpt_state() -> Result<State, String> {
 }
 
 #[tauri::command]
+pub async fn chatgpt_open_primary() -> Result<(), String> {
+    blocking(|| {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        let app = discovery::discover(registry.installation.as_deref())?;
+        process::open_primary(&app)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn chatgpt_set_installation(path: String) -> Result<State, String> {
     blocking(move || {
         let app = discovery::inspect(Path::new(&path))?;

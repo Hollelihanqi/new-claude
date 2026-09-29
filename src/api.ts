@@ -608,6 +608,7 @@ export const api = {
   chatGptOpenThread: (targetId: string, threadId: string): Promise<ChatGptState> => invoke("chatgpt_open_thread", { targetId, threadId }),
   chatGptDiagnose: (id: string): Promise<{ healthy: boolean; details: string[] }> => invoke("chatgpt_diagnose", { id }),
   chatGptState: (): Promise<ChatGptState> => invoke("chatgpt_state"),
+  chatGptOpenPrimary: (): Promise<void> => invoke("chatgpt_open_primary"),
   chatGptSetInstallation: (path: string): Promise<ChatGptState> => invoke("chatgpt_set_installation", { path }),
   chatGptCreateProfile: (name: string): Promise<ChatGptState> => invoke("chatgpt_create_profile", { name }),
   chatGptProfileAction: (id: string, action: ChatGptAction): Promise<ChatGptState> =>

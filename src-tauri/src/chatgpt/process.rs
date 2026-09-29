@@ -65,12 +65,16 @@ pub fn contaminated(key: &str) -> bool {
         || k.starts_with("NODE_")
 }
 
-pub fn configure(command: &mut Command, dir: &Path) {
+fn clear_overrides(command: &mut Command) {
     for (key, _) in std::env::vars_os() {
         if contaminated(&key.to_string_lossy()) {
             command.env_remove(key);
         }
     }
+}
+
+pub fn configure(command: &mut Command, dir: &Path) {
+    clear_overrides(command);
     command
         .env("CODEX_HOME", dir.join("codex"))
         .env("CODEX_ELECTRON_USER_DATA_PATH", dir.join("desktop"))
@@ -193,6 +197,62 @@ pub fn main_process<'a>(all: &'a [Live], dir: &Path, exe: &Path) -> Option<&'a L
                 .iter()
                 .any(|a| a.to_string_lossy().starts_with("--type="))
     })
+}
+
+fn primary_process<'a>(all: &'a [Live], exe: &Path) -> Option<&'a Live> {
+    all.iter().find(|p| {
+        path_eq(&p.exe, exe, cfg!(windows))
+            && !p.args.iter().any(|a| {
+                let arg = a.to_string_lossy();
+                arg.starts_with("--type=")
+                    || arg == "--user-data-dir"
+                    || arg.starts_with("--user-data-dir=")
+            })
+    })
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+pub fn open_primary(app: &discovery::Installation) -> Result<(), String> {
+    let exe = Path::new(&app.executable);
+    if let Some(live) = primary_process(&snapshot()?, exe) {
+        return window_action(live, false);
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("/usr/bin/open");
+        command.args(["-n", "-a", &app.path]);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = Command::new(exe);
+    clear_overrides(&mut command);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("无法打开主 ChatGPT：{e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        if primary_process(&snapshot()?, exe).is_some() {
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            if !status.success() {
+                return Err("主 ChatGPT 启动请求失败，请检查客户端安装".into());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err("已请求打开主 ChatGPT，但尚未确认窗口，请稍后重试".into());
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn open_primary(_app: &discovery::Installation) -> Result<(), String> {
+    Err("当前系统不支持打开主 ChatGPT 客户端".into())
 }
 
 /// Electron crash reporters can outlive a closed app. Only retire reporters when
@@ -449,6 +509,31 @@ mod tests {
             assert!(is_reporter(Path::new(name)));
         }
         assert!(!is_reporter(Path::new("ChatGPT.exe")));
+    }
+    #[test]
+    fn primary_detection_excludes_managed_instances_and_helpers() {
+        let exe = PathBuf::from("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT");
+        let make = |pid, args: Vec<OsString>| Live {
+            pid,
+            started: 1,
+            exe: exe.clone(),
+            args,
+            parent: None,
+        };
+        let managed = make(
+            1,
+            vec![
+                "ChatGPT".into(),
+                "--user-data-dir=/tmp/profile/desktop".into(),
+            ],
+        );
+        let helper = make(2, vec!["ChatGPT".into(), "--type=renderer".into()]);
+        let primary = make(3, vec!["ChatGPT".into()]);
+        assert!(primary_process(&[managed.clone(), helper.clone()], &exe).is_none());
+        assert_eq!(
+            primary_process(&[managed, helper, primary], &exe).map(|p| p.pid),
+            Some(3)
+        );
     }
     #[test]
     fn exact_arguments_and_both_platform_paths() {

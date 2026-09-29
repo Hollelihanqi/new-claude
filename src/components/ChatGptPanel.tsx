@@ -121,6 +121,8 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     if (typeof path === "string") { const next = await api.chatGptSetInstallation(path); if (alive.current) setState(next); }
   });
 
+  const openPrimary = () => run("open-primary", () => api.chatGptOpenPrimary());
+
   const save = () => run("save", async () => {
     if (!creating || !name.trim()) return;
     const next = await api.chatGptCreateProfile(name.trim());
@@ -145,6 +147,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
           </div>
         </div>
         <Group gap="xs" className="chatgpt-console-actions">
+          {state?.installation && <Button variant="subtle" leftSection={pending("open-primary") ? <IconLoader2 size={16} className="chatgpt-button-spinner" /> : <IconBrandOpenai size={16} />} aria-busy={pending("open-primary")} onClick={() => void openPrimary()}>打开主 ChatGPT</Button>}
           <Button variant="subtle" leftSection={pending("pick") ? <IconLoader2 size={16} className="chatgpt-button-spinner" /> : <IconFolderOpen size={16} />} aria-busy={pending("pick")} onClick={() => void pick()}>选择客户端</Button>
           <Button variant="subtle" leftSection={<IconRefresh size={16} className={refreshing ? "chatgpt-button-spinner" : undefined} />} aria-busy={refreshing} onClick={() => void manualRefresh()}>刷新</Button>
           {profiles.length > 0 && <Button leftSection={<IconPlus size={16} />} onClick={() => { setCreating(true); setName(""); }}>创建实例</Button>}
@@ -161,20 +164,19 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="账号实例">
       <Title order={4}>账号实例</Title>
       <div className="chatgpt-profile-list">
-      {profiles.map((p) => { const diagnostic = diagnostics[p.id]; return <div key={p.id} className="chatgpt-profile">
+      {profiles.map((p) => { const diagnostic = diagnostics[p.id]; const tone = p.status === "stopped" ? !diagnostic || diagnostic.pending ? "checking" : diagnostic.healthy ? "healthy" : "warning" : p.status; return <div key={p.id} className="chatgpt-profile" data-profile-tone={tone}>
         <div className="chatgpt-profile-top">
           <div className="chatgpt-profile-main">
             <span className="chatgpt-profile-icon"><IconBrandOpenai size={23} /></span>
             <div className="chatgpt-profile-copy">
               <Text fw={700} className="chatgpt-profile-name">{p.name}</Text>
-              <Text size="xs" c="dimmed" className="chatgpt-profile-path" title={p.directory}>{p.directory}</Text>
             </div>
           </div>
           <div className="chatgpt-profile-health">
             {p.status === "stopped" && (!diagnostic || diagnostic.pending ? <span className="chatgpt-health-label chatgpt-health-pending"><IconLoader2 size={14} className="chatgpt-button-spinner" />检查中</span> : diagnostic.healthy ? <span className="chatgpt-health-label chatgpt-health-ok"><IconCircleCheck size={14} />正常</span> : <Button size="compact-xs" variant="subtle" color="orange" leftSection={<IconInfoCircle size={15} />} onClick={() => setDiagnosticDetailsId(p.id)}>{diagnostic.details.some(line => line.includes("客户端未返回已登录账号")) ? "待登录" : "需处理"}</Button>)}
           </div>
         </div>
-        <div className={`chatgpt-runtime-status chatgpt-runtime-${p.status}${p.status === "stopped" ? !diagnostic || diagnostic.pending ? " chatgpt-runtime-checking" : diagnostic.healthy ? " chatgpt-runtime-healthy" : " chatgpt-runtime-warning" : ""}`} aria-label={`实例状态：${STATUS[p.status]}`}>
+        <div className={`chatgpt-runtime-status chatgpt-runtime-${p.status}${p.status === "stopped" ? ` chatgpt-runtime-${tone}` : ""}`} aria-label={`实例状态：${STATUS[p.status]}`}>
           <span className="chatgpt-runtime-line" aria-hidden="true" />
         </div>
         <div className="chatgpt-profile-actions">

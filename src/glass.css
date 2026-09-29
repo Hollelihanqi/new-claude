@@ -1767,6 +1767,42 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
   border-radius: 22px !important;
   box-shadow: var(--app-panel-shadow) !important;
 }
+.insights-scroll { display: flex; flex-direction: column; min-height: 100%; }
+.insights-scroll > .usage-page,
+.insights-scroll > .usage-loading { flex: 1 0 auto; }
+.usage-page { min-height: 100%; }
+.usage-empty-state { flex: 1; min-height: 300px; display: grid; place-items: center; }
+.usage-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: max(360px, 100%);
+  padding: 36px 24px;
+  text-align: center;
+  background: radial-gradient(circle at 50% 32%, color-mix(in srgb, var(--theme-base) 11%, var(--app-surface)) 0%, var(--app-surface) 57%);
+  border-radius: 22px;
+  box-shadow: var(--app-panel-shadow);
+}
+.usage-loading-mark { display: grid; place-items: center; width: 70px; height: 70px; margin-bottom: 18px; color: var(--mantine-primary-color-7); background: color-mix(in srgb, var(--theme-base) 13%, var(--app-surface)); border: 1px solid color-mix(in srgb, var(--theme-base) 19%, transparent); border-radius: 22px; box-shadow: 0 12px 28px color-mix(in srgb, var(--theme-base) 12%, transparent); animation: usage-loading-float 2.5s ease-in-out infinite; }
+.usage-loading h2 { margin: 0; color: var(--app-strong-text); font-size: 20px; letter-spacing: -.025em; }
+.usage-loading p { max-width: 380px; margin: 8px 0 0; color: var(--app-secondary-text); font-size: 13px; line-height: 1.6; }
+.usage-loading-progress { width: min(240px, 100%); height: 5px; margin-top: 25px; overflow: hidden; background: color-mix(in srgb, var(--theme-base) 11%, var(--app-surface-soft)); border-radius: 999px; }
+.usage-loading-progress span { display: block; width: 38%; height: 100%; background: linear-gradient(90deg, var(--mantine-primary-color-5), var(--mantine-primary-color-7)); border-radius: inherit; animation: usage-loading-sweep 1.7s ease-in-out infinite alternate; }
+.usage-loading-preview { display: flex; align-items: end; justify-content: center; gap: 8px; height: 54px; margin-top: 27px; opacity: .42; }
+.usage-loading-preview i { width: 12px; height: 20px; background: var(--mantine-primary-color-5); border-radius: 5px 5px 2px 2px; animation: usage-loading-bar 1.5s ease-in-out infinite alternate; }
+.usage-loading-preview i:nth-child(2) { height: 32px; animation-delay: .12s; }
+.usage-loading-preview i:nth-child(3) { height: 26px; animation-delay: .24s; }
+.usage-loading-preview i:nth-child(4) { height: 44px; animation-delay: .36s; }
+.usage-loading-preview i:nth-child(5) { height: 36px; animation-delay: .48s; }
+.usage-loading-preview i:nth-child(6) { height: 50px; animation-delay: .6s; }
+.usage-loading-preview i:nth-child(7) { height: 40px; animation-delay: .72s; }
+.usage-loading-error { max-width: min(460px, 100%); margin: 15px 0; color: var(--mantine-color-red-7); font-size: 12px; overflow-wrap: anywhere; }
+@keyframes usage-loading-float { 50% { transform: translateY(-5px); } }
+@keyframes usage-loading-sweep { to { transform: translateX(165%); } }
+@keyframes usage-loading-bar { to { height: 12px; opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .usage-loading-mark, .usage-loading-progress span, .usage-loading-preview i { animation: none; } }
 .theme-studio { padding: 20px; }
 html[data-theme="apple"] .theme-studio,
 html[data-theme="apple"] .settings-list,
@@ -2118,7 +2154,7 @@ html[data-theme="apple"] .side-nav-item:active {
 
 /* ChatGPT 多开：整页滚动；标题位于内容卡片外，实例卡片保留独立层次。 */
 .chatgpt-scroll { min-height: 0; overflow-y: auto; padding-right: 3px; overscroll-behavior: contain; }
-.chatgpt-page { position: relative; width: 100%; min-height: 100%; min-width: 0; overflow: visible; padding: 2px 3px 18px 0; }
+.chatgpt-page { position: relative; width: 100%; min-height: 100%; min-width: 0; overflow: visible; padding: 2px 3px 0 0; }
 .chatgpt-page .mantine-Button-root { transition: box-shadow .16s ease, filter .16s ease, background .16s ease; }
 @media (hover: hover) {
   .chatgpt-page .mantine-Button-root:hover:not(:disabled):not([data-disabled]) { filter: brightness(1.035); box-shadow: 0 3px 10px rgba(20, 39, 48, .10); }
@@ -2172,20 +2208,23 @@ html[data-theme="apple"] .side-nav-item:active {
 .chatgpt-onboarding-art span:last-child { right: 7px; top: 1px; transform: rotate(9deg); }
 .chatgpt-onboarding .mantine-Title-root { color: var(--app-strong-text); letter-spacing: -.035em; }
 .chatgpt-onboarding .mantine-Button-root { margin-top: 10px; }
-.chatgpt-path,
-.chatgpt-profile-path { overflow-wrap: anywhere; }
+.chatgpt-path { overflow-wrap: anywhere; }
 .chatgpt-profile-section { min-width: 0; padding: 4px 2px 8px; }
 .chatgpt-profile-section > .mantine-Title-root { margin: 0 0 14px 4px; color: var(--app-strong-text); }
 .chatgpt-profile-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 16px; }
-.chatgpt-profile { position: relative; min-width: 0; overflow: hidden; padding: 22px 23px 18px; background: linear-gradient(145deg, var(--app-surface) 38%, color-mix(in srgb, var(--theme-base) 5%, var(--app-surface)) 100%); border: 1px solid color-mix(in srgb, var(--theme-base) 10%, var(--app-subtle-border)); border-radius: 21px; transition: transform .2s ease, border-color .2s ease, background .2s ease; }
-@media (hover: hover) { .chatgpt-profile:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--theme-base) 34%, var(--app-subtle-border)); background: color-mix(in srgb, var(--theme-base) 6%, var(--app-surface)); } }
-.chatgpt-profile:focus-within { border-color: color-mix(in srgb, var(--theme-base) 34%, var(--app-subtle-border)); }
+.chatgpt-profile { --chatgpt-profile-glow: var(--mantine-primary-color-7); position: relative; min-width: 0; padding: 22px 23px 18px; background: linear-gradient(145deg, var(--app-surface) 38%, color-mix(in srgb, var(--theme-base) 5%, var(--app-surface)) 100%); border: 1px solid color-mix(in srgb, var(--theme-base) 10%, var(--app-subtle-border)); border-radius: 21px; }
+.chatgpt-profile[data-profile-tone="healthy"],
+.chatgpt-profile[data-profile-tone="running"] { --chatgpt-profile-glow: var(--mantine-color-teal-7); }
+.chatgpt-profile[data-profile-tone="warning"],
+.chatgpt-profile[data-profile-tone="closing"] { --chatgpt-profile-glow: var(--mantine-color-orange-7); }
+.chatgpt-profile[data-profile-tone="error"] { --chatgpt-profile-glow: var(--mantine-color-red-7); }
+.chatgpt-profile::after { position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 0 0 1px color-mix(in srgb, var(--chatgpt-profile-glow) 16%, transparent), 0 0 23px 3px color-mix(in srgb, var(--chatgpt-profile-glow) 17%, transparent); opacity: 0; pointer-events: none; content: ""; transition: opacity .32s ease, box-shadow .32s ease; }
+@media (hover: hover) { .chatgpt-profile:hover { z-index: 1; } .chatgpt-profile:hover::after { opacity: 1; } }
 .chatgpt-profile-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .chatgpt-profile-main { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
 .chatgpt-profile-icon { width: 44px; height: 44px; border-radius: 15px; background: color-mix(in srgb, var(--theme-base) 8%, var(--app-surface)); }
 .chatgpt-profile-copy { flex: 1; min-width: 0; }
 .chatgpt-profile-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; letter-spacing: -.015em; }
-.chatgpt-profile-path { margin-top: 3px; font-size: 11px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chatgpt-runtime-status { display: flex; margin: 20px 0 15px; }
 .chatgpt-runtime-line { position: relative; display: block; width: 100%; height: 3px; overflow: hidden; border-radius: 3px; background: var(--mantine-primary-color-7); }
 .chatgpt-runtime-healthy .chatgpt-runtime-line { background: var(--mantine-color-teal-7); }
@@ -2198,7 +2237,7 @@ html[data-theme="apple"] .side-nav-item:active {
 .chatgpt-runtime-error { color: var(--mantine-color-red-7); }
 .chatgpt-runtime-error .chatgpt-runtime-line { background: var(--mantine-color-red-5); }
 @keyframes chatgpt-runtime-flow { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
-@media (prefers-reduced-motion: reduce) { .chatgpt-runtime-running .chatgpt-runtime-line::after { animation: none; left: 65%; } .chatgpt-profile { transition: none; } .chatgpt-profile:hover { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .chatgpt-runtime-running .chatgpt-runtime-line::after { animation: none; left: 65%; } .chatgpt-profile::after { transition: none; } }
 .chatgpt-profile-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
 .chatgpt-profile-action.mantine-Button-root { min-width: 86px; height: 34px; padding: 0 13px; background: color-mix(in srgb, var(--theme-base) 7%, var(--app-surface)); border: 1px solid color-mix(in srgb, var(--theme-base) 10%, var(--app-subtle-border)); border-radius: 11px; box-shadow: none; font-weight: 650; }
 .chatgpt-profile-action.mantine-Button-root[data-disabled] { opacity: .48; }
@@ -2214,13 +2253,13 @@ html[data-theme="apple"] .side-nav-item:active {
 .chatgpt-profile-issue { margin-top: 14px; }
 .chatgpt-feedback { position: absolute; right: 20px; bottom: 20px; z-index: 10; display: flex; align-items: flex-start; gap: 12px; max-width: min(420px, calc(100% - 40px)); padding: 12px 13px; color: var(--mantine-color-red-7); background: var(--app-surface); border: 1px solid var(--mantine-color-red-2); border-radius: 14px; box-shadow: var(--app-panel-shadow); }
 .chatgpt-feedback .mantine-Button-root { flex: 0 0 auto; }
-.chatgpt-history { min-width: 0; padding: 4px 2px 8px; }
-.chatgpt-history > .mantine-Stack-root { height: auto; }
+.chatgpt-history { display: flex; flex: 1 0 auto; flex-direction: column; min-width: 0; padding: 4px 2px 0; }
+.chatgpt-history > .mantine-Stack-root { flex: 1; }
 .chatgpt-history-heading { padding: 0 4px; }
 .chatgpt-history-heading .mantine-Title-root,
 .chatgpt-records .mantine-Title-root,
 .chatgpt-queue .mantine-Title-root { color: var(--app-strong-text); }
-.chatgpt-history-grid { display: grid; min-width: 0; grid-template-columns: minmax(340px, 430px) minmax(0, 1fr); gap: 22px; align-items: start; padding: 22px; background: var(--app-surface); border-radius: 22px; box-shadow: var(--app-panel-shadow); }
+.chatgpt-history-grid { display: grid; flex: 1; min-width: 0; grid-template-columns: minmax(340px, 430px) minmax(0, 1fr); gap: 22px; align-items: stretch; padding: 22px; background: var(--app-surface); border-radius: 22px; box-shadow: var(--app-panel-shadow); }
 .chatgpt-sync-options { min-width: 0; padding: 4px 2px 4px 0; }
 .chatgpt-records { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 18px; background: var(--app-surface-soft); border-radius: 18px; }
 .chatgpt-records-placeholder { display: flex; min-height: 190px; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
@@ -2265,10 +2304,13 @@ html[data-theme="apple"] .side-nav-item:active {
   .chatgpt-history-grid { grid-template-columns: minmax(0, 1fr); }
   .chatgpt-records { min-height: 260px; }
 }
+@media (max-width: 900px) {
+  .chatgpt-console-top { flex-wrap: wrap; }
+  .chatgpt-console-actions { flex: 1 1 100%; justify-content: flex-start; }
+}
 @media (max-width: 720px) {
   .chatgpt-profile-top { flex-wrap: wrap; }
-  .chatgpt-console-top { flex-wrap: wrap; padding: 17px; }
-  .chatgpt-console-actions { flex: 1 1 100%; justify-content: flex-start; }
+  .chatgpt-console-top { padding: 17px; }
   .chatgpt-onboarding { margin: 0 12px 12px; min-height: 310px; }
   .chatgpt-history-grid,
   .chatgpt-queue { padding: 18px; }
