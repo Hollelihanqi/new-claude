@@ -7,10 +7,10 @@ import RiskConfirm from "./RiskConfirm";
 import ChatGptPanelHistory from "./ChatGptPanelHistory";
 
 const STATUS = {
-  running: { label: "运行中", color: "teal" },
-  stopped: { label: "已关闭", color: "gray" },
-  closing: { label: "后台进程仍在运行", color: "orange" },
-  error: { label: "需要处理", color: "red" },
+  running: "运行中",
+  stopped: "已关闭",
+  closing: "后台进程仍在运行",
+  error: "需要处理",
 };
 
 export default function ChatGptPanel({ active = true }: { active?: boolean }) {
@@ -166,26 +166,25 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
           <div className="chatgpt-profile-main">
             <span className="chatgpt-profile-icon"><IconBrandOpenai size={23} /></span>
             <div className="chatgpt-profile-copy">
-              <Group gap="xs" wrap="nowrap"><Text fw={700} className="chatgpt-profile-name">{p.name}</Text><Badge color={STATUS[p.status].color} variant="light">{STATUS[p.status].label}</Badge></Group>
+              <Text fw={700} className="chatgpt-profile-name">{p.name}</Text>
               <Text size="xs" c="dimmed" className="chatgpt-profile-path" title={p.directory}>{p.directory}</Text>
             </div>
           </div>
           <div className="chatgpt-profile-health">
-            {p.status === "stopped" && (!diagnostic || diagnostic.pending ? <span className="chatgpt-health-label chatgpt-health-pending"><IconLoader2 size={14} className="chatgpt-button-spinner" />检查中</span> : diagnostic.healthy ? <span className="chatgpt-health-label chatgpt-health-ok"><IconCircleCheck size={14} />正常</span> : <Button size="compact-xs" variant="subtle" color="orange" leftSection={<IconInfoCircle size={15} />} onClick={() => setDiagnosticDetailsId(p.id)}>需处理</Button>)}
+            {p.status === "stopped" && (!diagnostic || diagnostic.pending ? <span className="chatgpt-health-label chatgpt-health-pending"><IconLoader2 size={14} className="chatgpt-button-spinner" />检查中</span> : diagnostic.healthy ? <span className="chatgpt-health-label chatgpt-health-ok"><IconCircleCheck size={14} />正常</span> : <Button size="compact-xs" variant="subtle" color="orange" leftSection={<IconInfoCircle size={15} />} onClick={() => setDiagnosticDetailsId(p.id)}>{diagnostic.details.some(line => line.includes("客户端未返回已登录账号")) ? "待登录" : "需处理"}</Button>)}
           </div>
         </div>
-        <div className="chatgpt-profile-bottom">
-          <Group gap="xs" className="chatgpt-profile-primary-actions">
-            <Button size="sm" leftSection={pending(`launch:${p.id}`) || pending(`focus:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerPlay size={15} />}
+        <div className={`chatgpt-runtime-status chatgpt-runtime-${p.status}${p.status === "stopped" ? !diagnostic || diagnostic.pending ? " chatgpt-runtime-checking" : diagnostic.healthy ? " chatgpt-runtime-healthy" : " chatgpt-runtime-warning" : ""}`} aria-label={`实例状态：${STATUS[p.status]}`}>
+          <span className="chatgpt-runtime-line" aria-hidden="true" />
+        </div>
+        <div className="chatgpt-profile-actions">
+            <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`launch:${p.id}`) || pending(`focus:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerPlay size={15} />}
               aria-busy={pending(`launch:${p.id}`) || pending(`focus:${p.id}`)}
               disabled={p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
               onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
-            {p.status === "closing" && <Button size="sm" variant="default" leftSection={pending(`cleanup:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconRefresh size={15} />} aria-busy={pending(`cleanup:${p.id}`)} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
-            {p.status === "running" && <Button size="sm" variant="default" leftSection={pending(`stop:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerStop size={15} />} aria-busy={pending(`stop:${p.id}`)} onClick={() => void action(p, "stop")}>关闭</Button>}
-          </Group>
-          <Group gap="xs" className="chatgpt-profile-secondary-actions">
-            <Button size="sm" variant="subtle" color="red" disabled={p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
-          </Group>
+            {p.status === "closing" && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`cleanup:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconRefresh size={15} />} aria-busy={pending(`cleanup:${p.id}`)} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
+            {p.status === "running" && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`stop:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerStop size={15} />} aria-busy={pending(`stop:${p.id}`)} onClick={() => void action(p, "stop")}>关闭</Button>}
+            {p.status === "stopped" && <Button className="chatgpt-profile-action chatgpt-profile-action-danger" size="sm" variant="light" color="red" leftSection={<IconX size={15} />} onClick={() => setDeleting(p)}>删除</Button>}
         </div>
         {p.issue && <Alert className="chatgpt-profile-issue" color="red">{p.issue}</Alert>}
       </div>; })}

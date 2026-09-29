@@ -49,6 +49,10 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
   expect(renderer.root.findAllByType(Button).some(item => item.props.children === "关闭")).toBe(false);
   expect(renderer.root.findAllByProps({ className: "chatgpt-profile-path" })).toHaveLength(2);
   expect(renderer.root.findAllByProps({ className: "chatgpt-profile-directory" })).toHaveLength(0);
+  expect(renderer.root.findAll(node => typeof node.props.className === "string" && node.props.className.includes("chatgpt-runtime-stopped"))).toHaveLength(2);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-runtime-line" })).toHaveLength(2);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-actions" })[0].findAllByType(Button).every(item => item.props.className?.includes("chatgpt-profile-action"))).toBe(true);
+  expect(renderer.root.findAllByType(Title).some(item => item.props.children === "跨账号会话同步")).toBe(true);
   expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("改名"))).toBe(false);
   await act(async () => { button("启动").props.onClick(); });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "launch");
@@ -62,6 +66,11 @@ it("offers close only for a running instance and sends the stop action", async (
   vi.mocked(api.chatGptProfileAction).mockReturnValue(result.promise);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   expect(renderer.root.findAllByType(Button).filter(item => item.props.children === "关闭")).toHaveLength(1);
+  const status = renderer.root.findAllByProps({ className: "chatgpt-runtime-status chatgpt-runtime-running" });
+  expect(status).toHaveLength(1);
+  expect(status[0].props["aria-label"]).toBe("实例状态：运行中");
+  expect(status[0].findAllByType("text")).toHaveLength(0);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile" })[0].findAllByType(Button).some(item => item.props.children === "删除")).toBe(false);
   act(() => { button("关闭").props.onClick(); });
   expect(button("关闭").props.children).toBe("关闭");
   expect(button("关闭").props["aria-busy"]).toBe(true);
@@ -80,7 +89,7 @@ it("checks profiles automatically without changing other buttons", async () => {
   expect(api.chatGptDiagnose).toHaveBeenCalledWith("a");
   expect(profiles[0].findByProps({ className: "chatgpt-health-label chatgpt-health-pending" })).toBeTruthy();
   expect(profiles[0].findAllByType(Button).find(item => item.props.children === "启动")!.props.disabled).toBe(false);
-  expect(profiles[0].findAllByType(Button).find(item => item.props.children === "删除")!.props.disabled).toBe(false);
+  expect(profiles[0].findAllByType(Button).find(item => item.props.children === "删除")!.props.disabled).toBeUndefined();
   expect(button("刷新").props.disabled).toBeUndefined();
   expect(button("创建实例").props.disabled).toBeUndefined();
   expect(select("来源实例").props.disabled).toBe(false);
@@ -88,6 +97,7 @@ it("checks profiles automatically without changing other buttons", async () => {
   await act(async () => { result.resolve({ healthy: true, details: ["独立目录检查通过", "官方服务使用此目录", "已登录账号"] }); });
   expect(profiles[0].findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
   expect(profiles[1].findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
+  expect(profiles[0].findAll(node => typeof node.props.className === "string" && node.props.className.includes("chatgpt-runtime-healthy"))).toHaveLength(1);
   expect(profiles[0].findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(0);
   expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
 });
@@ -120,6 +130,15 @@ it("keeps two instance checks independent and hides healthy details", async () =
   expect(profiles[0].findAllByType(Button).find(item => item.props.children === "需处理")).toBeTruthy();
   expect(profiles[1].findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
   expect(renderer.root.findAllByType(Modal).find(modal => String(modal.props.title).includes("检查详情"))!.props.opened).toBe(false);
+});
+
+it("labels an isolated instance without a saved account as awaiting login", async () => {
+  vi.mocked(api.chatGptDiagnose).mockResolvedValueOnce({ healthy: false, details: ["独立目录、配置与所有权检查通过。", "官方会话服务已确认使用此实例的数据目录。", "客户端未返回已登录账号，请在官方窗口完成登录。"] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
+  expect(first.findAllByType(Button).find(item => item.props.children === "待登录")).toBeTruthy();
+  expect(first.findAllByType(Button).some(item => item.props.children === "需处理")).toBe(false);
+  expect(first.findAll(node => typeof node.props.className === "string" && node.props.className.includes("chatgpt-runtime-warning"))).toHaveLength(1);
 });
 
 it("queues two profile actions while only their own buttons show progress", async () => {
