@@ -39,6 +39,10 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
   expect(renderer.root.findByProps({ className: "view-scroll chatgpt-scroll" })).toBeTruthy();
   const overview = renderer.root.findByProps({ className: "chatgpt-console" });
   expect(overview.findByProps({ className: "chatgpt-client-identity" })).toBeTruthy();
+  expect(overview.findAllByProps({ className: "chatgpt-profile" })).toHaveLength(0);
+  expect(overview.findAllByType(Button).some(item => item.props.children === "创建实例")).toBe(true);
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-section" }).findByProps({ className: "chatgpt-profile-list" }).findAllByProps({ className: "chatgpt-profile" })).toHaveLength(2);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(1);
   expect(renderer.root.findAllByType(Title).some(item => item.props.children === "ChatGPT 多开")).toBe(false);
   expect(renderer.root.findAll(node => typeof node.props.children === "string" && /\d+ 个实例|按次复制/.test(node.props.children))).toHaveLength(0);
   expect(button("退出")).toBeTruthy();
@@ -54,7 +58,7 @@ it("shows only the client and creation entry before the first instance exists", 
   expect(renderer.root.findByProps({ className: "chatgpt-page chatgpt-page-empty" })).toBeTruthy();
   expect(renderer.root.findByProps({ className: "chatgpt-onboarding" })).toBeTruthy();
   expect(button("创建第一个实例")).toBeTruthy();
-  expect(renderer.root.findAllByProps({ className: "chatgpt-section" })).toHaveLength(0);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-section" })).toHaveLength(0);
   expect(renderer.root.findAllByProps({ className: "chatgpt-history" })).toHaveLength(0);
   expect(renderer.root.findAllByType(Select)).toHaveLength(1);
 });
@@ -79,6 +83,8 @@ it("late history from the previous source cannot replace the selected source", a
   await act(async () => { first.resolve({ warnings: ["STALE"], complete: true, items: [] }); });
   expect(renderer.root.findAllByType(Checkbox).map(node => node.props.label).join(" ")).not.toContain("STALE");
   expect(renderer.root.findAllByType(Checkbox).map(node => node.props.label).join(" ")).toContain("Current record");
+  expect(renderer.root.findAllByProps({ className: "chatgpt-records" })).toHaveLength(1);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(0);
 });
 
 it("unsupported histories cannot be transferred", async () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Alert, Badge, Button, Card, Group, Modal, Select, SimpleGrid, Stack, Text, TextInput, Title } from "@mantine/core";
-import { IconBrandOpenai, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh, IconShieldLock } from "@tabler/icons-react";
+import { Alert, Badge, Button, Group, Modal, Select, Stack, Text, TextInput, Title } from "@mantine/core";
+import { IconBrandOpenai, IconChevronDown, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh } from "@tabler/icons-react";
 import { api, type ChatGptAction, type ChatGptProfile, type ChatGptState } from "../api";
 import RiskConfirm from "./RiskConfirm";
 import ChatGptPanelHistory from "./ChatGptPanelHistory";
@@ -85,8 +85,8 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
 
   const profiles = state?.profiles ?? [];
 
-  return <div className="view-scroll chatgpt-scroll"><Stack className={`chatgpt-page${state && profiles.length === 0 ? " chatgpt-page-empty" : ""}`} gap="lg">
-    <section className="chatgpt-console" aria-label="ChatGPT 客户端与实例">
+  return <div className="view-scroll chatgpt-scroll"><Stack className={`chatgpt-page${state && profiles.length === 0 ? " chatgpt-page-empty" : ""}`} gap="md">
+    <section className="chatgpt-console" aria-label="ChatGPT 客户端">
       <div className="chatgpt-console-top">
         <div className="chatgpt-client-identity">
           <span className="chatgpt-client-icon"><IconBrandOpenai size={24} /></span>
@@ -110,33 +110,41 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
       </div>}
     </section>
 
+    {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="账号实例">
+      <Title order={4}>账号实例</Title>
+      <div className="chatgpt-profile-list">
+      {profiles.map((p) => <div key={p.id} className="chatgpt-profile">
+        <div className="chatgpt-profile-top">
+          <div className="chatgpt-profile-main">
+            <span className="chatgpt-profile-icon"><IconBrandOpenai size={23} /></span>
+            <div className="chatgpt-profile-copy">
+              <Group gap="xs" wrap="nowrap"><Text fw={700} className="chatgpt-profile-name">{p.name}</Text><Badge color={STATUS[p.status].color} variant="light">{STATUS[p.status].label}</Badge></Group>
+            </div>
+          </div>
+          <Group gap="xs" className="chatgpt-profile-primary-actions">
+            <Button size="sm" leftSection={<IconPlayerPlay size={15} />}
+              loading={busy === `launch:${p.id}` || busy === `focus:${p.id}`}
+              disabled={!!busy || p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
+              onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
+            {p.status === "closing" && <Button size="sm" variant="default" disabled={!!busy} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
+            <Button size="sm" variant="default" disabled={!!busy || p.status !== "running"} onClick={() => void action(p, "stop")}>退出</Button>
+          </Group>
+        </div>
+        <div className="chatgpt-profile-bottom">
+          <details className="chatgpt-profile-directory"><summary><IconFolderOpen size={15} />数据目录<IconChevronDown className="chatgpt-profile-directory-chevron" size={13} /></summary><Text size="xs" c="dimmed" className="chatgpt-profile-path">{p.directory}</Text></details>
+          <Group gap="xs" className="chatgpt-profile-secondary-actions">
+            <Button size="xs" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
+            <Button size="xs" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
+          </Group>
+        </div>
+        {p.issue && <Alert className="chatgpt-profile-issue" color="red">{p.issue}</Alert>}
+      </div>)}
+      </div>
+    </section>}
+
     {message && <Alert color={message.error ? "red" : "teal"} role={message.error ? "alert" : "status"}><Text size="sm" style={{ whiteSpace: "pre-line" }}>{message.text}</Text></Alert>}
     {!state ? <Text role="status">正在检测客户端与实例…</Text> : profiles.length > 0 && <>
-      <section className="chatgpt-section" aria-label="账号实例">
-        <div className="chatgpt-section-heading"><Title order={4}>账号实例</Title></div>
-      <SimpleGrid cols={{ base: 1, md: 2 }}>
-        {profiles.map((p) => <Card key={p.id} className="chatgpt-profile" p="lg">
-          <Stack gap="sm">
-            <Group justify="space-between" wrap="nowrap"><Group gap="sm" wrap="nowrap"><span className="chatgpt-profile-icon"><IconBrandOpenai size={20} /></span><div className="chatgpt-profile-name"><Text fw={700}>{p.name}</Text><Text size="xs" c="dimmed">独立账号数据</Text></div></Group><Badge color={STATUS[p.status].color} variant="light">{STATUS[p.status].label}</Badge></Group>
-            <Text size="xs" c="dimmed" className="chatgpt-profile-path">{p.directory}</Text>
-            {p.issue && <Alert color="red">{p.issue}</Alert>}
-            <Group gap="xs" className="chatgpt-profile-actions">
-              <Button size="xs" leftSection={<IconPlayerPlay size={14} />}
-                loading={busy === `launch:${p.id}` || busy === `focus:${p.id}`}
-                disabled={!!busy || p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
-                onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
-              {p.status === "closing" && <Button size="xs" variant="default" disabled={!!busy} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
-              <Button size="xs" variant="default" disabled={!!busy || p.status !== "running"} onClick={() => void action(p, "stop")}>退出</Button>
-              <Button size="xs" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
-              <Button size="xs" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
-            </Group>
-          </Stack>
-        </Card>)}
-      </SimpleGrid>
-      </section>
-
       <ChatGptPanelHistory state={state} active={active} initialCopy={initialCopy} disabled={!!busy && busy !== "history"} onBusy={(value) => { busyRef.current = value; setBusy(value ? "history" : ""); }} />
-      <Text size="xs" c="dimmed" className="chatgpt-footnote"><IconShieldLock size={14} />账号与运行数据按实例保存。PathMux 退出后，已启动的 ChatGPT 窗口继续运行。</Text>
     </>}
 
     <Modal opened={active && creating} onClose={() => { if (!busy) setCreating(false); }} title="创建 ChatGPT 实例" centered>
