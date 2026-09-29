@@ -2167,9 +2167,9 @@ html[data-theme="apple"] .side-nav-item:active {
 .chatgpt-onboarding .mantine-Button-root { margin-top: 10px; }
 .chatgpt-path,
 .chatgpt-profile-path { overflow-wrap: anywhere; }
-.chatgpt-profile-section { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; overflow: hidden; padding: 20px; }
+.chatgpt-profile-section { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; overflow: hidden; padding: 18px 20px 20px; }
+.chatgpt-profile-section > .mantine-Title-root { flex: 0 0 auto; margin-bottom: 12px; color: var(--app-strong-text); }
 .chatgpt-profile-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 12px; min-height: 0; max-height: min(34vh, 320px); overflow-y: auto; }
-.chatgpt-profile-list[data-count="1"] .chatgpt-profile { grid-column: 1 / -1; justify-self: center; width: min(100%, 520px); }
 .chatgpt-profile { min-width: 0; overflow: hidden; padding: 17px 19px; background: linear-gradient(145deg, color-mix(in srgb, var(--theme-base) 7%, var(--app-surface)), var(--app-surface) 75%); border: 1px solid var(--app-subtle-border); border-radius: 18px; box-shadow: 0 5px 18px rgba(20, 39, 48, .045); }
 .chatgpt-profile-top,
 .chatgpt-profile-bottom { display: flex; align-items: center; gap: 10px; }

@@ -111,7 +111,8 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     </section>
 
     {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="账号实例">
-      <div className="chatgpt-profile-list" data-count={profiles.length}>
+      <Title order={4}>账号实例</Title>
+      <div className="chatgpt-profile-list">
       {profiles.map((p) => <div key={p.id} className="chatgpt-profile">
         <div className="chatgpt-profile-top">
           <div className="chatgpt-profile-main">
