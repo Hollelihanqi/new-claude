@@ -16,7 +16,7 @@ const state: ChatGptState = {
 const history: ChatGptHistory = { warnings: [], complete: true, items: [{ key: "record", threadId: "thread", title: "Current record", workspace: "/project", revision: "v1", bytes: 10, modifiedAt: 1, transferable: true, detail: "Ready" }] };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 let renderer: ReactTestRenderer;
-beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.chatGptState).mockResolvedValue(state); vi.mocked(api.chatGptHistory).mockResolvedValue(history); vi.mocked(api.chatGptPending).mockResolvedValue([]); vi.mocked(api.chatGptBatchList).mockResolvedValue([]); vi.mocked(api.chatGptPreview).mockResolvedValue({ key: "record", title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" }); });
+beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.chatGptState).mockResolvedValue(state); vi.mocked(api.chatGptHistory).mockResolvedValue(history); vi.mocked(api.chatGptPending).mockResolvedValue([]); vi.mocked(api.chatGptBatchList).mockResolvedValue([]); vi.mocked(api.chatGptDiagnose).mockResolvedValue({ healthy: true, details: ["目录正常", "服务正常", "已登录"] }); vi.mocked(api.chatGptPreview).mockResolvedValue({ key: "record", title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" }); });
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const button = (label: string) => renderer.root.findAllByType(Button).find(b => String(b.props.children).includes(label))!;
 const select = (label: string) => renderer.root.findAllByType(Select).find(s => s.props.label === label)!;
@@ -56,38 +56,90 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
 
 it("offers close only for a running instance and sends the stop action", async () => {
   const running = { ...state, profiles: state.profiles.map(p => p.id === "a" ? { ...p, status: "running" as const } : p) };
+  const result = deferred<ChatGptState>();
   vi.mocked(api.chatGptState).mockResolvedValue(running);
-  vi.mocked(api.chatGptProfileAction).mockResolvedValue(state);
+  vi.mocked(api.chatGptProfileAction).mockReturnValue(result.promise);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   expect(renderer.root.findAllByType(Button).filter(item => item.props.children === "关闭")).toHaveLength(1);
-  await act(async () => { button("关闭").props.onClick(); });
+  act(() => { button("关闭").props.onClick(); });
+  expect(button("关闭").props.children).toBe("关闭");
+  expect(button("关闭").props["aria-busy"]).toBe(true);
+  expect(button("关闭").props.disabled).toBeUndefined();
+  await act(async () => { result.resolve(state); });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "stop");
   expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
 });
 
-it("shows a diagnosis inside its own instance with loading feedback and no page banner", async () => {
-  const result = deferred<string[]>();
-  vi.mocked(api.chatGptDiagnose).mockReturnValue(result.promise);
+it("checks profiles automatically without changing other buttons", async () => {
+  const result = deferred<{ healthy: boolean; details: string[] }>();
+  vi.mocked(api.chatGptDiagnose).mockReturnValueOnce(result.promise).mockResolvedValue({ healthy: true, details: ["目录正常", "服务正常", "已登录"] });
   await act(async () => { renderer = create(<ChatGptPanel />); });
-  act(() => button("检查隔离与账号").props.onClick());
-  expect(button("检查隔离与账号").props.loading).toBe(true);
-  const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
-  expect(first.findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(1);
+  const profiles = renderer.root.findAllByProps({ className: "chatgpt-profile" });
+  expect(renderer.root.findAllByType(Button).some(item => item.props.children === "检查隔离与账号")).toBe(false);
+  expect(api.chatGptDiagnose).toHaveBeenCalledWith("a");
+  expect(profiles[0].findByProps({ className: "chatgpt-health-label chatgpt-health-pending" })).toBeTruthy();
+  expect(profiles[0].findAllByType(Button).find(item => item.props.children === "启动")!.props.disabled).toBe(false);
+  expect(profiles[0].findAllByType(Button).find(item => item.props.children === "删除")!.props.disabled).toBe(false);
+  expect(button("刷新").props.disabled).toBeUndefined();
+  expect(button("创建实例").props.disabled).toBeUndefined();
+  expect(select("来源实例").props.disabled).toBe(false);
   expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
-  await act(async () => { result.resolve(["独立目录检查通过", "官方服务使用此目录", "未登录账号"]); });
-  expect(first.findAllByProps({ className: "chatgpt-diagnostic-lines" })[0].findAllByType("text")).toHaveLength(3);
+  await act(async () => { result.resolve({ healthy: true, details: ["独立目录检查通过", "官方服务使用此目录", "已登录账号"] }); });
+  expect(profiles[0].findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
+  expect(profiles[1].findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
+  expect(profiles[0].findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(0);
   expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
-  act(() => button("收起检查").props.onClick());
-  expect(first.findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(0);
 });
 
-it("keeps diagnosis errors in the instance instead of opening a page banner", async () => {
-  vi.mocked(api.chatGptDiagnose).mockRejectedValue(new Error("检查失败"));
+it("opens details in a centered dialog only when an instance needs attention", async () => {
+  vi.mocked(api.chatGptDiagnose).mockRejectedValueOnce(new Error("检查失败"));
   await act(async () => { renderer = create(<ChatGptPanel />); });
-  await act(async () => { button("检查隔离与账号").props.onClick(); });
   const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
-  expect(first.findByProps({ className: "chatgpt-diagnostic", role: "alert" })).toBeTruthy();
+  expect(first.findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(0);
+  expect(first.findAllByType(Button).find(item => item.props.children === "需处理")).toBeTruthy();
+  expect(renderer.root.findAllByType(Modal).find(modal => String(modal.props.title).includes("检查详情"))!.props.opened).toBe(false);
+  act(() => first.findAllByType(Button).find(item => item.props.children === "需处理")!.props.onClick());
+  expect(renderer.root.findAllByType(Modal).find(modal => String(modal.props.title).includes("检查详情"))!.props.opened).toBe(true);
+  expect(renderer.root.findAllByType("text").some(item => String(item.props.children).includes("检查失败"))).toBe(true);
   expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
+  await act(async () => { button("重新检查").props.onClick(); });
+  expect(api.chatGptDiagnose).toHaveBeenCalledTimes(3);
+  expect(first.findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
+  expect(renderer.root.findAllByType(Modal).find(modal => String(modal.props.title).includes("检查详情"))!.props.opened).toBe(false);
+});
+
+it("keeps two instance checks independent and hides healthy details", async () => {
+  vi.mocked(api.chatGptDiagnose)
+    .mockResolvedValueOnce({ healthy: false, details: ["目录正常", "服务正常", "尚未登录"] })
+    .mockResolvedValueOnce({ healthy: true, details: ["目录正常", "服务正常", "已登录"] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const profiles = renderer.root.findAllByProps({ className: "chatgpt-profile" });
+  expect(api.chatGptDiagnose).toHaveBeenNthCalledWith(1, "a");
+  expect(api.chatGptDiagnose).toHaveBeenNthCalledWith(2, "b");
+  expect(profiles[0].findAllByType(Button).find(item => item.props.children === "需处理")).toBeTruthy();
+  expect(profiles[1].findByProps({ className: "chatgpt-health-label chatgpt-health-ok" })).toBeTruthy();
+  expect(renderer.root.findAllByType(Modal).find(modal => String(modal.props.title).includes("检查详情"))!.props.opened).toBe(false);
+});
+
+it("queues two profile actions while only their own buttons show progress", async () => {
+  const first = deferred<ChatGptState>();
+  vi.mocked(api.chatGptProfileAction).mockReturnValueOnce(first.promise).mockResolvedValueOnce(state);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const profiles = renderer.root.findAllByProps({ className: "chatgpt-profile" });
+  act(() => {
+    profiles[0].findAllByType(Button).find(item => item.props.children === "启动")!.props.onClick();
+    profiles[1].findAllByType(Button).find(item => item.props.children === "启动")!.props.onClick();
+  });
+  expect(profiles[0].findAllByType(Button).find(item => item.props.children === "启动")!.props["aria-busy"]).toBe(true);
+  expect(profiles[1].findAllByType(Button).find(item => item.props.children === "启动")!.props["aria-busy"]).toBe(true);
+  expect(button("刷新").props.disabled).toBeUndefined();
+  expect(button("创建实例").props.disabled).toBeUndefined();
+  expect(select("来源实例").props.disabled).toBe(false);
+  await act(async () => { await Promise.resolve(); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledTimes(1);
+  await act(async () => { first.resolve(state); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledTimes(2);
+  expect(api.chatGptProfileAction).toHaveBeenNthCalledWith(2, "b", "launch");
 });
 
 it("shows only the client and creation entry before the first instance exists", async () => {
@@ -143,7 +195,7 @@ it("preview remains open and double clicks create only one durable queue", async
   expect(api.chatGptPreview).toHaveBeenCalledWith({ sourceId: "a", targetId: "b", key: "record", revision: "v1" });
   expect(renderer.root.findAllByType(Modal).find(m => m.props.title === "确认复制范围")!.props.opened).toBe(true);
   expect(api.chatGptBatchCreate).not.toHaveBeenCalled();
-  act(() => { const click = button("创建独立副本").props.onClick; click(); click(); });
+  await act(async () => { const click = button("创建独立副本").props.onClick; click(); click(); });
   expect(api.chatGptBatchCreate).toHaveBeenCalledTimes(1);
   expect(api.chatGptBatchCreate).toHaveBeenCalledWith([{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }]);
   await act(async () => { waiting.resolve({ id: "job", targetId: "b", requests: [], outcomes: [], cancelled: false }); });

@@ -457,7 +457,7 @@ pub async fn chatgpt_batch_step(
 }
 
 #[tauri::command]
-pub async fn chatgpt_diagnose(id: String) -> Result<Vec<String>, String> {
+pub async fn chatgpt_diagnose(id: String) -> Result<DiagnosticResult, String> {
     blocking(move || {
         let root = storage::root()?;
         let r = storage::registry(&root)?;
@@ -486,19 +486,37 @@ pub async fn chatgpt_diagnose(id: String) -> Result<Vec<String>, String> {
         }
         let mut client = rpc::Client::start(app.cli.as_deref().ok_or("客户端没有会话服务")?, &dir)?;
         let account = client.call("account/read", serde_json::json!({"refreshToken":false}))?;
-        let identity = match account.get("account").filter(|a| !a.is_null()) {
-            Some(a) if a["type"] == "chatgpt" => format!(
-                "客户端保存的 ChatGPT 账号：{}（未刷新网络授权）",
-                a["email"].as_str().unwrap_or("未返回邮箱")
+        let (identity, healthy) = match account.get("account").filter(|a| !a.is_null()) {
+            Some(a) if a["type"] == "chatgpt" => (
+                format!(
+                    "客户端保存的 ChatGPT 账号：{}（未刷新网络授权）",
+                    a["email"].as_str().unwrap_or("未返回邮箱")
+                ),
+                true,
             ),
-            Some(_) => "客户端返回了非 ChatGPT 登录方式，请在官方窗口重新登录。".into(),
-            None => "客户端未返回已登录账号，请在官方窗口完成登录。".into(),
+            Some(_) => (
+                "客户端返回了非 ChatGPT 登录方式，请在官方窗口重新登录。".into(),
+                false,
+            ),
+            None => (
+                "客户端未返回已登录账号，请在官方窗口完成登录。".into(),
+                false,
+            ),
         };
-        Ok(vec![
-            "独立目录、配置与所有权检查通过。".into(),
-            "官方会话服务已确认使用此实例的数据目录。".into(),
-            identity,
-        ])
+        Ok(DiagnosticResult {
+            healthy,
+            details: vec![
+                "独立目录、配置与所有权检查通过。".into(),
+                "官方会话服务已确认使用此实例的数据目录。".into(),
+                identity,
+            ],
+        })
     })
     .await
+}
+
+#[derive(Serialize)]
+pub struct DiagnosticResult {
+    healthy: bool,
+    details: Vec<String>,
 }

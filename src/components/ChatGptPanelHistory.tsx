@@ -4,8 +4,8 @@ import { IconHistory } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type ChatGptState, type ChatGptHistory, type ChatGptPreview, type ChatGptTransferRequest, type ChatGptPending, type ChatGptJob } from "../api";
 
-export default function ChatGptPanelHistory({ state, active, initialCopy, disabled, onBusy }: {
-  state: ChatGptState; active: boolean; initialCopy: { source: string | null; target: string } | null; disabled: boolean; onBusy: (busy: boolean) => void;
+export default function ChatGptPanelHistory({ state, active, initialCopy, coordinate }: {
+  state: ChatGptState; active: boolean; initialCopy: { source: string | null; target: string } | null; coordinate: (operation: () => Promise<void>) => Promise<void>;
 }) {
   const [source, setSource] = useState<string | null>(null);
   const [target, setTarget] = useState<string | null>(null);
@@ -84,12 +84,14 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   }, [source, target, loadedPair, scope, project, selected]);
 
   async function run(label: string, operation: () => Promise<unknown>) {
-    if (busyRef.current || disabled) return;
-    busyRef.current = true; stop.current = false; setBusy(label); onBusy(true); setError(""); setMessage("");
-    try { await operation(); } catch (e) { if (alive.current) setError(String(e)); }
-    finally { busyRef.current = false; if (alive.current) { setBusy(""); onBusy(false); if (target) void loadTarget(target); } }
+    if (busyRef.current) return;
+    busyRef.current = true; stop.current = false; setBusy(label); setError(""); setMessage("");
+    await coordinate(async () => {
+      try { await operation(); } catch (e) { if (alive.current) setError(String(e)); }
+      finally { busyRef.current = false; if (alive.current) { setBusy(""); if (target) void loadTarget(target); } }
+    });
   }
-  const locked = disabled || !!busy;
+  const locked = !!busy;
   const sourceProfile = state.profiles.find(p => p.id === source);
   const targetProfile = state.profiles.find(p => p.id === target);
   const ready = !!source && !!targetProfile && source !== target && targetProfile.status === "stopped"
