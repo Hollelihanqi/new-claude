@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Alert, Badge, Button, Group, Modal, Select, Stack, Text, TextInput, Title } from "@mantine/core";
-import { IconBrandOpenai, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh } from "@tabler/icons-react";
+import { Alert, Badge, Button, Collapse, Group, Modal, Select, Stack, Text, TextInput, Title, Tooltip } from "@mantine/core";
+import { IconBrandOpenai, IconCircleCheck, IconFolderOpen, IconInfoCircle, IconPlayerPlay, IconPlus, IconRefresh, IconShieldCheck, IconX } from "@tabler/icons-react";
 import { api, type ChatGptAction, type ChatGptProfile, type ChatGptState } from "../api";
 import RiskConfirm from "./RiskConfirm";
 import ChatGptPanelHistory from "./ChatGptPanelHistory";
@@ -19,7 +19,9 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
   const busyRef = useRef(false);
   const stateGeneration = useRef(0);
   const alive = useRef(true);
-  const [message, setMessage] = useState<{ error: boolean; text: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [diagnostic, setDiagnostic] = useState<{ id: string; pending: boolean; lines: string[]; error: string | null } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [deleting, setDeleting] = useState<ChatGptProfile | null>(null);
@@ -34,7 +36,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
       const next = await api.chatGptState();
       if (alive.current && generation === stateGeneration.current) setState(next);
     } catch (error) {
-      if (alive.current && generation === stateGeneration.current) setMessage({ error: true, text: String(error) });
+      if (alive.current && generation === stateGeneration.current) setMessage(String(error));
     }
   }, []);
   useEffect(() => {
@@ -44,11 +46,11 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     return () => clearInterval(timer);
   }, [active, refresh]);
 
-  const run = async (label: string, operation: () => Promise<void>) => {
+  const run = async (label: string, operation: () => Promise<void>, onError?: (error: string) => void) => {
     if (busyRef.current) return;
     busyRef.current = true; stateGeneration.current++; setBusy(label); setMessage(null);
     try { await operation(); }
-    catch (error) { if (alive.current) setMessage({ error: true, text: String(error) }); }
+    catch (error) { if (alive.current) { if (onError) onError(String(error)); else setMessage(String(error)); } }
     finally { busyRef.current = false; if (alive.current) { setBusy(""); void refresh(); } }
   };
 
@@ -56,16 +58,25 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     const next = await api.chatGptProfileAction(p.id, kind);
     if (!alive.current) return;
     setState(next);
-    if (kind === "launch" || kind === "focus") setMessage(null);
-    else setMessage({ error: false, text: kind === "stop"
-      ? next.profiles.find(item => item.id === p.id)?.status === "stopped"
-        ? "实例已关闭，登录和记录保留在独立目录中。"
-        : "已请求关闭该实例。若仍有后台进程，请在 ChatGPT 中退出后刷新。"
-      : kind === "cleanup" ? "已检查并清理该实例遗留的崩溃报告进程。"
-      : kind === "delete" ? "实例数据已删除，其他实例及已复制的记录保持完整。"
-      : "操作已完成。" });
+    setDiagnostic(current => current?.id === p.id ? null : current);
     if (kind === "delete") setDeleting(null);
   });
+
+  const diagnose = (p: ChatGptProfile) => {
+    if (busyRef.current) return;
+    if (diagnostic?.id === p.id && !diagnostic.pending) { setDiagnostic(null); return; }
+    setDiagnostic({ id: p.id, pending: true, lines: [], error: null });
+    void run(`diagnose:${p.id}`, async () => {
+      const lines = await api.chatGptDiagnose(p.id);
+      if (alive.current) setDiagnostic({ id: p.id, pending: false, lines, error: null });
+    }, error => setDiagnostic({ id: p.id, pending: false, lines: [], error }));
+  };
+
+  const manualRefresh = async () => {
+    setRefreshing(true);
+    try { await refresh(); }
+    finally { if (alive.current) setRefreshing(false); }
+  };
 
   const pick = () => run("pick", async () => {
     if (!state) return;
@@ -98,7 +109,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
         </div>
         <Group gap="xs" className="chatgpt-console-actions">
           <Button variant="subtle" leftSection={<IconFolderOpen size={16} />} loading={busy === "pick"} disabled={!!busy && busy !== "pick"} onClick={() => void pick()}>选择客户端</Button>
-          <Button variant="subtle" leftSection={<IconRefresh size={16} />} disabled={!!busy} onClick={() => void refresh()}>刷新</Button>
+          <Button variant="subtle" leftSection={<IconRefresh size={16} />} loading={refreshing} disabled={!!busy} onClick={() => void manualRefresh()}>刷新</Button>
           {profiles.length > 0 && <Button leftSection={<IconPlus size={16} />} disabled={!!busy} onClick={() => { setCreating(true); setName(""); }}>创建实例</Button>}
         </Group>
       </div>
@@ -129,20 +140,28 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
               loading={busy === `launch:${p.id}` || busy === `focus:${p.id}`}
               disabled={!!busy || p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
               onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
-            {p.status === "closing" && <Button size="sm" variant="default" disabled={!!busy} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
-            {p.status === "running" && <Button size="sm" variant="default" disabled={!!busy} onClick={() => void action(p, "stop")}>关闭</Button>}
+            {p.status === "closing" && <Button size="sm" variant="default" loading={busy === `cleanup:${p.id}`} disabled={!!busy && busy !== `cleanup:${p.id}`} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
+            {p.status === "running" && <Button size="sm" variant="default" loading={busy === `stop:${p.id}`} disabled={!!busy && busy !== `stop:${p.id}`} onClick={() => void action(p, "stop")}>关闭</Button>}
           </Group>
           <Group gap="xs" className="chatgpt-profile-secondary-actions">
-            <Button size="sm" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
+            <Tooltip label={p.status === "stopped" ? "核对独立目录、权限、官方会话服务和登录状态" : "关闭实例后可检查数据隔离和登录状态"} withArrow>
+              <span><Button size="sm" variant="subtle" leftSection={<IconShieldCheck size={16} />} loading={busy === `diagnose:${p.id}`} disabled={!!busy || p.status !== "stopped"} aria-expanded={diagnostic?.id === p.id} onClick={() => diagnose(p)}>{diagnostic?.id === p.id && !diagnostic.pending ? "收起检查" : "检查隔离与账号"}</Button></span>
+            </Tooltip>
             <Button size="sm" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
           </Group>
         </div>
+        <Collapse in={diagnostic?.id === p.id}>
+          {diagnostic?.id === p.id && <div className="chatgpt-diagnostic" role={diagnostic.error ? "alert" : "status"}>
+            <div className="chatgpt-diagnostic-heading"><IconShieldCheck size={17} /><Text size="sm" fw={650}>实例检查</Text><Button size="compact-xs" variant="subtle" aria-label="收起检查结果" onClick={() => setDiagnostic(null)}><IconX size={15} /></Button></div>
+            {diagnostic.pending ? <Text size="sm" c="dimmed">正在核对独立目录与本地登录状态…</Text> : diagnostic.error ? <Text size="sm" c="red">{diagnostic.error}</Text> : <div className="chatgpt-diagnostic-lines">{diagnostic.lines.map((line, index) => <div key={`${index}:${line}`}><span>{index < 2 ? <IconCircleCheck size={15} /> : <IconInfoCircle size={15} />}</span><Text size="sm">{line}</Text></div>)}</div>}
+          </div>}
+        </Collapse>
         {p.issue && <Alert className="chatgpt-profile-issue" color="red">{p.issue}</Alert>}
       </div>)}
       </div>
     </section>}
 
-    {message && <Alert color={message.error ? "red" : "teal"} role={message.error ? "alert" : "status"}><Text size="sm" style={{ whiteSpace: "pre-line" }}>{message.text}</Text></Alert>}
+    {message && <div className="chatgpt-feedback" role="alert"><Text size="sm">{message}</Text><Button size="compact-xs" variant="subtle" aria-label="收起错误提示" onClick={() => setMessage(null)}><IconX size={15} /></Button></div>}
     {!state ? <Text role="status">正在检测客户端与实例…</Text> : profiles.length > 0 && <>
       <ChatGptPanelHistory state={state} active={active} initialCopy={initialCopy} disabled={!!busy && busy !== "history"} onBusy={(value) => { busyRef.current = value; setBusy(value ? "history" : ""); }} />
     </>}

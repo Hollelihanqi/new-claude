@@ -4,10 +4,10 @@ import { Button, Select, Checkbox, Modal, Title } from "@mantine/core";
 import ChatGptPanel from "./ChatGptPanel";
 import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "../api";
 
-vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Group", "Modal", "Select", "SimpleGrid", "Stack", "Text", "TextInput", "Title"].map(name => [name, name.toLowerCase()])));
+vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Collapse", "Group", "Modal", "Select", "SimpleGrid", "Stack", "Text", "TextInput", "Title", "Tooltip"].map(name => [name, name.toLowerCase()])));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("./RiskConfirm", () => ({ default: "risk-confirm" }));
-vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation"].map(name => [name, vi.fn()])) }));
+vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose"].map(name => [name, vi.fn()])) }));
 const state: ChatGptState = {
   installation: { path: "test-app", version: "test", compatible: true, detail: "test", cli: "test-cli" }, installationIssue: null,
   profiles: ["a", "b"].map(id => ({ id, name: id, createdAt: 1, directory: id, status: "stopped", pid: null, issue: null })),
@@ -62,6 +62,32 @@ it("offers close only for a running instance and sends the stop action", async (
   expect(renderer.root.findAllByType(Button).filter(item => item.props.children === "关闭")).toHaveLength(1);
   await act(async () => { button("关闭").props.onClick(); });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "stop");
+  expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
+});
+
+it("shows a diagnosis inside its own instance with loading feedback and no page banner", async () => {
+  const result = deferred<string[]>();
+  vi.mocked(api.chatGptDiagnose).mockReturnValue(result.promise);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  act(() => button("检查隔离与账号").props.onClick());
+  expect(button("检查隔离与账号").props.loading).toBe(true);
+  const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
+  expect(first.findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(1);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
+  await act(async () => { result.resolve(["独立目录检查通过", "官方服务使用此目录", "未登录账号"]); });
+  expect(first.findAllByProps({ className: "chatgpt-diagnostic-lines" })[0].findAllByType("text")).toHaveLength(3);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
+  act(() => button("收起检查").props.onClick());
+  expect(first.findAllByProps({ className: "chatgpt-diagnostic" })).toHaveLength(0);
+});
+
+it("keeps diagnosis errors in the instance instead of opening a page banner", async () => {
+  vi.mocked(api.chatGptDiagnose).mockRejectedValue(new Error("检查失败"));
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { button("检查隔离与账号").props.onClick(); });
+  const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
+  expect(first.findByProps({ className: "chatgpt-diagnostic", role: "alert" })).toBeTruthy();
+  expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);
 });
 
 it("shows only the client and creation entry before the first instance exists", async () => {
