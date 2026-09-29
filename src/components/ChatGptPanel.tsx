@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Alert, Badge, Button, Group, Modal, Select, Stack, Text, TextInput, Title } from "@mantine/core";
-import { IconBrandOpenai, IconChevronDown, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh } from "@tabler/icons-react";
+import { IconBrandOpenai, IconFolderOpen, IconPlayerPlay, IconPlus, IconRefresh } from "@tabler/icons-react";
 import { api, type ChatGptAction, type ChatGptProfile, type ChatGptState } from "../api";
 import RiskConfirm from "./RiskConfirm";
 import ChatGptPanelHistory from "./ChatGptPanelHistory";
 
 const STATUS = {
   running: { label: "运行中", color: "teal" },
-  stopped: { label: "已退出", color: "gray" },
+  stopped: { label: "已关闭", color: "gray" },
   closing: { label: "后台进程仍在运行", color: "orange" },
   error: { label: "需要处理", color: "red" },
 };
@@ -59,8 +59,8 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     if (kind === "launch" || kind === "focus") setMessage(null);
     else setMessage({ error: false, text: kind === "stop"
       ? next.profiles.find(item => item.id === p.id)?.status === "stopped"
-        ? "实例已退出，登录和记录保留在独立目录中。"
-        : "已请求退出该实例。若仍有后台进程，请在 ChatGPT 中选择退出后刷新。"
+        ? "实例已关闭，登录和记录保留在独立目录中。"
+        : "已请求关闭该实例。若仍有后台进程，请在 ChatGPT 中退出后刷新。"
       : kind === "cleanup" ? "已检查并清理该实例遗留的崩溃报告进程。"
       : kind === "delete" ? "实例数据已删除，其他实例及已复制的记录保持完整。"
       : "操作已完成。" });
@@ -119,19 +119,19 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
             <span className="chatgpt-profile-icon"><IconBrandOpenai size={23} /></span>
             <div className="chatgpt-profile-copy">
               <Group gap="xs" wrap="nowrap"><Text fw={700} className="chatgpt-profile-name">{p.name}</Text><Badge color={STATUS[p.status].color} variant="light">{STATUS[p.status].label}</Badge></Group>
+              <Text size="xs" c="dimmed" className="chatgpt-profile-path" title={p.directory}>{p.directory}</Text>
             </div>
           </div>
+        </div>
+        <div className="chatgpt-profile-bottom">
           <Group gap="xs" className="chatgpt-profile-primary-actions">
             <Button size="sm" leftSection={<IconPlayerPlay size={15} />}
               loading={busy === `launch:${p.id}` || busy === `focus:${p.id}`}
               disabled={!!busy || p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
               onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
             {p.status === "closing" && <Button size="sm" variant="default" disabled={!!busy} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
-            <Button size="sm" variant="default" disabled={!!busy || p.status !== "running"} onClick={() => void action(p, "stop")}>退出</Button>
+            {p.status === "running" && <Button size="sm" variant="default" disabled={!!busy} onClick={() => void action(p, "stop")}>关闭</Button>}
           </Group>
-        </div>
-        <div className="chatgpt-profile-bottom">
-          <details className="chatgpt-profile-directory"><summary><IconFolderOpen size={15} />数据目录<IconChevronDown className="chatgpt-profile-directory-chevron" size={13} /></summary><Text size="xs" c="dimmed" className="chatgpt-profile-path">{p.directory}</Text></details>
           <Group gap="xs" className="chatgpt-profile-secondary-actions">
             <Button size="xs" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
             <Button size="xs" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
@@ -156,7 +156,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
       </Stack>
     </Modal>
     <RiskConfirm opened={active && deleting !== null} level="high" title={`删除实例：${deleting?.name ?? ""}`}
-      consequences={["仅可删除已退出的实例。将移除其独立目录：登录数据、本地会话、缓存、日志及未完成的复制队列。", "外部项目文件、其他实例和默认账号的数据不会删除。", "云端账号和云端记录不会被此操作删除。删除失败时会提示残留路径。"]}
+      consequences={["仅可删除已关闭的实例。将移除其独立目录：登录数据、本地会话、缓存、日志及未完成的复制队列。", "外部项目文件、其他实例和默认账号的数据不会删除。", "云端账号和云端记录不会被此操作删除。删除失败时会提示残留路径。"]}
       confirmLabel="删除实例数据" busy={!!busy} onCancel={() => { if (!busy) setDeleting(null); }} onConfirm={() => { if (deleting) void action(deleting, "delete"); }} />
   </Stack></div>;
 }

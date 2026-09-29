@@ -45,11 +45,23 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
   expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(1);
   expect(renderer.root.findAllByType(Title).some(item => item.props.children === "ChatGPT 多开")).toBe(false);
   expect(renderer.root.findAll(node => typeof node.props.children === "string" && /\d+ 个实例|按次复制/.test(node.props.children))).toHaveLength(0);
-  expect(button("退出")).toBeTruthy();
+  expect(renderer.root.findAllByType(Button).some(item => item.props.children === "关闭")).toBe(false);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-path" })).toHaveLength(2);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-directory" })).toHaveLength(0);
   expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("改名"))).toBe(false);
   await act(async () => { button("启动").props.onClick(); });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "launch");
   expect(renderer.root.findAllByProps({ role: "status" }).some(item => String(item.props.children).includes("已打开实例"))).toBe(false);
+});
+
+it("offers close only for a running instance and sends the stop action", async () => {
+  const running = { ...state, profiles: state.profiles.map(p => p.id === "a" ? { ...p, status: "running" as const } : p) };
+  vi.mocked(api.chatGptState).mockResolvedValue(running);
+  vi.mocked(api.chatGptProfileAction).mockResolvedValue(state);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  expect(renderer.root.findAllByType(Button).filter(item => item.props.children === "关闭")).toHaveLength(1);
+  await act(async () => { button("关闭").props.onClick(); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "stop");
 });
 
 it("shows only the client and creation entry before the first instance exists", async () => {
