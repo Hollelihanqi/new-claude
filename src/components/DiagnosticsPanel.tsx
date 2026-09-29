@@ -164,7 +164,7 @@ export default function DiagnosticsPanel() {
             return <Card key={item.id} withBorder padding="md" radius="lg"><Group wrap="nowrap" align="flex-start"><ThemeIcon color={ui.color} variant="light" radius="xl"><ui.Icon size={16} /></ThemeIcon><div><Text fw={650} size="sm">{item.label}</Text><Text size="xs" c="dimmed" style={{ wordBreak: "break-all" }}>{item.detail}</Text></div></Group></Card>;
           })}
         </div>
-        <Card withBorder padding="lg" radius="lg">
+        <Card withBorder padding="lg" radius="lg" className="diagnostic-log-card">
           {logError && <Alert color="orange">日志读取失败：{logError}</Alert>}
           <Group justify="space-between" mb="sm"><div><Text fw={700}>最近同步日志</Text><Text size="xs" c="dimmed">最多显示最近 80 行，用于追踪跨环境配置传播。</Text></div><Badge variant="light" color="gray">{logs.length} 行</Badge></Group>
           <Code block className="sync-log-block">{logs.length ? logs.join("\n") : "暂无同步日志"}</Code>

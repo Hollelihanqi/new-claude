@@ -79,6 +79,41 @@ fn selected<'a>(r: &'a Registry, id: &str) -> Result<&'a Profile, String> {
         .ok_or_else(|| "实例不存在，请刷新".into())
 }
 
+fn delete_stopped_profile(
+    root: &Path,
+    registry: &mut Registry,
+    profile: &Profile,
+    dir: &Path,
+) -> Result<(), String> {
+    storage::verify_config(dir)?;
+    // Keep the data recoverable until the registry update has succeeded. A failed
+    // physical removal returns the exact remaining path instead of reporting success.
+    let trash = root.join(format!("deleted-{}", profile.id));
+    storage::plain(&trash)?;
+    if trash.exists() {
+        return Err("上次删除有残留，请先处理实例数据目录中的 deleted 文件夹".into());
+    }
+    fs::rename(dir, &trash).map_err(|e| e.to_string())?;
+    let previous_profiles = registry.profiles.clone();
+    registry.profiles.retain(|x| x.id != profile.id);
+    if let Err(e) = storage::save(root, registry) {
+        registry.profiles = previous_profiles;
+        return match fs::rename(&trash, dir) {
+            Ok(()) => Err(e),
+            Err(restore_error) => Err(format!(
+                "保存实例登记失败：{e}；恢复原目录失败：{restore_error}。数据仍在：{}",
+                trash.display()
+            )),
+        };
+    }
+    fs::remove_dir_all(&trash).map_err(|_| {
+        format!(
+            "实例已移除，但部分文件未删除，请手动清理：{}",
+            trash.display()
+        )
+    })
+}
+
 fn state_at(root: &Path) -> Result<State, String> {
     let registry = storage::registry(root)?;
     let (installation, installation_issue) =
@@ -187,7 +222,6 @@ pub enum Action {
     Focus,
     Stop,
     Cleanup,
-    Rename,
     Delete,
 }
 
@@ -196,7 +230,6 @@ pub enum Action {
 pub struct ActionRequest {
     id: String,
     action: Action,
-    name: Option<String>,
 }
 
 #[tauri::command]
@@ -236,44 +269,53 @@ pub async fn chatgpt_profile_action(request: ActionRequest) -> Result<State, Str
                 process::cleanup_reporters(&dir)?;
                 process::require_stopped(&process::snapshot()?, &dir)?;
             }
-            Action::Rename => {
-                let name = storage::name(request.name.as_deref().unwrap_or(""))?;
-                if r.profiles
-                    .iter()
-                    .any(|x| x.id != p.id && x.name.to_lowercase() == name.to_lowercase())
-                {
-                    return Err("该实例名称已存在".into());
-                }
-                r.profiles.iter_mut().find(|x| x.id == p.id).unwrap().name = name;
-                storage::save(&root, &r)?;
-            }
             Action::Delete => {
                 process::require_stopped(&process::snapshot()?, &dir)?;
-                storage::verify_config(&dir)?;
-                // Rename first. If registration fails, restore the directory. A failed
-                // physical removal is reported with its exact recovery location.
-                let trash = root.join(format!("deleted-{}", p.id));
-                storage::plain(&trash)?;
-                if trash.exists() {
-                    return Err("上次删除有残留，请先处理实例数据目录中的 deleted 文件夹".into());
-                }
-                fs::rename(&dir, &trash).map_err(|e| e.to_string())?;
-                r.profiles.retain(|x| x.id != p.id);
-                if let Err(e) = storage::save(&root, &r) {
-                    let _ = fs::rename(&trash, &dir);
-                    return Err(e);
-                }
-                fs::remove_dir_all(&trash).map_err(|_| {
-                    format!(
-                        "实例已移除，但部分文件未删除，请手动清理：{}",
-                        trash.display()
-                    )
-                })?;
+                delete_stopped_profile(&root, &mut r, &p, &dir)?;
             }
         }
         state_at(&root)
     })
     .await
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_removes_only_the_selected_profile_and_its_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut registry = Registry::default();
+        let a = storage::create(&root, &mut registry, "A").unwrap();
+        let b = storage::create(&root, &mut registry, "B").unwrap();
+        let a_dir = storage::profile_dir(&root, &a.id).unwrap();
+        let b_dir = storage::profile_dir(&root, &b.id).unwrap();
+        fs::write(a_dir.join("desktop/session"), "login").unwrap();
+        fs::write(a_dir.join("codex/history"), "history").unwrap();
+        fs::write(a_dir.join("logs/last.log"), "log").unwrap();
+        fs::write(b_dir.join("desktop/session"), "keep").unwrap();
+
+        delete_stopped_profile(&root, &mut registry, &a, &a_dir).unwrap();
+
+        assert!(!a_dir.exists());
+        assert!(!root.join(format!("deleted-{}", a.id)).exists());
+        assert_eq!(
+            fs::read_to_string(b_dir.join("desktop/session")).unwrap(),
+            "keep"
+        );
+        assert!(storage::registry(&root)
+            .unwrap()
+            .profiles
+            .iter()
+            .all(|p| p.id != a.id));
+        assert!(storage::registry(&root)
+            .unwrap()
+            .profiles
+            .iter()
+            .any(|p| p.id == b.id));
+    }
 }
 
 #[tauri::command]

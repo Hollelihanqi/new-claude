@@ -1,6 +1,6 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { Button, Select, Checkbox, Modal } from "@mantine/core";
+import { Button, Select, Checkbox, Modal, Title } from "@mantine/core";
 import ChatGptPanel from "./ChatGptPanel";
 import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "../api";
 
@@ -31,6 +31,42 @@ it("inactive panels do not poll; returning refreshes state", async () => {
   await act(async () => { renderer.update(<ChatGptPanel active={false} />); });
   await act(async () => { vi.advanceTimersByTime(30000); });
   expect(api.chatGptState).toHaveBeenCalledTimes(2);
+});
+
+it("keeps client details in one toolbar, scrolls, and launches without a success banner", async () => {
+  vi.mocked(api.chatGptProfileAction).mockResolvedValue({ ...state, profiles: state.profiles.map(p => p.id === "a" ? { ...p, status: "running" } : p) });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  expect(renderer.root.findByProps({ className: "view-scroll chatgpt-scroll" })).toBeTruthy();
+  const overview = renderer.root.findByProps({ className: "chatgpt-console" });
+  expect(overview.findByProps({ className: "chatgpt-client-identity" })).toBeTruthy();
+  expect(renderer.root.findAllByType(Title).some(item => item.props.children === "ChatGPT 多开")).toBe(false);
+  expect(button("退出")).toBeTruthy();
+  expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("改名"))).toBe(false);
+  await act(async () => { button("启动").props.onClick(); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "launch");
+  expect(renderer.root.findAllByProps({ role: "status" }).some(item => String(item.props.children).includes("已打开实例"))).toBe(false);
+});
+
+it("shows only the client and creation entry before the first instance exists", async () => {
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  expect(renderer.root.findByProps({ className: "chatgpt-page chatgpt-page-empty" })).toBeTruthy();
+  expect(renderer.root.findByProps({ className: "chatgpt-onboarding" })).toBeTruthy();
+  expect(button("创建第一个实例")).toBeTruthy();
+  expect(renderer.root.findAllByProps({ className: "chatgpt-section" })).toHaveLength(0);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-history" })).toHaveLength(0);
+  expect(renderer.root.findAllByType(Select)).toHaveLength(1);
+});
+
+it("explains exactly what deleting an instance removes", async () => {
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  act(() => button("删除").props.onClick());
+  const confirm = renderer.root.findAll(node => String(node.type) === "risk-confirm")[0];
+  expect(confirm.props.opened).toBe(true);
+  expect(confirm.props.consequences.join(" ")).toContain("登录数据");
+  expect(confirm.props.consequences.join(" ")).toContain("外部项目文件");
+  expect(confirm.props.consequences.join(" ")).toContain("云端账号");
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
 });
 
 it("late history from the previous source cannot replace the selected source", async () => {

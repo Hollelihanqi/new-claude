@@ -63,7 +63,7 @@ export interface ChatGptTransferResult {
   detail: string;
 }
 
-export type ChatGptAction = "launch" | "focus" | "stop" | "cleanup" | "rename" | "delete";
+export type ChatGptAction = "launch" | "focus" | "stop" | "cleanup" | "delete";
 
 // 与 src-tauri 里的 #[tauri::command] 及 serde 结构一一对应
 
@@ -610,8 +610,8 @@ export const api = {
   chatGptState: (): Promise<ChatGptState> => invoke("chatgpt_state"),
   chatGptSetInstallation: (path: string): Promise<ChatGptState> => invoke("chatgpt_set_installation", { path }),
   chatGptCreateProfile: (name: string): Promise<ChatGptState> => invoke("chatgpt_create_profile", { name }),
-  chatGptProfileAction: (id: string, action: ChatGptAction, name?: string): Promise<ChatGptState> =>
-    invoke("chatgpt_profile_action", { request: { id, action, name: name ?? null } }),
+  chatGptProfileAction: (id: string, action: ChatGptAction): Promise<ChatGptState> =>
+    invoke("chatgpt_profile_action", { request: { id, action } }),
   chatGptHistory: (sourceId: string): Promise<ChatGptHistory> => invoke("chatgpt_history", { sourceId }),
   chatGptTransfer: (request: ChatGptTransferRequest): Promise<ChatGptTransferResult> => invoke("chatgpt_transfer", { request }),
   listProfiles: (): Promise<Profile[]> => invoke("list_profiles"),

@@ -362,7 +362,7 @@ export default function UsagePanel({
 
   return (
     <Stack gap="md">
-      <Card withBorder padding="md" radius="lg">
+      <Card withBorder padding="md" radius="lg" className="usage-layout-card">
         <Group gap="xl" align="center" wrap="wrap">
           <Group gap="xs" align="center">
             <Text size="sm" fw={500}>时间范围</Text>
@@ -428,7 +428,7 @@ export default function UsagePanel({
       {err && <Alert color="red" icon={<IconInfoCircle size={16} />} radius="lg">{err}</Alert>}
 
       {!hasData && !busy && (
-        <Card withBorder padding="xl" radius="lg">
+        <Card withBorder padding="xl" radius="lg" className="usage-layout-card">
           <Stack align="center" gap="xs">
             <IconChartLine size={40} opacity={0.4} />
             <Text c="dimmed" size="sm">当前筛选下没有数据。换个时间范围，或用 claude 跑几次对话——数据会自动刷新。</Text>
@@ -460,12 +460,12 @@ export default function UsagePanel({
             说明：以上为当前筛选（时间范围 / 模型 / 环境）下的合计；数值取自本机各环境会话记录中模型返回的 usage 用量，同一响应的多行记录已按消息 ID 去重（与 cc-switch 同口径），并已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
           </Text>
 
-          <Card withBorder padding="md" radius="lg">
+          <Card withBorder padding="md" radius="lg" className="usage-layout-card">
             <Text fw={600} mb="xs">使用趋势 · {rangeLabel}{byHour ? "（按小时）" : ""}</Text>
             <EChart option={lineOption} height={360} />
           </Card>
 
-          <Card withBorder padding="md" radius="lg">
+          <Card withBorder padding="md" radius="lg" className="usage-layout-card">
             <Text fw={600} mb="xs">各模型用量占比</Text>
             <EChart option={pieOption} height={300} />
           </Card>

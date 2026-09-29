@@ -82,7 +82,8 @@ describe("自绘标题栏的平台差异", () => {
     expect(rule(".app-sidebar")).toContain("border-radius: 20px");
     expect(rule(".app-header")).toContain("border-radius: 18px");
     const environmentFrames = rule(".instances-pane, .editor-pane");
-    expect(environmentFrames).toContain("border-radius: 18px");
+    expect(environmentFrames).toContain("border-radius: 22px");
+    expect(environmentFrames).toContain("border: 0 !important");
     expect(environmentFrames).toContain("overflow: hidden");
     expect(rule(".editor-scroll")).toContain("overflow-y: auto");
     expect(rule(".workbuddy-grid:not(.workbuddy-grid-empty)")).toContain("overflow: hidden");

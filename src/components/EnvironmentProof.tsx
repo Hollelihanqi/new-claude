@@ -55,7 +55,7 @@ export default function EnvironmentProof({ items }: { items: HealthItem[] }) {
     ] as const;
 
   return (
-    <Card withBorder padding="lg" radius="lg">
+    <Card withBorder padding="lg" radius="lg" className="environment-proof-card">
       <Group justify="space-between" mb="sm">
         <div>
           <Text fw={700}>环境证明</Text>

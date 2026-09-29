@@ -180,41 +180,48 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
     });
   }
   const unfinished = jobs.filter(j => !j.cancelled && j.outcomes.length < j.requests.length);
-  return <Card withBorder radius="md" p="lg"><Stack gap="md">
-    <div><Title order={4}>跨账号接续本地会话</Title><Text size="sm" c="dimmed">选择单条会话、整个项目或全部本地记录，切换时把已完成的进度复制到目标账号。两边的后续进展各自保留。</Text><Text size="xs" c="dimmed">此功能按次复制快照；两个窗口同时运行时，后续对话不会自动实时同步。</Text></div>
-    <Alert color="blue">来源账号可以保持打开。目标账号如果正在运行，程序会先请你确认关闭，复制成功后再重新打开；关闭可能打断目标账号当前的工作。普通 ChatGPT 云端聊天不在本地 Codex 会话列表中，无法用此功能跨账号接续。</Alert>
+  return <section className="chatgpt-history" aria-label="跨账号接续本地会话"><Stack gap="lg">
+    <div className="chatgpt-history-heading"><Group justify="space-between" align="flex-start"><Title order={4}>跨账号接续</Title><Text size="xs" className="chatgpt-sync-badge">按次复制</Text></Group>
+      <Text size="sm" c="dimmed" mt={4}>复制本地 Codex 会话为独立副本；云端聊天与实时同步暂不支持。</Text>
+    </div>
     {error && <Alert role="alert" color="red">{error}</Alert>}
     {message && <Alert role="status" color="teal">{message}</Alert>}
-    <Group grow align="flex-start">
+    <div className="chatgpt-history-grid"><div className="chatgpt-sync-options"><Title order={5}>同步设置</Title><Text size="xs" c="dimmed">选好来源、目标与范围，再复制已完成的进度。</Text>
+    <Stack gap="md" mt="md"><Group grow align="flex-start" className="chatgpt-sync-pair">
       <Select label="来源实例" clearable disabled={locked} value={source} data={[{ value: "default", label: "默认实例的本地 Codex 记录" }, ...state.profiles.map(p => ({ value: p.id, label: p.name }))]}
         onChange={value => { if (value === target) void loadTarget(null); void load(value); }} />
       <Select label="目标实例" clearable disabled={locked} value={target} data={state.profiles.filter(p => p.id !== source).map(p => ({ value: p.id, label: p.name }))} onChange={value => { setPreviews(null); void loadTarget(value); }} />
     </Group>
-    <Group align="end"><TextInput label="接续项目目录（可选）" description="留空使用原目录。全部同步时请留空；两边使用同一目录会修改同一份项目文件。" style={{ flex: 1 }} value={workspace} disabled={locked || scope === "all"} onChange={e => { setWorkspace(e.currentTarget.value); setPreviews(null); }} />
+    <Group align="end" className="chatgpt-sync-directory"><TextInput label="接续项目目录（可选）" description="留空使用原目录；项目文件不会复制。" style={{ flex: 1 }} value={workspace} disabled={locked || scope === "all"} onChange={e => { setWorkspace(e.currentTarget.value); setPreviews(null); }} />
       <Button variant="default" disabled={locked || scope === "all"} onClick={() => void run("选择项目目录", async () => { const path = await open({ directory: true, multiple: false }); if (typeof path === "string" && alive.current) { setWorkspace(path); setPreviews(null); } })}>选择目录</Button></Group>
-    <Group grow align="flex-start"><Select label="同步范围" disabled={locked} value={scope} onChange={value => { setScope((value ?? "selected") as typeof scope); if (value === "all") setWorkspace(""); setPreviews(null); }} data={[{ value: "selected", label: "勾选的会话" }, { value: "project", label: "整个项目" }, { value: "all", label: "全部本地会话" }]} />
+    <Group grow align="flex-start" className="chatgpt-sync-scope"><Select label="同步范围" disabled={locked} value={scope} onChange={value => { setScope((value ?? "selected") as typeof scope); if (value === "all") setWorkspace(""); setPreviews(null); }} data={[{ value: "selected", label: "勾选的会话" }, { value: "project", label: "整个项目" }, { value: "all", label: "全部本地会话" }]} />
       {scope === "project" && <Select label="选择项目" searchable disabled={locked} value={project} onChange={setProject} data={projects.map(p => ({ value: p, label: p }))} />}</Group>
-    <Group><Button disabled={locked || !source || !target || !history || scopeItems.length === 0 || !state.installation?.compatible} onClick={() => void syncAndSwitch()}>同步并切换账号（{scopeItems.length} 条）</Button><Text size="xs" c="dimmed">此来源与目标的选择会记住。相同快照不重复复制；目标新进度可反向同步。</Text></Group>
-    {source && <Group><Button variant="subtle" disabled={locked} onClick={() => void load(source)}>重新读取记录</Button>
+    <Button className="chatgpt-sync-primary" disabled={locked || !source || !target || !history || scopeItems.length === 0 || !state.installation?.compatible} onClick={() => void syncAndSwitch()}>同步并切换账号（{scopeItems.length} 条）</Button>
+    <Text size="xs" c="dimmed">目标正在运行时，会先请你确认退出；复制成功后才会重新打开。相同快照不会重复复制。</Text>
+    </Stack></div>
+    <div className="chatgpt-records"><Group justify="space-between" className="chatgpt-records-heading"><Title order={5}>工作记录</Title>{history && <Text size="xs" c="dimmed">{history.items.length} 条本地会话</Text>}</Group>
+    {source && <Group gap="xs" className="chatgpt-record-actions"><Button size="xs" variant="subtle" disabled={locked} onClick={() => void load(source)}>重新读取记录</Button>
       <Button variant="subtle" disabled={locked || !history} onClick={() => setSelected(history!.items.filter(i => i.transferable).slice(0,100).map(i => i.key))}>选择前 100 条可复制记录</Button>
       <Button variant="subtle" disabled={locked} onClick={() => setSelected([])}>清空选择</Button></Group>}
     {history?.warnings.map(w => <Text key={w} size="xs" c="dimmed">{w}</Text>)}
+    {!source && <div className="chatgpt-records-placeholder"><Text size="sm" c="dimmed">选择来源实例后，记录会显示在这里。</Text></div>}
     {source && !history && !error && <Text role="status">正在读取工作记录…</Text>}
     {history?.items.length === 0 && <Text c="dimmed">没有可复制的本地 Codex 工作记录。普通 ChatGPT 聊天不会出现在这里。</Text>}
     {history && <TextInput label="查找会话" placeholder="标题或项目路径" value={query} disabled={locked} onChange={e => setQuery(e.currentTarget.value)} />}
-    {visibleItems.slice(0,200).map(item => <Card key={item.key} withBorder p="sm"><Group justify="space-between" wrap="nowrap">
+    <div className="chatgpt-record-list">{visibleItems.slice(0,200).map(item => <Card key={item.key} className="chatgpt-record-row" p="sm"><Group justify="space-between" wrap="nowrap">
       <Checkbox label={item.title} description={`${new Date(item.modifiedAt * 1000).toLocaleString()} · ${item.workspace} · ${item.detail}`} checked={selected.includes(item.key)} disabled={locked || !item.transferable || (!selected.includes(item.key) && selected.length >= 100)}
         onChange={e => { const checked = e.currentTarget.checked; setSelected(old => checked ? [...old,item.key] : old.filter(k => k !== item.key)); setPreviews(null); }} />
       <Button size="xs" variant="light" disabled={locked || !ready || !item.transferable} onClick={() => void inspect([item.key])}>复制到目标</Button>
-    </Group></Card>)}
+    </Group></Card>)}</div>
     {visibleItems.length > 200 && <Text size="sm" c="dimmed">列表只渲染前 200 条。可用项目或全部范围同步其余记录，也可搜索具体会话。</Text>}
-    <Group><Button disabled={locked || !ready || selected.length === 0} onClick={() => void inspect(selected)}>预览选中的 {selected.length} 条记录</Button>{busy && <Text role="status" size="sm">{busy}</Text>}</Group>
+    {(selected.length > 0 || busy) && <Group className="chatgpt-record-footer">{selected.length > 0 && <Button disabled={locked || !ready} onClick={() => void inspect(selected)}>预览选中的 {selected.length} 条记录</Button>}{busy && <Text role="status" size="sm">{busy}</Text>}</Group>}
     {source && target && !ready && <Text size="sm" c="orange">单独复制需要先关闭目标实例；“同步并切换账号”会在关闭运行中的目标前请你确认。</Text>}
-    {target && <Stack gap="xs"><Group justify="space-between"><Title order={5}>复制队列与中断恢复</Title><Button size="xs" variant="subtle" disabled={locked} onClick={() => void loadTarget(target)}>刷新队列</Button></Group>
-      {pending.map(p => <Card key={p.key} withBorder p="sm"><Text>{p.title || "未完成的副本"}</Text><Group mt="xs">
+    </div></div>
+    {target && <Stack className="chatgpt-queue" gap="xs"><Group justify="space-between"><Title order={5}>复制队列与中断恢复</Title><Button size="xs" variant="subtle" disabled={locked} onClick={() => void loadTarget(target)}>刷新队列</Button></Group>
+      {pending.map(p => <Card key={p.key} className="chatgpt-queue-row" p="sm"><Text>{p.title || "未完成的副本"}</Text><Group mt="xs">
         <Button size="xs" disabled={locked || targetProfile?.status !== "stopped"} onClick={() => void run("恢复副本", async () => { const value = await api.chatGptRecover(target,p.key,false); if (alive.current) setMessage(value.detail); })}>继续恢复</Button>
         <Button size="xs" color="red" variant="light" disabled={locked || targetProfile?.status !== "stopped"} onClick={() => setDiscarding(p)}>撤回未完成副本</Button></Group></Card>)}
-      {unfinished.map(job => <Card key={job.id} withBorder p="sm"><Text size="sm">已处理 {job.outcomes.length}/{job.requests.length} 条</Text>{job.lastError && <Text size="sm" c="red">上次中断：{job.lastError}</Text>}<Group mt="xs">
+      {unfinished.map(job => <Card key={job.id} className="chatgpt-queue-row" p="sm"><Text size="sm">已处理 {job.outcomes.length}/{job.requests.length} 条</Text>{job.lastError && <Text size="sm" c="red">上次中断：{job.lastError}</Text>}<Group mt="xs">
         <Button size="xs" disabled={locked || targetProfile?.status !== "stopped"} onClick={() => void run("恢复批量复制", () => drive(job))}>继续队列</Button>
         <Button size="xs" variant="light" disabled={locked} onClick={() => void run("取消剩余复制", async () => { await api.chatGptBatchStep(target,job.id,true); })}>取消剩余复制</Button></Group></Card>)}
       {(busy.startsWith("正在复制") || busy.startsWith("正在检查")) && <Button variant="light" onClick={() => { stop.current = true; setMessage("当前记录处理完后暂停。"); }}>暂停后续复制</Button>}
@@ -240,5 +247,5 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
       <Group justify="flex-end"><Button variant="default" onClick={() => setConfirmClosingTarget(null)}>暂不关闭</Button>
         <Button color="orange" onClick={() => { const confirmed = confirmClosingTarget; setConfirmClosingTarget(null); if (confirmed) void syncAndSwitch(confirmed); }}>确认关闭并同步</Button></Group>
     </Stack></Modal>
-  </Stack></Card>;
+  </Stack></section>;
 }
