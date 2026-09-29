@@ -111,8 +111,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     </section>
 
     {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="账号实例">
-      <Title order={4}>账号实例</Title>
-      <div className="chatgpt-profile-list">
+      <div className="chatgpt-profile-list" data-count={profiles.length}>
       {profiles.map((p) => <div key={p.id} className="chatgpt-profile">
         <div className="chatgpt-profile-top">
           <div className="chatgpt-profile-main">
@@ -133,8 +132,8 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
             {p.status === "running" && <Button size="sm" variant="default" disabled={!!busy} onClick={() => void action(p, "stop")}>关闭</Button>}
           </Group>
           <Group gap="xs" className="chatgpt-profile-secondary-actions">
-            <Button size="xs" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
-            <Button size="xs" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
+            <Button size="sm" variant="subtle" disabled={!!busy || p.status !== "stopped"} onClick={() => void run(`diagnose:${p.id}`, async () => { const lines = await api.chatGptDiagnose(p.id); if (alive.current) setMessage({ error: false, text: `${p.name}\n${lines.join("\n")}` }); })}>检查隔离与账号</Button>
+            <Button size="sm" variant="subtle" color="red" disabled={!!busy || p.status !== "stopped"} onClick={() => setDeleting(p)}>删除</Button>
           </Group>
         </div>
         {p.issue && <Alert className="chatgpt-profile-issue" color="red">{p.issue}</Alert>}
