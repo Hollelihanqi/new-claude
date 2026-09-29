@@ -113,7 +113,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     {message && <Alert color={message.error ? "red" : "teal"} role={message.error ? "alert" : "status"}><Text size="sm" style={{ whiteSpace: "pre-line" }}>{message.text}</Text></Alert>}
     {!state ? <Text role="status">正在检测客户端与实例…</Text> : profiles.length > 0 && <>
       <section className="chatgpt-section" aria-label="账号实例">
-        <Group justify="space-between" className="chatgpt-section-heading"><Title order={4}>账号实例</Title><Badge variant="light" color="gray">{profiles.length} 个实例</Badge></Group>
+        <div className="chatgpt-section-heading"><Title order={4}>账号实例</Title></div>
       <SimpleGrid cols={{ base: 1, md: 2 }}>
         {profiles.map((p) => <Card key={p.id} className="chatgpt-profile" p="lg">
           <Stack gap="sm">

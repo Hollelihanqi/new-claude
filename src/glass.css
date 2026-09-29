@@ -2181,13 +2181,6 @@ html[data-theme="apple"] .side-nav-item:active {
 .chatgpt-profile-actions { margin-top: auto; padding-top: 4px; }
 .chatgpt-footnote { display: flex; align-items: center; gap: 7px; padding: 0 3px; }
 .chatgpt-footnote svg { flex: 0 0 auto; }
-.chatgpt-sync-badge {
-  padding: 6px 10px;
-  color: var(--mantine-primary-color-7);
-  background: color-mix(in srgb, var(--theme-base) 10%, var(--app-surface));
-  border-radius: 99px;
-  font-weight: 650;
-}
 .chatgpt-history-grid { display: grid; grid-template-columns: minmax(320px, .85fr) minmax(0, 1.15fr); align-items: start; gap: 16px; }
 .chatgpt-sync-options,
 .chatgpt-records,

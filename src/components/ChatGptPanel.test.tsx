@@ -40,6 +40,7 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
   const overview = renderer.root.findByProps({ className: "chatgpt-console" });
   expect(overview.findByProps({ className: "chatgpt-client-identity" })).toBeTruthy();
   expect(renderer.root.findAllByType(Title).some(item => item.props.children === "ChatGPT 多开")).toBe(false);
+  expect(renderer.root.findAll(node => typeof node.props.children === "string" && /\d+ 个实例|按次复制/.test(node.props.children))).toHaveLength(0);
   expect(button("退出")).toBeTruthy();
   expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("改名"))).toBe(false);
   await act(async () => { button("启动").props.onClick(); });

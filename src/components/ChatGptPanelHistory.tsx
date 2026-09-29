@@ -181,7 +181,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, disabl
   }
   const unfinished = jobs.filter(j => !j.cancelled && j.outcomes.length < j.requests.length);
   return <section className="chatgpt-history" aria-label="跨账号接续本地会话"><Stack gap="lg">
-    <div className="chatgpt-history-heading"><Group justify="space-between" align="flex-start"><Title order={4}>跨账号接续</Title><Text size="xs" className="chatgpt-sync-badge">按次复制</Text></Group>
+    <div className="chatgpt-history-heading"><Title order={4}>跨账号接续</Title>
       <Text size="sm" c="dimmed" mt={4}>复制本地 Codex 会话为独立副本；云端聊天与实时同步暂不支持。</Text>
     </div>
     {error && <Alert role="alert" color="red">{error}</Alert>}
