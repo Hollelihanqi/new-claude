@@ -1,6 +1,7 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Button, Select, Checkbox, Modal, Title } from "@mantine/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import ChatGptPanel from "./ChatGptPanel";
 import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "../api";
 
@@ -140,6 +141,22 @@ it("queues two profile actions while only their own buttons show progress", asyn
   await act(async () => { first.resolve(state); });
   expect(api.chatGptProfileAction).toHaveBeenCalledTimes(2);
   expect(api.chatGptProfileAction).toHaveBeenNthCalledWith(2, "b", "launch");
+});
+
+it("keeps history buttons independent while their operations wait in order", async () => {
+  const preview = deferred<Awaited<ReturnType<typeof api.chatGptPreview>>>();
+  vi.mocked(api.chatGptPreview).mockReturnValue(preview.promise);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  act(() => { button("复制到目标").props.onClick(); });
+  expect(button("复制到目标").props["aria-busy"]).toBe(true);
+  expect(button("选择目录").props.disabled).toBe(false);
+  expect(button("重新读取记录").props.disabled).toBeUndefined();
+  act(() => { button("选择目录").props.onClick(); });
+  expect(button("选择目录").props["aria-busy"]).toBe(true);
+  expect(open).not.toHaveBeenCalled();
+  await act(async () => { preview.resolve({ key: "record", title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" }); });
+  expect(open).toHaveBeenCalledTimes(1);
 });
 
 it("shows only the client and creation entry before the first instance exists", async () => {
