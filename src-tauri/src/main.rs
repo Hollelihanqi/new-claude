@@ -13,6 +13,7 @@ mod health;
 mod mcp;
 mod shared_config;
 mod sync;
+mod window_layout;
 mod workbuddy;
 
 const MARK: &str = "# cc-manager-integration";
@@ -3466,8 +3467,10 @@ fn main() {
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/64x64.png"))?;
             if let Some(window) = app.get_webview_window("main") {
                 window.set_icon(icon)?;
-                // Windows 可能记住一个已经移出屏幕的旧位置；开发版启动必须保证窗口可见。
-                let _ = window.center();
+                if let Err(error) = window_layout::initialize(&window) {
+                    sync::log_line(&format!("初始化自适应窗口失败: {error}"));
+                    let _ = window.center();
+                }
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();

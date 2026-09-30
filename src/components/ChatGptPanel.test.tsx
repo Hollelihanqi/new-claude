@@ -22,6 +22,18 @@ afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(
 const button = (label: string) => renderer.root.findAllByType(Button).find(b => String(b.props.children).includes(label))!;
 const select = (label: string) => renderer.root.findAllByType(Select).find(s => s.props.label === label)!;
 
+it("shows an accessible animated workspace while detection is pending, then removes it", async () => {
+  const result = deferred<ChatGptState>();
+  vi.mocked(api.chatGptState).mockReturnValue(result.promise);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const loading = renderer.root.findByProps({ className: "chatgpt-loading" });
+  expect(loading.props.role).toBe("status");
+  expect(loading.props["aria-busy"]).toBe("true");
+  expect(loading.findByProps({ className: "chatgpt-loading-preview" }).props["aria-hidden"]).toBe("true");
+  await act(async () => { result.resolve(state); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-loading" })).toHaveLength(0);
+});
+
 it("opens the primary client separately from managed profiles", async () => {
   vi.mocked(api.chatGptOpenPrimary).mockResolvedValue();
   await act(async () => { renderer = create(<ChatGptPanel />); });

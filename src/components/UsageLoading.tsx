@@ -12,7 +12,6 @@ export default function UsageLoading({ error, onRetry }: { error?: string; onRet
         {onRetry && <Button variant="light" leftSection={<IconRefresh size={16} />} onClick={onRetry}>重新加载</Button>}
       </> : <>
         <div className="usage-loading-progress" aria-hidden="true"><span /></div>
-        <div className="usage-loading-preview" aria-hidden="true"><i /><i /><i /><i /><i /><i /><i /></div>
       </>}
     </div>
   );

@@ -142,7 +142,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
           <span className="chatgpt-client-icon"><IconBrandOpenai size={24} /></span>
           <div className="chatgpt-client-copy">
             <Group gap="xs"><Text fw={700}>{state?.installation ? `ChatGPT ${state.installation.version}` : "官方 ChatGPT 客户端"}</Text><Badge size="sm" variant="light" color={state?.installation?.compatible ? "teal" : "orange"}>{state?.installation?.compatible ? "已连接" : "待检查"}</Badge></Group>
-            <Text size="xs" c="dimmed" className="chatgpt-path">{state?.installation?.path ?? state?.installationIssue ?? "正在检测客户端…"}</Text>
+            {!state?.installation && <Text size="xs" c="dimmed">{state?.installationIssue ?? "正在检测客户端…"}</Text>}
             {state?.installation && !state.installation.compatible && <Text size="xs" c="red">{state.installation.detail}</Text>}
           </div>
         </div>
@@ -194,7 +194,22 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     </section>}
 
     {message && <div className="chatgpt-feedback" role="alert"><Text size="sm">{message}</Text><Button size="compact-xs" variant="subtle" aria-label="收起错误提示" onClick={() => setMessage(null)}><IconX size={15} /></Button></div>}
-    {!state ? <Text role="status">正在检测客户端与实例…</Text> : profiles.length > 0 && <>
+    {!state ? <div className="chatgpt-loading" role="status" aria-live="polite" aria-busy="true">
+      <div className="chatgpt-loading-orbit" aria-hidden="true">
+        <span className="chatgpt-loading-halo" />
+        <span className="chatgpt-loading-track" />
+        <span className="chatgpt-loading-core"><IconBrandOpenai size={38} stroke={1.6} /></span>
+        <span className="chatgpt-loading-satellite"><i /></span>
+      </div>
+      <div className="chatgpt-loading-copy">
+        <Text className="chatgpt-loading-title">正在准备你的 ChatGPT</Text>
+        <Text className="chatgpt-loading-subtitle">正在检测客户端与实例…</Text>
+      </div>
+      <div className="chatgpt-loading-dots" aria-hidden="true"><i /><i /><i /></div>
+      <div className="chatgpt-loading-preview" aria-hidden="true">
+        {[0, 1, 2].map(index => <div className="chatgpt-loading-card" key={index}><span /><div><i /><i /></div></div>)}
+      </div>
+    </div> : profiles.length > 0 && <>
       <ChatGptPanelHistory state={state} active={active} initialCopy={initialCopy} coordinate={coordinate} />
     </>}
 
