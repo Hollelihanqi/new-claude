@@ -239,15 +239,11 @@ jobs:
           tagName: ${{ needs.channel.outputs.tag }}
           releaseName: "PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
           releaseBody: |
-            ChatGPT 实例卡片新增「API 配置」：填写网关地址和 API Key 后自动读取模型列表，可选择默认模型并在官方客户端内切换模型。配置仅作用于当前实例；可切回账号登录，原有账号登录信息保留。
+            新增腾讯云 COS 国内更新源。客户端优先从国内源读取更新清单和下载安装包；GitHub 保留为更新检查的备用地址。发布流程先同步并验证所有安装包与签名，再公开 GitHub Release，最后更新国内正式版清单。
 
-            恢复账号和 API Key 两种登录入口，已有实例会自动移除 PathMux 曾写入的账号登录限制。针对 VPN 内网网关，模型读取和实例对话请求绕过外部代理，并沿用已配置的 CA 证书。
+            已安装的旧版尚未内置国内地址；首次迁移请通过现有渠道更新一次或手动安装本版。之后可直接使用国内源检查和下载更新。
 
-            API 实例新增可选「兼容模式」开关，用于仅提供 Anthropic Messages 接口的网关；默认关闭，仅在 API 登录模式下显示。精简开关说明，状态直接由开关颜色和位置表示。
-
-            已知限制：兼容模式目前支持文字对话和客户端工具调用，暂不支持联网搜索、图片和文件输入。默认直连需要网关支持 Responses API。macOS 的 Spotlight / 系统应用图标在实例仍运行时可能只激活已有窗口，需要使用 PathMux 的「打开主 ChatGPT」入口。本地 Codex 会话复制为按次同步；普通 ChatGPT 云端聊天、后台实时同步不在此功能范围内，Windows 真机流程仍待验收。
-
-            下载对应系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。本应用未做代码签名，首次打开时系统可能提示无法验证开发者；安装说明见仓库 README。
+            下载对应系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。安装说明见仓库 README。
           # **一律先建成 draft**：先完成的平台立刻公开的话，第二个平台失败时
           # 用户会看到一个缺一半安装包的公开版本。是否公开交给下面的 publish job 统一决定。
           releaseDraft: true
