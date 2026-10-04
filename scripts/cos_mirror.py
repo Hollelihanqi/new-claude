@@ -171,7 +171,7 @@ def stage(store, directory, tag, repo, base, verify=public_digest):
         receipt["assets"][name] = {
             "url": object_url(base, key), "size": len(data), "sha256": sha256(data),
         }
-        print(f"Uploaded or reused {name}")
+        print(f"Uploaded or reused {name}", flush=True)
     # Write no candidate until every public download equals the source bytes.
     verify_assets(receipt, verify)
     candidate = f"{PREFIX}/candidates/{tag}"
@@ -180,7 +180,7 @@ def stage(store, directory, tag, repo, base, verify=public_digest):
     store.put_immutable(f"{candidate}/source.json", encode_json(manifest))
     store.put_immutable(f"{candidate}/verification.json", encode_json(receipt))
     store.put_immutable(f"{candidate}/latest.json", mirrored_bytes)
-    print(f"Candidate verified: {tag}")
+    print(f"Candidate verified: {tag}", flush=True)
 
 
 def promote(store, tag, repo, base, latest_release, verify=public_digest):
@@ -223,7 +223,7 @@ def promote(store, tag, repo, base, latest_release, verify=public_digest):
         "size": len(manifest_bytes), "sha256": sha256(manifest_bytes),
     }:
         raise ValueError("Public stable manifest verification failed")
-    print(f"Domestic stable channel now serves {tag}")
+    print(f"Domestic stable channel now serves {tag}", flush=True)
 
 
 def main():
@@ -250,6 +250,11 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         # No credential-bearing HTTP headers or SDK exception dumps in CI logs.
-        detail = f": {error}" if isinstance(error, ValueError) else ""
+        detail = str(error)[:800]
+        for name in ("TENCENT_COS_SECRET_ID", "TENCENT_COS_SECRET_KEY"):
+            secret = os.environ.get(name)
+            if secret:
+                detail = detail.replace(secret, "[redacted]")
+        detail = f": {detail}" if detail else ""
         print(f"Mirror failed ({type(error).__name__}){detail}; publication was stopped.", file=sys.stderr)
         sys.exit(1)
