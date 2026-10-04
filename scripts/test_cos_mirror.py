@@ -1,9 +1,12 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from cos_mirror import NO_CACHE, PREFIX, encode_json, promote, release_plan, sha256, stage
+from cos_mirror import CosStore, NO_CACHE, PREFIX, encode_json, promote, release_plan, sha256, stage
 
 
 BASE = "https://example-1250000000.cos.ap-guangzhou.myqcloud.com"
@@ -43,6 +46,12 @@ class MemoryStore:
         if key in self.objects and self.objects[key] != data:
             raise ValueError("Immutable asset changed")
         self.put(key, data, "immutable")
+
+    def put_immutable_file(self, key, path, size, digest):
+        data = path.read_bytes()
+        if len(data) != size or sha256(data) != digest:
+            raise ValueError("File changed during upload")
+        self.put_immutable(key, data)
 
     def download_digest(self, url):
         key = url.removeprefix(BASE + "/")
@@ -146,6 +155,77 @@ class MirrorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.promote()
         self.assertIsNone(self.store.read(f"{PREFIX}/stable/latest.json"))
+
+
+class MultipartTests(unittest.TestCase):
+    def test_large_file_parts_are_ordered_and_completed(self):
+        class Missing(Exception):
+            def get_status_code(self):
+                return 404
+
+        class Client:
+            def __init__(self):
+                self.parts = {}
+                self.completed = None
+
+            def head_object(self, **kwargs):
+                raise Missing()
+
+            def create_multipart_upload(self, **kwargs):
+                self.metadata = kwargs["Metadata"]
+                return {"UploadId": "test-upload"}
+
+            def upload_part(self, **kwargs):
+                self.parts[kwargs["PartNumber"]] = kwargs["Body"]
+                return {"ETag": str(kwargs["PartNumber"])}
+
+            def complete_multipart_upload(self, **kwargs):
+                self.completed = kwargs["MultipartUpload"]["Part"]
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            sys.modules, {"qcloud_cos": types.SimpleNamespace(CosServiceError=Missing)}
+        ), patch("cos_mirror.PART_SIZE", 4):
+            path = Path(temp) / "installer.dmg"
+            path.write_bytes(b"abcdefghijkl")
+            store = CosStore.__new__(CosStore)
+            store.bucket = "test-bucket"
+            store.client = Client()
+            store.put_immutable_file("pathmux/releases/v3.2.0/installer.dmg", path, 12, sha256(path.read_bytes()))
+            self.assertEqual(b"".join(store.client.parts[n] for n in (1, 2, 3)), path.read_bytes())
+            self.assertEqual([part["PartNumber"] for part in store.client.completed], [1, 2, 3])
+            self.assertEqual(store.client.metadata["x-cos-meta-sha256"], sha256(path.read_bytes()))
+
+    def test_failed_part_aborts_incomplete_upload(self):
+        class Missing(Exception):
+            def get_status_code(self):
+                return 404
+
+        class Client:
+            aborted = False
+
+            def head_object(self, **kwargs):
+                raise Missing()
+
+            def create_multipart_upload(self, **kwargs):
+                return {"UploadId": "test-upload"}
+
+            def upload_part(self, **kwargs):
+                raise RuntimeError("part failed")
+
+            def abort_multipart_upload(self, **kwargs):
+                self.aborted = True
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            sys.modules, {"qcloud_cos": types.SimpleNamespace(CosServiceError=Missing)}
+        ), patch("cos_mirror.PART_SIZE", 4):
+            path = Path(temp) / "installer.dmg"
+            path.write_bytes(b"abcdefgh")
+            store = CosStore.__new__(CosStore)
+            store.bucket = "test-bucket"
+            store.client = Client()
+            with self.assertRaisesRegex(RuntimeError, "part failed"):
+                store.put_immutable_file("pathmux/releases/v3.2.0/installer.dmg", path, 8, sha256(path.read_bytes()))
+            self.assertTrue(store.client.aborted)
 
 
 if __name__ == "__main__":

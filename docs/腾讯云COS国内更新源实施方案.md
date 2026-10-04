@@ -6,7 +6,7 @@
 - 国内更新地址：`https://pathmux-updates-1254404270.cos.ap-guangzhou.myqcloud.com/pathmux/stable/latest.json`。
 - 镜像仅同步安装包、签名文件、自动更新清单；源码仍由 GitHub 管理。
 - 桶保持私有读写；通过桶策略只公开 `pathmux/*` 的 `GetObject`，不开放列举或写入。
-- `PathMuxReleasePublisher` 策略只含该目录的 `GetObject`、`HeadObject`、`PutObject`；不授予删除、桶管理或其它产品权限。
+- `PathMuxReleasePublisher` 策略只含该目录的 `GetObject`、`HeadObject`、`PutObject`，以及大文件所需的 `InitiateMultipartUpload`、`UploadPart`、`CompleteMultipartUpload`、`AbortMultipartUpload`；不授予列举、删除、桶管理或其它产品权限。
 - 上传与晋级逻辑：`scripts/cos_mirror.py`，官方 SDK 版本由 `scripts/cos-requirements.txt` 固定。
 - 正式发布：`.github/workflows/release.yml` 在公开 GitHub Release 前验证候选镜像，公开后最后更新国内正式清单。
 - 已发布版本初始化或修复：手动运行 `.github/workflows/sync-cos.yml`，填写当前 GitHub Latest 的 tag；复用已有产物，不重建旧版本。
@@ -48,7 +48,7 @@ COS_PUBLIC_BASE_URL=https://完整存储桶名称.cos.ap-guangzhou.myqcloud.com
 
 ### 2. 创建最小权限发布凭证
 
-创建专用 CAM 子用户或 API 凭证，只允许 GitHub Actions 对该存储桶的 `pathmux/` 前缀执行发布所需的列举、读取、上传、覆盖和候选文件清理操作。
+创建专用 CAM 子用户，只允许 GitHub Actions 对该存储桶的 `pathmux/` 前缀执行读取和上传操作。大文件采用分段上传，失败时可终止尚未完成的分段；不授予列举、删除或其它目录的权限。
 
 不要使用腾讯云主账号永久密钥，也不要把密钥写入代码、日志、Release 或本文档。
 
@@ -140,8 +140,8 @@ COS 上的 `latest.json` 必须保留原始版本号、发布日期、说明、�
 3. 读取 `platforms.*.url`，解析真实更新文件名；
 4. 将版本化文件上传到 `pathmux/releases/v版本号/`；
 5. 把清单中的 GitHub 下载 URL 改成 COS URL，签名字段原样保留；
-6. 将改写后的清单先上传到 `pathmux/candidates/v版本号/latest.json`；
-7. 对每个公开 COS URL 发起匿名 HTTPS 请求，确认返回成功且文件非空；
+6. 对每个公开 COS URL 发起匿名 HTTPS 请求，逐字节核对文件大小和 SHA-256；
+7. 将改写后的清单上传到 `pathmux/candidates/v版本号/latest.json`；
 8. 任一上传或验证失败时终止发布，不能覆盖 `stable/latest.json`。
 
 ### 阶段 B：晋级稳定清单

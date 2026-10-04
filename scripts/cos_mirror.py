@@ -2,7 +2,8 @@
 """Mirror signed release bytes, then promote the verified manifest last.
 
 Credentials are read only from the CI environment, never written to disk or logs.
-The publisher needs only GetObject / HeadObject / PutObject on pathmux/*.
+The publisher is scoped to pathmux/* with read, simple PUT, and four
+multipart upload actions. It cannot delete or list the bucket.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import Request, urlopen
@@ -20,6 +22,7 @@ from urllib.request import Request, urlopen
 PREFIX = "pathmux"
 NO_CACHE = "no-store, no-cache, must-revalidate, max-age=0"
 IMMUTABLE = "public, max-age=31536000, immutable"
+PART_SIZE = 5 * 1024 * 1024
 TAG_PATTERN = re.compile(r"v(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -29,6 +32,16 @@ def encode_json(value):
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def file_fingerprint(path):
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+    return size, digest.hexdigest()
 
 
 def validate_tag(tag):
@@ -94,10 +107,7 @@ class CosStore:
         self.client = CosS3Client(CosConfig(
             Region=region, SecretId=os.environ["TENCENT_COS_SECRET_ID"],
             SecretKey=os.environ["TENCENT_COS_SECRET_KEY"], Scheme="https",
-            # A GitHub-hosted runner can need longer than the SDK's 30-second
-            # socket timeout to write one signed installer to mainland COS.
-            # Keep simple PutObject so the publisher needs only PutObject.
-            Timeout=300,
+            Timeout=120,
         ))
 
     def read(self, key):
@@ -135,6 +145,61 @@ class CosStore:
             return
         self.put(key, data, IMMUTABLE)
 
+    def put_immutable_file(self, key, path, size, digest):
+        from qcloud_cos import CosServiceError
+        try:
+            existing = self.client.head_object(Bucket=self.bucket, Key=key)
+        except CosServiceError as error:
+            if error.get_status_code() != 404:
+                raise
+            existing = None
+        if existing is not None:
+            if (existing.get("x-cos-meta-sha256") != digest
+                    or int(existing["Content-Length"]) != size):
+                raise ValueError(f"Refusing to overwrite different versioned bytes: {key}")
+            return
+        if size <= PART_SIZE:
+            self.put(key, path.read_bytes(), IMMUTABLE)
+            return
+        # Large single PUTs stall across the GitHub runner -> mainland route.
+        # Manual multipart needs only the four object-scoped multipart actions,
+        # without bucket-level listing privileges.
+        response = self.client.create_multipart_upload(
+            Bucket=self.bucket, Key=key, StorageClass="STANDARD",
+            ContentType="application/octet-stream", CacheControl=IMMUTABLE,
+            Metadata={"x-cos-meta-sha256": digest},
+        )
+        upload_id = response["UploadId"]
+        try:
+            futures = {}
+            with ThreadPoolExecutor(max_workers=3) as pool, path.open("rb") as source:
+                part_number = 0
+                while chunk := source.read(PART_SIZE):
+                    part_number += 1
+                    future = pool.submit(
+                        self.client.upload_part, Bucket=self.bucket, Key=key,
+                        Body=chunk, PartNumber=part_number, UploadId=upload_id,
+                        EnableMD5=True,
+                    )
+                    futures[future] = part_number
+                parts = []
+                for future in as_completed(futures):
+                    number = futures[future]
+                    parts.append({"PartNumber": number, "ETag": future.result()["ETag"]})
+                    print(f"Uploaded {key} part {number}/{part_number}", flush=True)
+            self.client.complete_multipart_upload(
+                Bucket=self.bucket, Key=key, UploadId=upload_id,
+                MultipartUpload={"Part": sorted(parts, key=lambda part: part["PartNumber"])},
+            )
+        except BaseException:
+            try:
+                self.client.abort_multipart_upload(
+                    Bucket=self.bucket, Key=key, UploadId=upload_id,
+                )
+            except Exception:
+                pass
+            raise
+
 
 def public_digest(url):
     """Verify real anonymous downloads including all bytes, not just HEAD status."""
@@ -166,14 +231,15 @@ def stage(store, directory, tag, repo, base, verify=public_digest):
         raise ValueError("Release must include both macOS and Windows installers")
     rewritten, _ = release_plan(manifest, tag, repo, base, names)
     receipt = {"tag": tag, "repo": repo, "assets": {}}
-    for name, path in sorted(files.items()):
-        data = path.read_bytes()
-        if not data:
+    for name, path in sorted(files.items(), key=lambda item: (item[1].stat().st_size, item[0])):
+        size, digest = file_fingerprint(path)
+        if not size:
             raise ValueError(f"Empty release asset: {name}")
         key = f"{PREFIX}/releases/{tag}/{name}"
-        store.put_immutable(key, data)
+        print(f"Uploading or checking {name} ({size} bytes)", flush=True)
+        store.put_immutable_file(key, path, size, digest)
         receipt["assets"][name] = {
-            "url": object_url(base, key), "size": len(data), "sha256": sha256(data),
+            "url": object_url(base, key), "size": size, "sha256": digest,
         }
         print(f"Uploaded or reused {name}", flush=True)
     # Write no candidate until every public download equals the source bytes.
