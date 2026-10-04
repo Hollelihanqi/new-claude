@@ -94,6 +94,10 @@ class CosStore:
         self.client = CosS3Client(CosConfig(
             Region=region, SecretId=os.environ["TENCENT_COS_SECRET_ID"],
             SecretKey=os.environ["TENCENT_COS_SECRET_KEY"], Scheme="https",
+            # A GitHub-hosted runner can need longer than the SDK's 30-second
+            # socket timeout to write one signed installer to mainland COS.
+            # Keep simple PutObject so the publisher needs only PutObject.
+            Timeout=300,
         ))
 
     def read(self, key):
