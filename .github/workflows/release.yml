@@ -261,11 +261,28 @@ jobs:
     # 只放行两种情形：build 成功，或 build 被跳过（晋级）；build 失败一律不放行。
     if: ${{ !cancelled() && needs.channel.result == 'success' && (needs.build.result == 'success' || (needs.channel.outputs.mode == 'promote' && needs.build.result == 'skipped')) }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: pathmux-cos-stable
+      cancel-in-progress: false
     env:
       GH_REPO: ${{ github.repository }}
+      MIRROR_TAG: ${{ needs.channel.outputs.tag }}
+      TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+      TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+      TENCENT_COS_BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
+      TENCENT_COS_REGION: ${{ secrets.TENCENT_COS_REGION }}
+      TENCENT_COS_PUBLIC_BASE_URL: ${{ secrets.TENCENT_COS_PUBLIC_BASE_URL }}
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        if: needs.channel.outputs.name == 'stable'
+        with:
+          python-version: "3.12"
+      - name: 检查镜像发布逻辑
+        if: needs.channel.outputs.name == 'stable'
+        run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: 核验该 Tag 的产物齐全
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -292,6 +309,18 @@ jobs:
             exit 1
           fi
           echo "::notice::产物核验通过（$tag）"
+      - name: 安装 COS 官方 SDK
+        if: needs.channel.outputs.name == 'stable'
+        run: pip install -r scripts/cos-requirements.txt
+      - name: 同步并校验国内候选镜像
+        if: needs.channel.outputs.name == 'stable'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$MIRROR_TAG" --dir "$RUNNER_TEMP/cos-assets"
+          python scripts/cos_mirror.py stage --tag "$MIRROR_TAG" --repo "$GH_REPO" --assets "$RUNNER_TEMP/cos-assets"
       - name: 按通道决定是否晋级
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -320,3 +349,12 @@ jobs:
               --title "PathMux $tag（public-preview）"
           fi
           echo "::notice::已晋级 $tag 到 $channel"
+      - name: 最后更新国内正式版清单
+        if: needs.channel.outputs.name == 'stable'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/latest" > "$RUNNER_TEMP/latest-release.json"
+          python scripts/cos_mirror.py promote --tag "$MIRROR_TAG" --repo "$GH_REPO" --latest-release "$RUNNER_TEMP/latest-release.json"

@@ -1,5 +1,20 @@
 # 腾讯云 COS 国内更新源实施方案
 
+## 实施配置（2026-10-04）
+
+- 存储桶：`pathmux-updates-1254404270`，广州 `ap-guangzhou`，单 AZ。
+- 国内更新地址：`https://pathmux-updates-1254404270.cos.ap-guangzhou.myqcloud.com/pathmux/stable/latest.json`。
+- 镜像仅同步安装包、签名文件、自动更新清单；源码仍由 GitHub 管理。
+- 桶保持私有读写；通过桶策略只公开 `pathmux/*` 的 `GetObject`，不开放列举或写入。
+- `PathMuxReleasePublisher` 策略只含该目录的 `GetObject`、`HeadObject`、`PutObject`；不授予删除、桶管理或其它产品权限。
+- 上传与晋级逻辑：`scripts/cos_mirror.py`，官方 SDK 版本由 `scripts/cos-requirements.txt` 固定。
+- 正式发布：`.github/workflows/release.yml` 在公开 GitHub Release 前验证候选镜像，公开后最后更新国内正式清单。
+- 已发布版本初始化或修复：手动运行 `.github/workflows/sync-cos.yml`，填写当前 GitHub Latest 的 tag；复用已有产物，不重建旧版本。
+- 两个流程通过同一并发锁串行发布。完整匿名下载验证 SHA-256 和大小；保留所有平台键与原始签名；同版本不同字节拒绝覆盖；旧版本禁止覆盖新正式版。
+- 国内地址已加入应用更新配置，GitHub 保留为检查更新时的备用地址。旧客户端需先安装一次包含国内地址的新版。
+
+执行前须确认五项 Actions Secrets 已配置，运行后以工作流结果与匿名访问实际清单为准；本节中的配置和代码不代表镜像已经上线。
+
 ## 目标
 
 在保留 GitHub Release 的同时，为 PathMux 增加一个中国大陆无需代理即可访问的更新源：

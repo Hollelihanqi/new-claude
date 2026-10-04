@@ -13,3 +13,6 @@ Thumbs.db
 
 # Claude Code 本地会话配置（仅本机有效，不入仓库）
 .claude/
+
+# Python 发布脚本缓存
+__pycache__/
