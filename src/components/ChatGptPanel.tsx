@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Alert, Badge, Button, Group, Modal, Select, Stack, Text, TextInput, Title } from "@mantine/core";
-import { IconBrandOpenai, IconCircleCheck, IconDeviceFloppy, IconFolderOpen, IconInfoCircle, IconLoader2, IconPlayerPlay, IconPlayerStop, IconPlus, IconRefresh, IconX } from "@tabler/icons-react";
+import { Alert, Badge, Button, Group, Modal, PasswordInput, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
+import { IconBrandOpenai, IconCircleCheck, IconDeviceFloppy, IconFolderOpen, IconInfoCircle, IconKey, IconLoader2, IconPlayerPlay, IconPlayerStop, IconPlus, IconRefresh, IconX } from "@tabler/icons-react";
 import { api, type ChatGptAction, type ChatGptProfile, type ChatGptState } from "../api";
 import RiskConfirm from "./RiskConfirm";
 import ChatGptPanelHistory from "./ChatGptPanelHistory";
@@ -30,6 +30,19 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [deleting, setDeleting] = useState<ChatGptProfile | null>(null);
+  const [apiConfigId, setApiConfigId] = useState<string | null>(null);
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
+  const [apiModel, setApiModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiModels, setApiModels] = useState<{ id: string; name: string }[]>([]);
+  const [apiModelsLoading, setApiModelsLoading] = useState(false);
+  const [apiModelsError, setApiModelsError] = useState<string | null>(null);
+  const [apiManualModel, setApiManualModel] = useState(false);
+  const [apiRefreshSequence, setApiRefreshSequence] = useState(0);
+  const apiDiscoveryGeneration = useRef(0);
+  const apiSavedProfile = state?.profiles.find(profile => profile.id === apiConfigId);
+  const apiSavedBaseUrl = apiSavedProfile?.api?.baseUrl;
+  const apiHasSavedKey = apiSavedProfile?.api?.hasKey;
   const [copySource, setCopySource] = useState<string | null>(null);
   const [initialCopy, setInitialCopy] = useState<{ source: string | null; target: string } | null>(null);
 
@@ -133,6 +146,69 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
     }
   });
 
+  const openApiConfig = (profile: ChatGptProfile) => {
+    setApiConfigId(profile.id);
+    setApiBaseUrl(profile.api?.baseUrl || "https://api.openai.com/v1");
+    setApiModel(profile.api?.model || "");
+    setApiModels(profile.api?.models || []);
+    setApiModelsError(null);
+    setApiManualModel(false);
+    setApiKey("");
+  };
+  const closeApiConfig = () => { apiDiscoveryGeneration.current++; setApiConfigId(null); setApiKey(""); setApiModelsLoading(false); };
+  useEffect(() => {
+    if (!active || !apiConfigId || !apiBaseUrl.trim()) return;
+    if (!apiKey.trim() && (!apiHasSavedKey || apiSavedBaseUrl !== apiBaseUrl.trim().replace(/\/$/, ""))) return;
+    const generation = ++apiDiscoveryGeneration.current;
+    const timer = setTimeout(async () => {
+      setApiModelsLoading(true);
+      setApiModelsError(null);
+      try {
+        const models = await api.chatGptDiscoverApiModels(apiConfigId, apiBaseUrl, apiKey);
+        if (!alive.current || generation !== apiDiscoveryGeneration.current) return;
+        setApiModels(models);
+        setApiManualModel(false);
+        setApiModel(current => models.some(model => model.id === current) ? current : models[0]?.id || "");
+      } catch (error) {
+        if (!alive.current || generation !== apiDiscoveryGeneration.current) return;
+        setApiModels([]);
+        setApiModelsError(String(error));
+      } finally {
+        if (alive.current && generation === apiDiscoveryGeneration.current) setApiModelsLoading(false);
+      }
+    }, 650);
+    return () => { clearTimeout(timer); apiDiscoveryGeneration.current++; };
+  }, [active, apiConfigId, apiBaseUrl, apiKey, apiSavedBaseUrl, apiHasSavedKey, apiRefreshSequence]);
+  const saveApiConfig = () => {
+    if (!apiConfigId) return;
+    void run(`api:${apiConfigId}`, async () => {
+      const next = await api.chatGptSaveApiConfig(apiConfigId, apiBaseUrl, apiModel, apiKey, apiManualModel);
+      if (alive.current) {
+        diagnosticGeneration.current.set(apiConfigId, (diagnosticGeneration.current.get(apiConfigId) ?? 0) + 1);
+        setDiagnostics(current => { const updated = { ...current }; delete updated[apiConfigId]; return updated; });
+        setState(next); closeApiConfig();
+      }
+    });
+  };
+  const useAccountLogin = () => {
+    if (!apiConfigId) return;
+    void run(`api:${apiConfigId}`, async () => {
+      const next = await api.chatGptUseAccountLogin(apiConfigId);
+      if (alive.current) {
+        diagnosticGeneration.current.set(apiConfigId, (diagnosticGeneration.current.get(apiConfigId) ?? 0) + 1);
+        setDiagnostics(current => { const updated = { ...current }; delete updated[apiConfigId]; return updated; });
+        setState(next); closeApiConfig();
+      }
+    });
+  };
+
+  const setCompatibility = (profile: ChatGptProfile, enabled: boolean) => {
+    void run(`compatibility:${profile.id}`, async () => {
+      const next = await api.chatGptSetApiCompatibility(profile.id, enabled);
+      if (alive.current) setState(next);
+    });
+  };
+
   const profiles = state?.profiles ?? [];
 
   return <div className="view-scroll chatgpt-scroll"><Stack className={`chatgpt-page${state && profiles.length === 0 ? " chatgpt-page-empty" : ""}`} gap="md">
@@ -155,14 +231,14 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
       </div>
       {state && profiles.length === 0 && <div className="chatgpt-onboarding">
         <div className="chatgpt-onboarding-art" aria-hidden="true"><span><IconBrandOpenai size={28} /></span><span><IconBrandOpenai size={28} /></span></div>
-        <Title order={3}>让两个账号，各自就位</Title>
-        <Text size="sm" c="dimmed">创建独立实例后，分别在官方窗口登录即可。</Text>
+        <Title order={3}>让不同登录，各自独立</Title>
+        <Text size="sm" c="dimmed">创建独立实例后，可在官方窗口选择 ChatGPT 账号或 API Key 登录。</Text>
         <Button size="md" leftSection={<IconPlus size={18} />} onClick={() => { setCreating(true); setName(""); }}>创建第一个实例</Button>
       </div>}
     </section>
 
-    {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="账号实例">
-      <Title order={4}>账号实例</Title>
+    {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="独立实例">
+      <Title order={4}>独立实例</Title>
       <div className="chatgpt-profile-list">
       {profiles.map((p) => { const diagnostic = diagnostics[p.id]; const tone = p.status === "stopped" ? !diagnostic || diagnostic.pending ? "checking" : diagnostic.healthy ? "healthy" : "warning" : p.status; return <div key={p.id} className="chatgpt-profile" data-profile-tone={tone}>
         <div className="chatgpt-profile-top">
@@ -170,6 +246,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
             <span className="chatgpt-profile-icon"><IconBrandOpenai size={23} /></span>
             <div className="chatgpt-profile-copy">
               <Text fw={700} className="chatgpt-profile-name">{p.name}</Text>
+              {p.api && <Text size="xs" c="dimmed" className="chatgpt-profile-api-mode">{p.api.active ? `API · ${p.api.model}` : "账号登录 · API 配置已保存"}</Text>}
             </div>
           </div>
           <div className="chatgpt-profile-health">
@@ -184,10 +261,17 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
               aria-busy={pending(`launch:${p.id}`) || pending(`focus:${p.id}`)}
               disabled={p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
               onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
+            <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={<IconKey size={15} />} onClick={() => openApiConfig(p)}>API 配置</Button>
             {p.status === "closing" && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`cleanup:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconRefresh size={15} />} aria-busy={pending(`cleanup:${p.id}`)} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
             {p.status === "running" && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`stop:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerStop size={15} />} aria-busy={pending(`stop:${p.id}`)} onClick={() => void action(p, "stop")}>关闭</Button>}
             {p.status === "stopped" && <Button className="chatgpt-profile-action chatgpt-profile-action-danger" size="sm" variant="light" color="red" leftSection={<IconX size={15} />} onClick={() => setDeleting(p)}>删除</Button>}
         </div>
+        {p.api?.active && <div className="chatgpt-profile-compatibility" data-enabled={p.api.compatibilityEnabled ? "true" : "false"}>
+          <Switch color="teal" label="兼容模式" description={<><span>对话一直无回复时可尝试开启。开启后，此实例暂时不能上网查资料。</span><span>不懂就不要开启。</span></>}
+            checked={!!p.api.compatibilityEnabled}
+            disabled={p.status !== "stopped" || pending(`compatibility:${p.id}`)}
+            onChange={event => setCompatibility(p, event.currentTarget.checked)} />
+        </div>}
         {p.issue && <Alert className="chatgpt-profile-issue" color="red">{p.issue}</Alert>}
       </div>; })}
       </div>
@@ -217,8 +301,28 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
       <Stack>
         <TextInput label="实例名称" placeholder="例如：工作账号" value={name} maxLength={40} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) void save(); }} />
         <Select label="创建后选择本地记录（可选）" clearable value={copySource} onChange={setCopySource} data={[{ value: "default", label: "默认实例的本地 Codex 记录" }, ...profiles.map(p => ({ value: p.id, label: p.name }))]} />
-        <Text size="sm" c="dimmed">账号登录在官方 ChatGPT 窗口中完成。创建后可选择复制本地 Codex 工作记录。</Text>
+        <Text size="sm" c="dimmed">在官方 ChatGPT 窗口选择账号或 API Key 登录。创建后可选择复制本地 Codex 工作记录。</Text>
         <Group justify="flex-end"><Button leftSection={pending("save") ? <IconLoader2 size={16} className="chatgpt-button-spinner" /> : <IconDeviceFloppy size={16} />} aria-busy={pending("save")} disabled={!name.trim()} onClick={() => void save()}>保存</Button></Group>
+      </Stack>
+    </Modal>
+    <Modal opened={active && apiConfigId !== null} onClose={() => { if (!apiConfigId || !pending(`api:${apiConfigId}`)) closeApiConfig(); }} title={`${profiles.find(p => p.id === apiConfigId)?.name ?? "实例"} · API 配置`} centered>
+      <Stack gap="sm">
+        <Text size="sm" c="dimmed">为这个实例设置 Responses API。保存后启动实例，即可使用 API 模式进入程序；主 ChatGPT 和其他实例不受影响。</Text>
+        <TextInput label="API 基础地址" placeholder="https://api.openai.com/v1" value={apiBaseUrl} onChange={e => { setApiBaseUrl(e.currentTarget.value); setApiModels([]); setApiModel(""); setApiManualModel(false); }} />
+        <PasswordInput label="API Key" placeholder={profiles.find(p => p.id === apiConfigId)?.api?.hasKey ? "已保存；留空表示继续使用" : "填写 API Key"} value={apiKey} onChange={e => { setApiKey(e.currentTarget.value); setApiModels([]); setApiModel(""); setApiManualModel(false); }} autoComplete="new-password" />
+        {!apiManualModel && <Select label="默认模型" placeholder={apiModelsLoading ? "正在读取网关模型…" : "填写地址和 API Key 后自动读取"} value={apiModel || null} onChange={value => setApiModel(value || "")} data={apiModels.map(model => ({ value: model.id, label: model.name === model.id ? model.id : `${model.name} · ${model.id}` }))} searchable disabled={apiModelsLoading || apiModels.length === 0} />}
+        {apiManualModel && <TextInput label="模型 ID" placeholder="填写网关支持的模型 ID" value={apiModel} onChange={e => setApiModel(e.currentTarget.value)} />}
+        {apiModelsLoading && <Text size="xs" c="dimmed"><IconLoader2 size={13} className="chatgpt-button-spinner" /> 正在读取网关模型…</Text>}
+        {apiModelsError && <Alert color="orange">{apiModelsError}</Alert>}
+        {apiModelsError && <Button variant="subtle" size="xs" disabled={apiModelsLoading} onClick={() => setApiRefreshSequence(current => current + 1)}>重新读取模型</Button>}
+        {apiModelsError && /HTTP (404|405|501)|格式无效|未返回 OpenAI|没有返回可用模型/.test(apiModelsError) && <Button variant="subtle" size="xs" onClick={() => { if (apiManualModel) setApiRefreshSequence(current => current + 1); setApiManualModel(current => !current); setApiModel(""); }}>{apiManualModel ? "返回自动读取" : "网关不提供模型列表？手动填写"}</Button>}
+        {apiModels.length > 0 && <Text size="xs" c="dimmed">已读取 {apiModels.length} 个模型并写入该实例的模型目录。官方客户端的模型菜单可能需要先有 ChatGPT 账号登录记录；若菜单没有显示，可关闭实例后在这里更换默认模型。</Text>}
+        <Text size="xs" c="dimmed">地址通常以 /v1 结尾。默认直连需要 Responses API；仅支持 Anthropic Messages 的网关可在保存后开启卡片上的兼容模式。若网关不提供 /models，可手动填写模型 ID。API Key 保存在该实例的本地配置中，不会显示在面板里。</Text>
+        {profiles.find(p => p.id === apiConfigId)?.status !== "stopped" && <Alert color="orange">请先关闭实例，再修改登录方式。重新启动后配置才会生效。</Alert>}
+        <Group justify="space-between">
+          {profiles.find(p => p.id === apiConfigId)?.api?.active ? <Button variant="subtle" disabled={profiles.find(p => p.id === apiConfigId)?.status !== "stopped" || !!apiConfigId && pending(`api:${apiConfigId}`)} onClick={useAccountLogin}>切回账号登录</Button> : <span />}
+          <Button leftSection={apiConfigId && pending(`api:${apiConfigId}`) ? <IconLoader2 size={16} className="chatgpt-button-spinner" /> : <IconDeviceFloppy size={16} />} aria-busy={!!apiConfigId && pending(`api:${apiConfigId}`)} disabled={!apiBaseUrl.trim() || !apiModel.trim() || apiModelsLoading || !(apiKey.trim() || profiles.find(p => p.id === apiConfigId)?.api?.hasKey) || profiles.find(p => p.id === apiConfigId)?.status !== "stopped" || !!apiConfigId && pending(`api:${apiConfigId}`)} onClick={saveApiConfig}>保存并启用 API</Button>
+        </Group>
       </Stack>
     </Modal>
     <RiskConfirm opened={active && deleting !== null} level="high" title={`删除实例：${deleting?.name ?? ""}`}

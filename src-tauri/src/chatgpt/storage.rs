@@ -161,10 +161,10 @@ pub fn profile_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
 
 pub fn config_text(dir: &Path) -> String {
     let db = dir.join("codex/db");
-    format!("# Managed by PathMux: credentials and state stay in this profile.\nforced_login_method = \"chatgpt\"\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\"\nsqlite_home = {}\n", serde_json::to_string(&db.to_string_lossy()).unwrap())
+    format!("# Managed by PathMux: credentials and state stay in this profile.\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\"\nsqlite_home = {}\n", serde_json::to_string(&db.to_string_lossy()).unwrap())
 }
 
-pub fn verify_config(dir: &Path) -> Result<(), String> {
+fn verified_config(dir: &Path) -> Result<toml_edit::DocumentMut, String> {
     let path = dir.join("codex/config.toml");
     plain(&path)?;
     let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -172,8 +172,7 @@ pub fn verify_config(dir: &Path) -> Result<(), String> {
         .parse::<toml_edit::DocumentMut>()
         .map_err(|_| "实例配置无法解析")?;
     let expected_db = dir.join("codex/db");
-    if doc.get("forced_login_method").and_then(|x| x.as_str()) != Some("chatgpt")
-        || doc.get("sqlite_home").and_then(|x| x.as_str()) != expected_db.to_str()
+    if doc.get("sqlite_home").and_then(|x| x.as_str()) != expected_db.to_str()
         || doc
             .get("cli_auth_credentials_store")
             .and_then(|x| x.as_str())
@@ -187,6 +186,20 @@ pub fn verify_config(dir: &Path) -> Result<(), String> {
             "实例的数据或凭证目录配置已改变。请恢复实例内的 sqlite_home 和 file 凭证存储后重试。"
                 .into(),
         );
+    }
+    Ok(doc)
+}
+
+pub fn verify_config(dir: &Path) -> Result<(), String> {
+    verified_config(dir).map(|_| ())
+}
+
+pub fn restore_login_choices(dir: &Path) -> Result<(), String> {
+    let mut doc = verified_config(dir)?;
+    if doc.get("forced_login_method").and_then(|x| x.as_str()) == Some("chatgpt") {
+        doc.remove("forced_login_method");
+        crate::sync::write_bytes_atomic(&dir.join("codex/config.toml"), doc.to_string().as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -249,12 +262,43 @@ mod tests {
         let pb = profile_dir(&root, &b.id).unwrap();
         assert_ne!(pa, pb);
         verify_config(&pa).unwrap();
+        assert!(!fs::read_to_string(pa.join("codex/config.toml"))
+            .unwrap()
+            .contains("forced_login_method"));
         assert!(!pa.join("codex/auth.json").exists());
         assert!(create(&root, &mut r, "b").is_err());
         assert!(profile_dir(&root, "../default").is_err());
         fs::write(pa.join("codex/config.toml"), "sqlite_home = '/other'\n").unwrap();
         assert!(verify_config(&pa).is_err());
         verify_config(&pb).unwrap();
+    }
+    #[test]
+    fn old_profiles_regain_both_login_methods_without_losing_other_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut r = Registry::default();
+        let p = create(&root, &mut r, "Existing").unwrap();
+        let dir = profile_dir(&root, &p.id).unwrap();
+        let config = dir.join("codex/config.toml");
+        let original = fs::read_to_string(&config).unwrap();
+        fs::write(
+            &config,
+            format!("forced_login_method = \"chatgpt\"\n{original}model = \"custom-model\"\n"),
+        )
+        .unwrap();
+
+        restore_login_choices(&dir).unwrap();
+        restore_login_choices(&dir).unwrap();
+        let updated = fs::read_to_string(&config).unwrap();
+        assert!(!updated.contains("forced_login_method"));
+        assert!(updated.contains("model = \"custom-model\""));
+        verify_config(&dir).unwrap();
+
+        fs::write(&config, format!("forced_login_method = \"api\"\n{updated}")).unwrap();
+        restore_login_choices(&dir).unwrap();
+        assert!(fs::read_to_string(&config)
+            .unwrap()
+            .contains("forced_login_method = \"api\""));
     }
     #[cfg(unix)]
     #[test]

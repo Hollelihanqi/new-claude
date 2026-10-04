@@ -73,6 +73,42 @@ fn clear_overrides(command: &mut Command) {
     }
 }
 
+fn private_gateway_no_proxy(base_url: &str) -> Option<String> {
+    if !super::api_config::is_private_gateway_url(base_url) {
+        return None;
+    }
+    let url = url::Url::parse(base_url).ok()?;
+    let host = match url.host()? {
+        url::Host::Ipv4(ip) => ip.to_string(),
+        url::Host::Ipv6(ip) => ip.to_string(),
+        url::Host::Domain(host) => host.to_string(),
+    };
+    let mut exceptions = Vec::new();
+    for name in ["NO_PROXY", "no_proxy"] {
+        if let Ok(current) = std::env::var(name) {
+            for entry in current
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+            {
+                if !exceptions
+                    .iter()
+                    .any(|saved: &String| saved.eq_ignore_ascii_case(entry))
+                {
+                    exceptions.push(entry.to_string());
+                }
+            }
+        }
+    }
+    if !exceptions
+        .iter()
+        .any(|saved| saved.eq_ignore_ascii_case(&host))
+    {
+        exceptions.push(host);
+    }
+    Some(exceptions.join(","))
+}
+
 pub fn configure(command: &mut Command, dir: &Path) {
     clear_overrides(command);
     command
@@ -80,6 +116,26 @@ pub fn configure(command: &mut Command, dir: &Path) {
         .env("CODEX_ELECTRON_USER_DATA_PATH", dir.join("desktop"))
         .env("CODEX_SQLITE_HOME", dir.join("codex/db"))
         .current_dir(dir);
+    if let Some(api) = super::api_config::summary(dir)
+        .ok()
+        .flatten()
+        .filter(|api| api.active)
+    {
+        let ca_bundle = crate::union_ca_bundle_path();
+        if ca_bundle.exists() {
+            command.env("CODEX_CA_CERTIFICATE", ca_bundle);
+        }
+        let no_proxy = if api.compatibility_enabled {
+            private_gateway_no_proxy("http://127.0.0.1/v1")
+        } else {
+            private_gateway_no_proxy(&api.base_url)
+        };
+        if let Some(no_proxy) = no_proxy {
+            // Codex runs in the official desktop process. Give only this API
+            // instance the same VPN bypass that PathMux uses for model discovery.
+            command.env("NO_PROXY", &no_proxy).env("no_proxy", no_proxy);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -440,7 +496,7 @@ fn launch_at(
     if !app.compatible {
         return Err(app.detail.clone());
     }
-    storage::verify_config(dir)?;
+    storage::restore_login_choices(dir)?;
     cleanup_reporters(dir)?;
     let all = snapshot()?;
     if let Some(live) = main_process(&all, dir, Path::new(&app.executable)) {
@@ -459,6 +515,10 @@ fn launch_at(
         return window_action(live, false);
     }
     require_stopped(&all, dir)?;
+    if super::api_config::compatibility(dir)?.is_some_and(|(_, _, enabled)| enabled) {
+        let port = super::bridge::start(dir, Path::new(&app.executable))?;
+        super::api_config::set_runtime_bridge_url(dir, port)?;
+    }
     let mut command = Command::new(&app.executable);
     configure(&mut command, dir);
     command.arg(format!("--user-data-dir={}", dir.join("desktop").display()));
@@ -492,6 +552,14 @@ fn launch_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vpn_api_instance_bypasses_proxy_without_disabling_public_proxy() {
+        let exceptions = private_gateway_no_proxy("https://vpn-test.localhost/v1").unwrap();
+        assert!(exceptions
+            .split(',')
+            .any(|entry| entry == "vpn-test.localhost"));
+        assert!(private_gateway_no_proxy("https://api.openai.com/v1").is_none());
+    }
     #[test]
     fn thread_deep_link_requires_a_managed_uuid() {
         let id = uuid::Uuid::new_v4().to_string();

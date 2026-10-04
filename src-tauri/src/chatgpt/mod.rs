@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+mod api_config;
 mod batch;
+mod bridge;
 mod discovery;
 mod history;
 mod process;
@@ -59,6 +61,7 @@ pub struct ProfileView {
     status: String,
     pid: Option<u32>,
     issue: Option<String>,
+    api: Option<api_config::Summary>,
 }
 
 #[derive(Serialize)]
@@ -128,8 +131,13 @@ fn state_at(root: &Path) -> Result<State, String> {
         .map(|p| {
             let directory = root.join("profiles").join(&p.id);
             let issue = storage::profile_dir(root, &p.id)
-                .and_then(|d| storage::verify_config(&d))
+                .and_then(|d| storage::restore_login_choices(&d))
                 .err();
+            let api = if issue.is_none() {
+                api_config::summary(&directory).ok().flatten()
+            } else {
+                None
+            };
             let exe = p
                 .last_executable
                 .as_deref()
@@ -151,6 +159,7 @@ fn state_at(root: &Path) -> Result<State, String> {
                 .into(),
                 pid: live.map(|p| p.pid),
                 issue,
+                api,
             }
         })
         .collect();
@@ -224,6 +233,66 @@ pub async fn chatgpt_create_profile(name: String) -> Result<State, String> {
         state_at(&root)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_discover_api_models(
+    request: api_config::DiscoverRequest,
+) -> Result<Vec<api_config::Model>, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        selected(&registry, &request.id)?;
+        let dir = storage::profile_dir(&root, &request.id)?;
+        api_config::discover(&dir, &request)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_save_api_config(request: api_config::Request) -> Result<State, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        selected(&registry, &request.id)?;
+        let dir = storage::profile_dir(&root, &request.id)?;
+        process::require_stopped(&process::snapshot()?, &dir)?;
+        api_config::save(&dir, &request)?;
+        state_at(&root)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_use_account_login(id: String) -> Result<State, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        selected(&registry, &id)?;
+        let dir = storage::profile_dir(&root, &id)?;
+        process::require_stopped(&process::snapshot()?, &dir)?;
+        api_config::use_account(&dir)?;
+        state_at(&root)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_set_api_compatibility(id: String, enabled: bool) -> Result<State, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        selected(&registry, &id)?;
+        let dir = storage::profile_dir(&root, &id)?;
+        process::require_stopped(&process::snapshot()?, &dir)?;
+        api_config::set_compatibility(&dir, enabled)?;
+        state_at(&root)
+    })
+    .await
+}
+
+pub fn run_bridge_helper(dir: &Path, executable: &Path) -> Result<(), String> {
+    bridge::serve(dir, executable)
 }
 
 #[derive(Deserialize)]
@@ -359,7 +428,7 @@ pub async fn chatgpt_open_thread(target_id: String, thread_id: String) -> Result
         let mut r = storage::registry(&root)?;
         selected(&r, &target_id)?;
         let dir = storage::profile_dir(&root, &target_id)?;
-        storage::verify_config(&dir)?;
+        storage::restore_login_choices(&dir)?;
         let app = discovery::discover(r.installation.as_deref())?;
         if !app.compatible {
             return Err(app.detail);
@@ -474,7 +543,7 @@ pub async fn chatgpt_diagnose(id: String) -> Result<DiagnosticResult, String> {
         let r = storage::registry(&root)?;
         selected(&r, &id)?;
         let dir = storage::profile_dir(&root, &id)?;
-        storage::verify_config(&dir)?;
+        storage::restore_login_choices(&dir)?;
         process::require_stopped(&process::snapshot()?, &dir)?;
         #[cfg(unix)]
         {
@@ -497,23 +566,7 @@ pub async fn chatgpt_diagnose(id: String) -> Result<DiagnosticResult, String> {
         }
         let mut client = rpc::Client::start(app.cli.as_deref().ok_or("客户端没有会话服务")?, &dir)?;
         let account = client.call("account/read", serde_json::json!({"refreshToken":false}))?;
-        let (identity, healthy) = match account.get("account").filter(|a| !a.is_null()) {
-            Some(a) if a["type"] == "chatgpt" => (
-                format!(
-                    "客户端保存的 ChatGPT 账号：{}（未刷新网络授权）",
-                    a["email"].as_str().unwrap_or("未返回邮箱")
-                ),
-                true,
-            ),
-            Some(_) => (
-                "客户端返回了非 ChatGPT 登录方式，请在官方窗口重新登录。".into(),
-                false,
-            ),
-            None => (
-                "客户端未返回已登录账号，请在官方窗口完成登录。".into(),
-                false,
-            ),
-        };
+        let (identity, healthy) = account_diagnostic(&account);
         Ok(DiagnosticResult {
             healthy,
             details: vec![
@@ -526,8 +579,59 @@ pub async fn chatgpt_diagnose(id: String) -> Result<DiagnosticResult, String> {
     .await
 }
 
+fn account_diagnostic(result: &serde_json::Value) -> (String, bool) {
+    match result.get("account").filter(|a| !a.is_null()) {
+        Some(a) if a["type"] == "chatgpt" => (
+            format!(
+                "客户端保存的 ChatGPT 账号：{}（未刷新网络授权）",
+                a["email"].as_str().unwrap_or("未返回邮箱")
+            ),
+            true,
+        ),
+        Some(a) if a["type"] == "apiKey" => (
+            "客户端已启用 API Key 登录（凭证由官方客户端管理）。".into(),
+            true,
+        ),
+        Some(a) if a["type"] == "amazonBedrock" => (
+            "客户端已启用 Amazon Bedrock 登录（凭证由官方客户端管理）。".into(),
+            true,
+        ),
+        Some(_) => (
+            "官方客户端已完成登录（登录方式由客户端管理）。".into(),
+            true,
+        ),
+        None if result["requiresOpenaiAuth"] == false => {
+            ("客户端当前配置无需 OpenAI 登录。".into(), true)
+        }
+        None => (
+            "客户端未返回已登录账号，请在官方窗口选择账号或 API Key 登录。".into(),
+            false,
+        ),
+    }
+}
+
 #[derive(Serialize)]
 pub struct DiagnosticResult {
     healthy: bool,
     details: Vec<String>,
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn api_key_and_chatgpt_logins_are_both_healthy() {
+        for account in [
+            json!({"type":"chatgpt","email":"user@example.com"}),
+            json!({"type":"apiKey","apiKey":"sk-test-secret"}),
+        ] {
+            let (detail, healthy) = account_diagnostic(&json!({"account":account}));
+            assert!(healthy);
+            assert!(!detail.contains("sk-"));
+        }
+        assert!(account_diagnostic(&json!({"account":null,"requiresOpenaiAuth":false})).1);
+        assert!(!account_diagnostic(&json!({"account":null})).1);
+    }
 }

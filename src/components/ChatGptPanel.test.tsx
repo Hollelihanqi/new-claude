@@ -1,14 +1,14 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { Button, Select, Checkbox, Modal, Title } from "@mantine/core";
+import { Button, Select, Checkbox, Modal, PasswordInput, Switch, TextInput, Title } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ChatGptPanel from "./ChatGptPanel";
 import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "../api";
 
-vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Collapse", "Group", "Modal", "Select", "SimpleGrid", "Stack", "Text", "TextInput", "Title", "Tooltip"].map(name => [name, name.toLowerCase()])));
+vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Collapse", "Group", "Modal", "PasswordInput", "Select", "SimpleGrid", "Stack", "Switch", "Text", "TextInput", "Title", "Tooltip"].map(name => [name, name.toLowerCase()])));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("./RiskConfirm", () => ({ default: "risk-confirm" }));
-vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptOpenPrimary", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose"].map(name => [name, vi.fn()])) }));
+vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptOpenPrimary", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose", "chatGptSaveApiConfig", "chatGptDiscoverApiModels", "chatGptUseAccountLogin", "chatGptSetApiCompatibility"].map(name => [name, vi.fn()])) }));
 const state: ChatGptState = {
   installation: { path: "test-app", version: "test", compatible: true, detail: "test", cli: "test-cli" }, installationIssue: null,
   profiles: ["a", "b"].map(id => ({ id, name: id, createdAt: 1, directory: id, status: "stopped", pid: null, issue: null })),
@@ -40,6 +40,56 @@ it("opens the primary client separately from managed profiles", async () => {
   await act(async () => { button("打开主 ChatGPT").props.onClick(); });
   expect(api.chatGptOpenPrimary).toHaveBeenCalledTimes(1);
   expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+});
+
+it("configures API login on one stopped instance without exposing an existing key", async () => {
+  const configured: ChatGptState = { ...state, profiles: state.profiles.map(p => p.id === "a" ? { ...p, api: { baseUrl: "https://api.example.com/v1", model: "another-model", models: [{ id: "test-model", name: "Test model" }, { id: "another-model", name: "Another model" }], hasKey: true, active: true } } : p) };
+  vi.mocked(api.chatGptSaveApiConfig).mockImplementation(async () => { vi.mocked(api.chatGptState).mockResolvedValue(configured); return configured; });
+  vi.mocked(api.chatGptDiscoverApiModels).mockResolvedValue([{ id: "test-model", name: "Test model" }, { id: "another-model", name: "Another model" }]);
+  vi.mocked(api.chatGptUseAccountLogin).mockImplementation(async () => {
+    const account = { ...configured, profiles: configured.profiles.map(p => p.id === "a" ? { ...p, api: { ...p.api!, active: false } } : p) };
+    vi.mocked(api.chatGptState).mockResolvedValue(account);
+    return account;
+  });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
+  act(() => first.findAllByType(Button).find(item => item.props.children === "API 配置")!.props.onClick());
+  const fields = renderer.root.findAllByType(TextInput);
+  act(() => {
+    fields.find(item => item.props.label === "API 基础地址")!.props.onChange({ currentTarget: { value: "https://api.example.com/v1" } });
+    renderer.root.findByType(PasswordInput).props.onChange({ currentTarget: { value: "sk-test" } });
+  });
+  await act(async () => { vi.advanceTimersByTime(650); });
+  expect(api.chatGptDiscoverApiModels).toHaveBeenCalledWith("a", "https://api.example.com/v1", "sk-test");
+  expect(select("默认模型").props.data).toHaveLength(2);
+  act(() => select("默认模型").props.onChange("another-model"));
+  await act(async () => { button("保存并启用 API").props.onClick(); });
+  expect(api.chatGptSaveApiConfig).toHaveBeenCalledWith("a", "https://api.example.com/v1", "another-model", "sk-test", false);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-api-mode" })).toHaveLength(1);
+  act(() => first.findAllByType(Button).find(item => item.props.children === "API 配置")!.props.onClick());
+  expect(renderer.root.findByType(PasswordInput).props.value).toBe("");
+  expect(renderer.root.findByType(PasswordInput).props.placeholder).toContain("已保存");
+  await act(async () => { button("切回账号登录").props.onClick(); });
+  expect(api.chatGptUseAccountLogin).toHaveBeenCalledWith("a");
+});
+
+it("shows compatibility only for API login and saves the stopped instance choice", async () => {
+  const configured: ChatGptState = { ...state, profiles: state.profiles.map(p => p.id === "a"
+    ? { ...p, api: { baseUrl: "https://api.example.com/v1", model: "m", hasKey: true, active: true, compatibilityEnabled: false } }
+    : { ...p, api: { baseUrl: "https://api.example.com/v1", model: "m", hasKey: true, active: false, compatibilityEnabled: true } }) };
+  vi.mocked(api.chatGptState).mockResolvedValue(configured);
+  vi.mocked(api.chatGptSetApiCompatibility).mockImplementation(async () => {
+    const updated = { ...configured, profiles: configured.profiles.map(p => p.id === "a" ? { ...p, api: { ...p.api!, compatibilityEnabled: true } } : p) };
+    vi.mocked(api.chatGptState).mockResolvedValue(updated);
+    return updated;
+  });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const switches = renderer.root.findAllByType(Switch);
+  expect(switches).toHaveLength(1);
+  expect(switches[0].props.checked).toBe(false);
+  await act(async () => { switches[0].props.onChange({ currentTarget: { checked: true } }); });
+  expect(api.chatGptSetApiCompatibility).toHaveBeenCalledWith("a", true);
+  expect(renderer.root.findByType(Switch).props.checked).toBe(true);
 });
 
 it("inactive panels do not poll; returning refreshes state", async () => {
@@ -156,7 +206,7 @@ it("keeps two instance checks independent and hides healthy details", async () =
 });
 
 it("labels an isolated instance without a saved account as awaiting login", async () => {
-  vi.mocked(api.chatGptDiagnose).mockResolvedValueOnce({ healthy: false, details: ["独立目录、配置与所有权检查通过。", "官方会话服务已确认使用此实例的数据目录。", "客户端未返回已登录账号，请在官方窗口完成登录。"] });
+  vi.mocked(api.chatGptDiagnose).mockResolvedValueOnce({ healthy: false, details: ["独立目录、配置与所有权检查通过。", "官方会话服务已确认使用此实例的数据目录。", "客户端未返回已登录账号，请在官方窗口选择账号或 API Key 登录。"] });
   await act(async () => { renderer = create(<ChatGptPanel />); });
   const first = renderer.root.findAllByProps({ className: "chatgpt-profile" })[0];
   expect(first.findAllByType(Button).find(item => item.props.children === "待登录")).toBeTruthy();
@@ -210,7 +260,7 @@ it("shows only the client and creation entry before the first instance exists", 
   expect(button("创建第一个实例")).toBeTruthy();
   expect(renderer.root.findAllByProps({ className: "chatgpt-profile-section" })).toHaveLength(0);
   expect(renderer.root.findAllByProps({ className: "chatgpt-history" })).toHaveLength(0);
-  expect(renderer.root.findAllByType(Select)).toHaveLength(1);
+  expect(renderer.root.findAllByType(Select)).toHaveLength(2);
 });
 
 it("explains exactly what deleting an instance removes", async () => {

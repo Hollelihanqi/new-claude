@@ -3415,6 +3415,21 @@ async fn usage_stats() -> Result<UsageStats, String> {
 }
 
 fn main() {
+    let mut bridge_args = std::env::args_os();
+    let _ = bridge_args.next();
+    if bridge_args.next().as_deref() == Some(std::ffi::OsStr::new("--chatgpt-api-bridge")) {
+        let result = match (bridge_args.next(), bridge_args.next(), bridge_args.next()) {
+            (Some(dir), Some(executable), None) => {
+                chatgpt::run_bridge_helper(Path::new(&dir), Path::new(&executable))
+            }
+            _ => Err("兼容服务启动参数无效".into()),
+        };
+        if let Err(error) = result {
+            eprintln!("API compatibility service: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // CLI 同步模式:由 cc.ps1/cc.sh 在每次启动/退出 claude 时调用,不起 GUI。
     // release 下无控制台,全程不 panic,问题记入 ~/.cc-manager/sync.log。
     if std::env::args().any(|a| a == "--sync") {
@@ -3494,6 +3509,10 @@ fn main() {
             chatgpt::chatgpt_diagnose,
             chatgpt::chatgpt_set_installation,
             chatgpt::chatgpt_create_profile,
+            chatgpt::chatgpt_save_api_config,
+            chatgpt::chatgpt_discover_api_models,
+            chatgpt::chatgpt_use_account_login,
+            chatgpt::chatgpt_set_api_compatibility,
             chatgpt::chatgpt_profile_action,
             chatgpt::chatgpt_history,
             chatgpt::chatgpt_transfer,

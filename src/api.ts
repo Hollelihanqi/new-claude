@@ -8,6 +8,7 @@ export interface ChatGptProfile {
   status: "running" | "stopped" | "closing" | "error";
   pid: number | null;
   issue: string | null;
+  api?: { baseUrl: string; model: string; models?: { id: string; name: string }[]; hasKey: boolean; active: boolean; compatibilityEnabled?: boolean } | null;
 }
 
 export interface ChatGptState {
@@ -611,6 +612,12 @@ export const api = {
   chatGptOpenPrimary: (): Promise<void> => invoke("chatgpt_open_primary"),
   chatGptSetInstallation: (path: string): Promise<ChatGptState> => invoke("chatgpt_set_installation", { path }),
   chatGptCreateProfile: (name: string): Promise<ChatGptState> => invoke("chatgpt_create_profile", { name }),
+  chatGptSaveApiConfig: (id: string, baseUrl: string, model: string, apiKey?: string, manualModel = false): Promise<ChatGptState> =>
+    invoke("chatgpt_save_api_config", { request: { id, baseUrl, model, apiKey: apiKey || null, manualModel } }),
+  chatGptDiscoverApiModels: (id: string, baseUrl: string, apiKey?: string): Promise<{ id: string; name: string }[]> =>
+    invoke("chatgpt_discover_api_models", { request: { id, baseUrl, apiKey: apiKey || null } }),
+  chatGptUseAccountLogin: (id: string): Promise<ChatGptState> => invoke("chatgpt_use_account_login", { id }),
+  chatGptSetApiCompatibility: (id: string, enabled: boolean): Promise<ChatGptState> => invoke("chatgpt_set_api_compatibility", { id, enabled }),
   chatGptProfileAction: (id: string, action: ChatGptAction): Promise<ChatGptState> =>
     invoke("chatgpt_profile_action", { request: { id, action } }),
   chatGptHistory: (sourceId: string): Promise<ChatGptHistory> => invoke("chatgpt_history", { sourceId }),
