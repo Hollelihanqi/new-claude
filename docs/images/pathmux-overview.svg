@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="780" viewBox="0 0 1440 780" role="img" aria-labelledby="title desc">
+  <title id="title">PathMux：Claude Code 多开与 ChatGPT 多开</title>
+  <desc id="desc">Claude Code 在不同终端使用个人、公司和测试环境；ChatGPT 在独立官方窗口中使用不同账号。PathMux 集中管理环境、实例、MCP 和扩展。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#071c29"/><stop offset="1" stop-color="#0c3541"/>
+    </linearGradient>
+    <linearGradient id="logo" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#087f9b"/><stop offset="1" stop-color="#16a8bf"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#b9f2f8" stroke-opacity=".035"/>
+    </pattern>
+  </defs>
+  <rect width="1440" height="780" rx="28" fill="url(#background)"/>
+  <rect width="1440" height="780" rx="28" fill="url(#grid)"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <rect x="60" y="48" width="62" height="62" rx="16" fill="url(#logo)"/>
+    <path d="M103 65a19 19 0 1 0 0 29M89 80h16" fill="none" stroke="#f7fcfd" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="89" cy="80" r="5" fill="#61d9e9"/>
+    <text x="138" y="90" font-size="34" font-weight="700" fill="#f7fcfd">PathMux</text>
+    <text x="1380" y="85" text-anchor="end" font-size="16" letter-spacing="2" fill="#8bb6c4">OPEN SOURCE · MIT</text>
+    <text x="60" y="186" font-size="54" font-weight="750" fill="#f7fcfd">让每个 AI 账号，都有自己的工作环境。</text>
+    <text x="63" y="234" font-size="23" fill="#9ec5d1">个人与工作同时在线，账号与网关各自独立。</text>
+
+    <rect x="60" y="282" width="648" height="368" rx="24" fill="#102d3b" stroke="#355260"/>
+    <rect x="87" y="307" width="42" height="42" rx="12" fill="#3b302e"/>
+    <path d="m99 319 8 8-8 8m13 0h7" fill="none" stroke="#efb18e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="145" y="336" font-size="29" font-weight="700" fill="#ffffff">Claude Code 多开</text>
+    <text x="87" y="378" font-size="19" fill="#a3c3ce">多个终端 · 多套配置 · 不同网关</text>
+    <rect x="87" y="408" width="594" height="171" rx="14" fill="#081d29"/>
+    <circle cx="108" cy="430" r="4" fill="#e98680"/><circle cx="124" cy="430" r="4" fill="#edc779"/><circle cx="140" cy="430" r="4" fill="#71c6a9"/>
+    <text x="660" y="435" text-anchor="end" font-size="13" fill="#7698a8">不同终端窗口</text>
+    <g font-family="'SFMono-Regular', Consolas, monospace" font-size="22" fill="#f1f9fc">
+      <text x="107" y="475"><tspan fill="#6ed9e5">$ </tspan>claude personal</text>
+      <text x="107" y="517"><tspan fill="#6ed9e5">$ </tspan>claude corp</text>
+      <text x="107" y="559"><tspan fill="#6ed9e5">$ </tspan>claude test</text>
+    </g>
+    <g font-size="16" fill="#a3c3ce" text-anchor="end">
+      <text x="657" y="475">个人登录</text><text x="657" y="517">公司网关</text><text x="657" y="559">测试环境</text>
+    </g>
+    <text x="87" y="616" font-size="18" fill="#acd4df">配置一次，之后在终端中直接启动。</text>
+
+    <rect x="732" y="282" width="648" height="368" rx="24" fill="#102f3b" stroke="#355963"/>
+    <rect x="759" y="307" width="42" height="42" rx="12" fill="#164944"/>
+    <rect x="770" y="318" width="20" height="15" rx="4" fill="none" stroke="#86dfc4" stroke-width="2"/>
+    <path d="m773 338 6-5" fill="none" stroke="#86dfc4" stroke-width="2" stroke-linecap="round"/>
+    <text x="817" y="336" font-size="29" font-weight="700" fill="#ffffff">ChatGPT 多开</text>
+    <text x="759" y="378" font-size="19" fill="#a3c3ce">官方客户端 · 独立实例 · 本地任务接续</text>
+    <rect x="759" y="408" width="285" height="171" rx="14" fill="#081d29"/>
+    <rect x="1060" y="408" width="293" height="171" rx="14" fill="#081d29"/>
+    <path d="M759 445h285M1060 445h293" stroke="#274451"/>
+    <circle cx="780" cy="427" r="4" fill="#6ed9e5"/><circle cx="1081" cy="427" r="4" fill="#86dfc4"/>
+    <text x="794" y="432" font-size="14" fill="#9ec5d1">独立窗口 A</text><text x="1095" y="432" font-size="14" fill="#9ec5d1">独立窗口 B</text>
+    <text x="781" y="483" font-size="23" font-weight="650" fill="#ffffff">个人账号</text><text x="1082" y="483" font-size="23" font-weight="650" fill="#ffffff">工作账号</text>
+    <text x="781" y="514" font-size="16" fill="#a3c3ce">独立登录与凭证</text><text x="1082" y="514" font-size="16" fill="#a3c3ce">独立登录与凭证</text>
+    <rect x="781" y="539" width="98" height="24" rx="12" fill="#143c46"/><text x="830" y="556" text-anchor="middle" font-size="13" fill="#81d8e4">本地记录 A</text>
+    <rect x="1082" y="539" width="98" height="24" rx="12" fill="#143c3b"/><text x="1131" y="556" text-anchor="middle" font-size="13" fill="#86dfc4">本地记录 B</text>
+    <text x="759" y="616" font-size="18" fill="#acd4df">选定本地 Codex 记录，复制到目标实例。</text>
+
+    <path d="M60 689h1320" stroke="#31515f"/>
+    <text x="60" y="737" font-size="18" fill="#c0dde4">MCP 服务管理</text>
+    <text x="268" y="737" font-size="18" fill="#c0dde4">Skills / Plugins / Agents</text>
+    <text x="579" y="737" font-size="18" fill="#c0dde4">用量洞察</text>
+    <text x="752" y="737" font-size="18" fill="#c0dde4">环境诊断</text>
+    <text x="1380" y="737" text-anchor="end" font-size="17" fill="#6ed9e5">macOS / Windows</text>
+  </g>
+</svg>
