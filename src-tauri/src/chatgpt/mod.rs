@@ -125,6 +125,7 @@ fn state_at(root: &Path) -> Result<State, String> {
             Err(e) => (None, Some(e)),
         };
     let all = process::snapshot()?;
+    let visible = process::visible_window_pids()?;
     let profiles = registry
         .profiles
         .iter()
@@ -147,15 +148,12 @@ fn state_at(root: &Path) -> Result<State, String> {
             ProfileView {
                 profile: p.clone(),
                 directory: directory.to_string_lossy().into(),
-                status: if issue.is_some() {
-                    "error"
-                } else if live.is_some() {
-                    "running"
-                } else if !owned.is_empty() {
-                    "closing"
-                } else {
-                    "stopped"
-                }
+                status: process::profile_status(
+                    issue.is_some(),
+                    live.is_some(),
+                    live.is_some_and(|p| visible.contains(&p.pid)),
+                    !owned.is_empty(),
+                )
                 .into(),
                 pid: live.map(|p| p.pid),
                 issue,

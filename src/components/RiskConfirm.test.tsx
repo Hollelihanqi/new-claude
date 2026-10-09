@@ -128,6 +128,13 @@ it("high 级：不要求勾选，确认按钮直接可用", async () => {
   expect(onConfirm).toHaveBeenCalledTimes(1);
 });
 
+it("blocks confirmation when the caller disables an unsafe operation", async () => {
+  const { onConfirm } = await mount({ level: "high", disabled: true, confirmLabel: "确认删除" });
+  expect(buttonLabelled("确认删除").props.disabled).toBe(true);
+  act(() => { buttonLabelled("确认删除").props.onClick(); });
+  expect(onConfirm).not.toHaveBeenCalled();
+});
+
 it("逐条渲染具体后果 —— 泛泛的「确定吗？」不构成确认", async () => {
   const consequences = ["将移除全部 3 张已导入证书，无法撤销。", "自签网关会立刻连不上。"];
   await mount({ consequences, confirmLabel: "确认清空" });

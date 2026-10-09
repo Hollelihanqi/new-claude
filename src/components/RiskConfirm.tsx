@@ -36,6 +36,7 @@ interface Props {
   detail?: ReactNode;
   confirmLabel: string;
   busy?: boolean;
+  disabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -48,6 +49,7 @@ export default function RiskConfirm({
   detail,
   confirmLabel,
   busy,
+  disabled = false,
   onConfirm,
   onCancel,
 }: Props) {
@@ -74,6 +76,7 @@ export default function RiskConfirm({
     onCancel();
   };
   const confirm = () => {
+    if (disabled || busy) return;
     if (critical && !acknowledged) return;
     setAcknowledged(false);
     onConfirm();
@@ -116,7 +119,7 @@ export default function RiskConfirm({
           <Button
             color="red"
             loading={busy}
-            disabled={critical && !acknowledged}
+            disabled={disabled || (critical && !acknowledged)}
             onClick={confirm}
           >
             {confirmLabel}

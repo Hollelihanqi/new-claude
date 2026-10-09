@@ -2225,6 +2225,24 @@ html[data-theme="apple"] .side-nav-item:active {
 .chatgpt-runtime-running .chatgpt-runtime-line { background: color-mix(in srgb, var(--mantine-color-teal-6) 34%, transparent); }
 .chatgpt-runtime-running .chatgpt-runtime-line::after { position: absolute; top: 0; left: 0; width: 25%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, transparent, var(--mantine-color-teal-5), var(--mantine-color-teal-7)); content: ""; animation: chatgpt-runtime-flow 1.9s ease-in-out infinite; }
 .chatgpt-runtime-closing { color: var(--mantine-color-orange-7); }
+.chatgpt-runtime-background { color: var(--app-secondary-text); }
+.chatgpt-runtime-background .chatgpt-runtime-line { background: color-mix(in srgb, var(--app-secondary-text) 35%, transparent); }
+.status-modal-content { border-radius: 22px; --status-modal-accent: var(--mantine-primary-color-7); }
+.status-modal-danger { --status-modal-accent: var(--mantine-color-red-7); }
+.status-modal-success { --status-modal-accent: var(--mantine-color-teal-7); }
+.status-modal-info { --status-modal-accent: var(--mantine-color-blue-7); }
+html[data-mantine-color-scheme="dark"] .status-modal-primary { --status-modal-accent: var(--mantine-primary-color-4); }
+html[data-mantine-color-scheme="dark"] .status-modal-danger { --status-modal-accent: var(--mantine-color-red-4); }
+html[data-mantine-color-scheme="dark"] .status-modal-success { --status-modal-accent: var(--mantine-color-teal-4); }
+html[data-mantine-color-scheme="dark"] .status-modal-info { --status-modal-accent: var(--mantine-color-blue-4); }
+.status-modal-header { justify-content: center; padding: 28px 28px 10px; }
+.status-modal-title { width: 100%; text-align: center; color: var(--status-modal-accent); font-size: 21px; font-weight: 700; line-height: 1.4; }
+.status-modal-heading { display: flex; justify-content: center; align-items: center; gap: 10px; }
+.status-modal-icon { display: grid; flex: 0 0 36px; place-items: center; height: 36px; border-radius: 12px; background: color-mix(in srgb, var(--status-modal-accent) 10%, transparent); }
+.status-modal-body { padding: 8px 32px 28px; text-align: center; }
+.status-modal-subject { max-width: 100%; padding: 5px 14px; border-radius: 9px; background: color-mix(in srgb, var(--status-modal-accent) 8%, transparent); color: var(--status-modal-accent); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.status-modal-description { max-width: 360px; color: var(--app-secondary-text); font-size: 14px; line-height: 1.8; }
+.status-modal-dismiss { min-width: 120px; margin-top: 4px; border-radius: 12px; }
 .chatgpt-runtime-closing .chatgpt-runtime-line { background: var(--mantine-color-orange-5); }
 .chatgpt-runtime-error { color: var(--mantine-color-red-7); }
 .chatgpt-runtime-error .chatgpt-runtime-line { background: var(--mantine-color-red-5); }

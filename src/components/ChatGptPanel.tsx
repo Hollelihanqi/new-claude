@@ -4,13 +4,22 @@ import { Alert, Badge, Button, Group, Modal, PasswordInput, Select, Stack, Switc
 import { IconBrandOpenai, IconCircleCheck, IconDeviceFloppy, IconFolderOpen, IconInfoCircle, IconKey, IconLoader2, IconPlayerPlay, IconPlayerStop, IconPlus, IconRefresh, IconX } from "@tabler/icons-react";
 import { api, type ChatGptAction, type ChatGptProfile, type ChatGptState } from "../api";
 import RiskConfirm from "./RiskConfirm";
+import StatusModal from "./StatusModal";
 import ChatGptPanelHistory from "./ChatGptPanelHistory";
 
 const STATUS = {
-  running: "运行中",
+  running: "窗口已打开",
+  background: "后台运行",
   stopped: "已关闭",
   closing: "后台进程仍在运行",
   error: "需要处理",
+};
+
+const DELETE_BLOCKED: Partial<Record<ChatGptProfile["status"], string>> = {
+  running: "实例窗口仍在运行，暂时不能删除。请先点击「关闭」，完全退出后再删除。",
+  background: "实例仍在后台运行，暂时不能删除。请先点击「关闭」，完全退出后再删除。",
+  closing: "后台进程尚未退出，暂时不能删除。请点击「清理后台进程」，退出完成后再删除。",
+  error: "实例状态异常，暂时不能删除。请先点击「刷新」，按错误提示处理后再删除。",
 };
 
 export default function ChatGptPanel({ active = true }: { active?: boolean }) {
@@ -210,6 +219,12 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
   };
 
   const profiles = state?.profiles ?? [];
+  const deleteBlockReason = (profile: ChatGptProfile) =>
+    pendingActions.some(label => label.endsWith(`:${profile.id}`) && label !== `delete:${profile.id}`)
+      ? "实例正在执行操作，暂时不能删除。请等待操作完成后再删除。"
+      : DELETE_BLOCKED[profile.status];
+  const deletingProfile = profiles.find(profile => profile.id === deleting?.id);
+  const deletionBlock = deletingProfile ? deleteBlockReason(deletingProfile) : "实例状态已变化，请关闭确认框后刷新。";
 
   return <div className="view-scroll chatgpt-scroll"><Stack className={`chatgpt-page${state && profiles.length === 0 ? " chatgpt-page-empty" : ""}`} gap="md">
     <section className="chatgpt-console" aria-label="ChatGPT 客户端">
@@ -250,6 +265,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
             </div>
           </div>
           <div className="chatgpt-profile-health">
+            {p.status === "background" && <span className="chatgpt-health-label">后台运行 · 窗口未显示</span>}
             {p.status === "stopped" && (!diagnostic || diagnostic.pending ? <span className="chatgpt-health-label chatgpt-health-pending"><IconLoader2 size={14} className="chatgpt-button-spinner" />检查中</span> : diagnostic.healthy ? <span className="chatgpt-health-label chatgpt-health-ok"><IconCircleCheck size={14} />正常</span> : <Button size="compact-xs" variant="subtle" color="orange" leftSection={<IconInfoCircle size={15} />} onClick={() => setDiagnosticDetailsId(p.id)}>{diagnostic.details.some(line => line.includes("客户端未返回已登录账号")) ? "待登录" : "需处理"}</Button>)}
           </div>
         </div>
@@ -259,12 +275,13 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
         <div className="chatgpt-profile-actions">
             <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`launch:${p.id}`) || pending(`focus:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerPlay size={15} />}
               aria-busy={pending(`launch:${p.id}`) || pending(`focus:${p.id}`)}
-              disabled={p.status === "error" || p.status === "closing" || (p.status !== "running" && !state.installation?.compatible)}
-              onClick={() => void action(p, p.status === "running" ? "focus" : "launch")}>{p.status === "running" ? "打开窗口" : "启动"}</Button>
+              disabled={p.status === "error" || p.status === "closing" || (p.status === "stopped" && !state.installation?.compatible)}
+              onClick={() => void action(p, p.status === "running" || p.status === "background" ? "focus" : "launch")}>{p.status === "running" || p.status === "background" ? "打开窗口" : "启动"}</Button>
             <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={<IconKey size={15} />} onClick={() => openApiConfig(p)}>API 配置</Button>
             {p.status === "closing" && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`cleanup:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconRefresh size={15} />} aria-busy={pending(`cleanup:${p.id}`)} onClick={() => void action(p, "cleanup")}>清理后台进程</Button>}
-            {p.status === "running" && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`stop:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerStop size={15} />} aria-busy={pending(`stop:${p.id}`)} onClick={() => void action(p, "stop")}>关闭</Button>}
-            {p.status === "stopped" && <Button className="chatgpt-profile-action chatgpt-profile-action-danger" size="sm" variant="light" color="red" leftSection={<IconX size={15} />} onClick={() => setDeleting(p)}>删除</Button>}
+            {(p.status === "running" || p.status === "background") && <Button className="chatgpt-profile-action" size="sm" variant="light" leftSection={pending(`stop:${p.id}`) ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconPlayerStop size={15} />} aria-busy={pending(`stop:${p.id}`)} onClick={() => void action(p, "stop")}>关闭</Button>}
+            <Button className="chatgpt-profile-action chatgpt-profile-action-danger" size="sm" variant="light" color="red" leftSection={<IconX size={15} />}
+              onClick={() => setDeleting(p)}>删除</Button>
         </div>
         {p.api?.active && <div className="chatgpt-profile-compatibility" data-enabled={p.api.compatibilityEnabled ? "true" : "false"}>
           <Switch color="teal" label="兼容模式" description={<><span>对话一直无回复时可尝试开启。开启后，此实例暂时不能上网查资料。</span><span>不懂就不要开启。</span></>}
@@ -325,9 +342,12 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
         </Group>
       </Stack>
     </Modal>
-    <RiskConfirm opened={active && deleting !== null} level="high" title={`删除实例：${deleting?.name ?? ""}`}
+    <StatusModal opened={active && deleting !== null && !!deletionBlock} onClose={() => setDeleting(null)}
+      variant="danger" title="暂时无法删除实例" subject={deleting?.name} description={deletionBlock} />
+    <RiskConfirm opened={active && deleting !== null && !deletionBlock} level="high" title={`删除实例：${deleting?.name ?? ""}`}
       consequences={["仅可删除已关闭的实例。将移除其独立目录：登录数据、本地会话、缓存、日志及未完成的复制队列。", "外部项目文件、其他实例和默认账号的数据不会删除。", "云端账号和云端记录不会被此操作删除。删除失败时会提示残留路径。"]}
-      confirmLabel="删除实例数据" busy={!!deleting && pending(`delete:${deleting.id}`)} onCancel={() => { if (!deleting || !pending(`delete:${deleting.id}`)) setDeleting(null); }} onConfirm={() => { if (deleting) void action(deleting, "delete"); }} />
+      detail={deletionBlock} disabled={!!deletionBlock}
+      confirmLabel="删除实例数据" busy={!!deleting && pending(`delete:${deleting.id}`)} onCancel={() => { if (!deleting || !pending(`delete:${deleting.id}`)) setDeleting(null); }} onConfirm={() => { if (deletingProfile && !deletionBlock) void action(deletingProfile, "delete"); }} />
     <Modal opened={active && diagnosticDetailsId !== null} onClose={() => setDiagnosticDetailsId(null)} title={`${profiles.find(p => p.id === diagnosticDetailsId)?.name ?? "实例"} · 检查详情`} centered>
       <Stack gap="sm" className="chatgpt-diagnostic-modal">
         {diagnosticDetailsId && diagnostics[diagnosticDetailsId]?.error && <Text c="red" size="sm">{diagnostics[diagnosticDetailsId].error}</Text>}

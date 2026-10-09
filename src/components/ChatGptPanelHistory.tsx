@@ -141,7 +141,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
       const unsupported = scopeItems.filter(i => !i.transferable);
       if (unsupported.length) throw new Error(`所选范围中有 ${unsupported.length} 条记录暂不能迁移。请改选可迁移的会话。`);
       const current = await api.chatGptState();
-      if (current.profiles.find(p => p.id === target)?.status === "running" && confirmedTarget !== target) {
+      if (current.profiles.some(p => p.id === target && (p.status === "running" || p.status === "background")) && confirmedTarget !== target) {
         setConfirmClosingTarget(target);
         return;
       }
@@ -156,7 +156,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
       if (stop.current) { setMessage("已暂停，尚未建立新的复制队列。"); return; }
       const latest = await api.chatGptState();
       const status = latest.profiles.find(p => p.id === target)?.status;
-      if (status === "running") {
+      if (status === "running" || status === "background") {
         if (confirmedTarget !== target) {
           setConfirmClosingTarget(target);
           return;

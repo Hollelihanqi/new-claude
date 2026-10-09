@@ -147,6 +147,61 @@ pub struct Live {
     pub parent: Option<u32>,
 }
 
+pub fn profile_status(issue: bool, main: bool, window: bool, owned: bool) -> &'static str {
+    if issue {
+        "error"
+    } else if main {
+        if window {
+            "running"
+        } else {
+            "background"
+        }
+    } else if owned {
+        "closing"
+    } else {
+        "stopped"
+    }
+}
+
+/// Query the desktop once per refresh, separately from process ownership.
+pub fn visible_window_pids() -> Result<std::collections::HashSet<u32>, String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::{
+            core::BOOL,
+            Win32::{
+                Foundation::{HWND, LPARAM},
+                UI::WindowsAndMessaging::*,
+            },
+        };
+        unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
+            if IsWindowVisible(hwnd) != 0 && GetWindow(hwnd, GW_OWNER).is_null() {
+                let mut pid = 0;
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                (*(data as *mut std::collections::HashSet<u32>)).insert(pid);
+            }
+            1
+        }
+        let mut pids = std::collections::HashSet::new();
+        if unsafe { EnumWindows(Some(visit), &mut pids as *mut _ as LPARAM) } == 0 {
+            return Err("无法读取窗口状态，请刷新重试".into());
+        }
+        Ok(pids)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // CoreGraphics window metadata needs neither UI scripting nor account access.
+        let script = "ObjC.import('CoreGraphics'); const windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID)); JSON.stringify(windows.filter(w => w.kCGWindowLayer === 0).map(w => w.kCGWindowOwnerPID));";
+        let json =
+            output(Command::new("/usr/bin/osascript").args(["-l", "JavaScript", "-e", script]))?;
+        serde_json::from_str(&json).map_err(|e| format!("无法读取窗口状态：{e}"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Err("当前系统不支持桌面窗口检测".into())
+    }
+}
+
 pub fn snapshot() -> Result<Vec<Live>, String> {
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -207,11 +262,15 @@ pub fn argument_path(args: &[OsString], key: &str, path: &Path, windows: bool) -
 }
 
 pub fn owned<'a>(all: &'a [Live], dir: &Path) -> Vec<&'a Live> {
+    owned_at(all, dir, cfg!(windows))
+}
+
+fn owned_at<'a>(all: &'a [Live], dir: &Path, windows: bool) -> Vec<&'a Live> {
     let desktop = dir.join("desktop");
     let mut ids: std::collections::HashSet<u32> = all
         .iter()
         .filter(|p| {
-            argument_path(&p.args, "--user-data-dir", &desktop, cfg!(windows))
+            argument_path(&p.args, "--user-data-dir", &desktop, windows)
                 || p.args.windows(2).any(|pair| {
                     pair[0] == "--config"
                         && pair[1]
@@ -222,19 +281,21 @@ pub fn owned<'a>(all: &'a [Live], dir: &Path) -> Vec<&'a Live> {
                             )
                             .as_str()
                 })
-                || argument_path(
-                    &p.args,
-                    "--database",
-                    &desktop.join("Crashpad"),
-                    cfg!(windows),
-                )
+                || argument_path(&p.args, "--database", &desktop.join("Crashpad"), windows)
         })
         .map(|p| p.pid)
         .collect();
     loop {
         let n = ids.len();
         for p in all {
-            if p.parent.is_some_and(|id| ids.contains(&id)) {
+            let explicit_desktop = p.args.iter().any(|arg| {
+                let arg = arg.to_string_lossy();
+                arg == "--user-data-dir" || arg.starts_with("--user-data-dir=")
+            });
+            if p.parent.is_some_and(|id| ids.contains(&id))
+                && (!explicit_desktop
+                    || argument_path(&p.args, "--user-data-dir", &desktop, windows))
+            {
                 ids.insert(p.pid);
             }
         }
@@ -378,11 +439,73 @@ pub fn close_profile(live: &Live, dir: &Path) -> Result<(), String> {
             .any(|p| p.pid == live.pid && p.started == live.started)
         {
             cleanup_reporters(dir)?;
+            if require_stopped(&snapshot()?, dir).is_ok() {
+                return Ok(());
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Electron may hide its window instead of exiting on WM_CLOSE. Only retire
+    // this profile's official client processes after the normal close request.
+    let all = snapshot()?;
+    for target in shutdown_targets(&all, dir, &live.exe) {
+        terminate_verified(target)?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if owned(&snapshot()?, dir).is_empty() {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+    require_stopped(&snapshot()?, dir)
+}
+
+fn shutdown_targets<'a>(all: &'a [Live], dir: &Path, exe: &Path) -> Vec<&'a Live> {
+    owned(all, dir)
+        .into_iter()
+        .filter(|p| {
+            path_eq(&p.exe, exe, cfg!(windows))
+                || is_reporter(&p.exe)
+                || (p.exe.file_stem().is_some_and(|name| name == "codex")
+                    && exe
+                        .parent()
+                        .is_some_and(|installation| p.exe.starts_with(installation)))
+        })
+        .collect()
+}
+
+fn terminate_verified(live: &Live) -> Result<(), String> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(live.pid)]),
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+    );
+    let Some(p) = system.process(sysinfo::Pid::from_u32(live.pid)) else {
+        return Ok(());
+    };
+    if p.start_time() != live.started
+        || !p
+            .exe()
+            .is_some_and(|exe| path_eq(exe, &live.exe, cfg!(windows)))
+    {
+        return Err("进程身份已变化，已停止关闭操作，请刷新重试".into());
+    }
+    #[cfg(unix)]
+    let stopped = p.kill_with(sysinfo::Signal::Term) == Some(true);
+    #[cfg(windows)]
+    let stopped = p.kill();
+    if stopped
+        || !snapshot()?
+            .iter()
+            .any(|p| p.pid == live.pid && p.started == live.started)
+    {
+        Ok(())
+    } else {
+        Err("无法结束该实例的后台进程，请在 ChatGPT 中退出后重试".into())
+    }
 }
 
 pub fn require_stopped(all: &[Live], dir: &Path) -> Result<(), String> {
@@ -433,7 +556,7 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
             let mut pid = 0;
             GetWindowThreadProcessId(hwnd, &mut pid);
             if pid == search.pid
-                && IsWindowVisible(hwnd) != 0
+                && GetWindowTextLengthW(hwnd) > 0
                 && GetWindow(hwnd, GW_OWNER).is_null()
             {
                 search.window = hwnd;
@@ -552,6 +675,214 @@ fn launch_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hidden_instance_is_background_not_running() {
+        assert_eq!(profile_status(false, true, false, true), "background");
+        assert_eq!(profile_status(false, true, true, true), "running");
+        assert_eq!(profile_status(false, false, false, true), "closing");
+        assert_eq!(profile_status(false, false, false, false), "stopped");
+        assert_eq!(profile_status(true, true, true, true), "error");
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_macos_window_metadata_is_readable() {
+        visible_window_pids()
+            .expect("CoreGraphics window metadata must be readable without UI scripting");
+    }
+    #[test]
+    fn closing_one_instance_never_includes_another_or_unrelated_tools() {
+        for (dir, other, exe, tool) in [
+            (
+                "C:/profiles/a",
+                "C:/profiles/b",
+                "C:/Apps/ChatGPT.exe",
+                "C:/Tools/editor.exe",
+            ),
+            (
+                "/tmp/profiles/a",
+                "/tmp/profiles/b",
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+                "/usr/bin/editor",
+            ),
+        ] {
+            let make = |pid, parent, executable: &str, args: Vec<OsString>| Live {
+                pid,
+                parent,
+                started: 1,
+                exe: executable.into(),
+                args,
+            };
+            let all = vec![
+                make(
+                    1,
+                    None,
+                    exe,
+                    vec![format!("--user-data-dir={dir}/desktop").into()],
+                ),
+                make(
+                    2,
+                    Some(1),
+                    exe,
+                    vec![format!("--user-data-dir={other}/desktop").into()],
+                ),
+                make(3, Some(1), exe, vec!["--type=renderer".into()]),
+                make(4, Some(1), tool, vec![]),
+                make(5, Some(2), exe, vec!["--type=renderer".into()]),
+            ];
+            let owned: Vec<_> = owned_at(&all, Path::new(dir), dir.starts_with("C:"))
+                .into_iter()
+                .map(|p| p.pid)
+                .collect();
+            assert_eq!(owned, vec![1, 3, 4]);
+            let targets: Vec<_> = shutdown_targets(&all, Path::new(dir), Path::new(exe))
+                .into_iter()
+                .map(|p| p.pid)
+                .collect();
+            assert_eq!(targets, vec![1, 3]);
+            assert!(require_stopped(&all, Path::new(dir)).is_err());
+            assert!(require_stopped(&[], Path::new(dir)).is_ok());
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "helper used only by close_exits_a_client_that_hides_on_window_close"]
+    fn close_test_worker() {
+        use windows_sys::Win32::{
+            Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+            UI::WindowsAndMessaging::*,
+        };
+        let Some(dir) = std::env::var_os("PATHMUX_CLOSE_TEST_DIR") else {
+            return;
+        };
+        unsafe extern "system" fn hide_on_close(
+            hwnd: HWND,
+            message: u32,
+            w: WPARAM,
+            l: LPARAM,
+        ) -> LRESULT {
+            if message == WM_CLOSE {
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            }
+            DefWindowProcW(hwnd, message, w, l)
+        }
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title: Vec<u16> = "PathMux close regression helper\0".encode_utf16().collect();
+        unsafe {
+            let hwnd = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                160,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, hide_on_close as *const () as isize);
+            fs::write(Path::new(&dir).join("ready"), "ready").unwrap();
+            let mut message = std::mem::zeroed();
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn close_exits_a_client_that_hides_on_window_close() {
+        struct Cleanup(std::process::Child);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        fs::create_dir(dir.join("desktop")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let child = Command::new(&exe)
+            .args([
+                "--exact",
+                "chatgpt::process::tests::close_test_worker",
+                "--ignored",
+                "--skip",
+            ])
+            .arg(format!("--user-data-dir={}", dir.join("desktop").display()))
+            .env("PATHMUX_CLOSE_TEST_DIR", dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut cleanup = Cleanup(child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dir.join("ready").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(dir.join("ready").exists(), "close helper failed to start");
+        let all = snapshot().unwrap();
+        let live = main_process(&all, dir, &exe).unwrap();
+        assert_eq!(live.pid, cleanup.0.id());
+        close_profile(live, dir).unwrap();
+        assert!(
+            cleanup.0.try_wait().unwrap().is_some(),
+            "close reported success while client remained alive"
+        );
+        assert!(owned(&snapshot().unwrap(), dir).is_empty());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_window_visibility_tracks_hide_restore_and_minimize() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title: Vec<u16> = "PathMux window-state test\0".encode_utf16().collect();
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                160,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        struct Cleanup(windows_sys::Win32::Foundation::HWND);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                unsafe {
+                    DestroyWindow(self.0);
+                }
+            }
+        }
+        let _cleanup = Cleanup(hwnd);
+        let pid = std::process::id();
+        assert!(!visible_window_pids().unwrap().contains(&pid));
+        unsafe {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        assert!(visible_window_pids().unwrap().contains(&pid));
+        unsafe {
+            ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        }
+        assert!(visible_window_pids().unwrap().contains(&pid));
+        unsafe {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+        assert!(!visible_window_pids().unwrap().contains(&pid));
+    }
     #[test]
     fn vpn_api_instance_bypasses_proxy_without_disabling_public_proxy() {
         let exceptions = private_gateway_no_proxy("https://vpn-test.localhost/v1").unwrap();

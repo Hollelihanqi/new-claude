@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Button, Select, Checkbox, Modal, PasswordInput, Switch, TextInput, Title } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ChatGptPanel from "./ChatGptPanel";
+import StatusModal from "./StatusModal";
 import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Collapse", "Group", "Modal", "PasswordInput", "Select", "SimpleGrid", "Stack", "Switch", "Text", "TextInput", "Title", "Tooltip"].map(name => [name, name.toLowerCase()])));
@@ -21,6 +22,60 @@ beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers(); vi.stubGlobal("IS_REA
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const button = (label: string) => renderer.root.findAllByType(Button).find(b => String(b.props.children).includes(label))!;
 const select = (label: string) => renderer.root.findAllByType(Select).find(s => s.props.label === label)!;
+
+it.each(["running", "background", "closing", "error"] as const)("keeps delete clickable for %s and explains the blocker in a centered dialog", async status => {
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...state.profiles[0], status }] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const card = renderer.root.findByProps({ className: "chatgpt-profile" });
+  const remove = card.findAllByType(Button).find(item => item.props.children === "删除")!;
+  expect(remove.props.disabled).toBeUndefined();
+  expect(card.findAllByProps({ className: "chatgpt-delete-reason" })).toHaveLength(0);
+  act(() => remove.props.onClick());
+  const statusDialog = renderer.root.findByType(StatusModal);
+  expect(statusDialog.props.variant).toBe("danger");
+  const dialog = statusDialog.findByType(Modal);
+  expect(dialog.props.opened).toBe(true);
+  expect(dialog.props.centered).toBe(true);
+  const reason = dialog.findAll(node => typeof node.props.children === "string" && node.props.children.includes("暂时不能删除"))[0].props.children;
+  expect(reason).toContain("暂时不能删除");
+  expect(reason).toContain(status === "closing" ? "清理后台进程" : status === "error" ? "刷新" : "关闭");
+  expect(renderer.root.findAll(node => String(node.type) === "risk-confirm")[0].props.opened).toBe(false);
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+  act(() => button("知道了").props.onClick());
+  expect(dialog.props.opened).toBe(false);
+});
+
+it("blocks a stale delete confirmation when the instance starts running", async () => {
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  act(() => button("删除").props.onClick());
+  let confirm = renderer.root.findAll(node => String(node.type) === "risk-confirm")[0];
+  expect(confirm.props.disabled).toBe(false);
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: state.profiles.map(p => ({ ...p, status: "background" })) });
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+  confirm = renderer.root.findAll(node => String(node.type) === "risk-confirm")[0];
+  expect(confirm.props.disabled).toBe(true);
+  expect(confirm.props.opened).toBe(false);
+  expect(renderer.root.findByType(StatusModal).props.opened).toBe(true);
+  expect(confirm.props.detail).toContain("后台运行");
+  act(() => confirm.props.onConfirm());
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+});
+
+it("distinguishes a hidden background instance and restores it without launching a duplicate", async () => {
+  const current: ChatGptState = { ...state, profiles: state.profiles.map(p => ({ ...p, status: p.id === "a" ? "running" : "background" })) };
+  vi.mocked(api.chatGptState).mockResolvedValue(current);
+  vi.mocked(api.chatGptProfileAction).mockResolvedValue(current);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const cards = renderer.root.findAllByProps({ className: "chatgpt-profile" });
+  expect(cards[1].props["data-profile-tone"]).toBe("background");
+  expect(cards[1].findByProps({ "aria-label": "实例状态：后台运行" })).toBeTruthy();
+  expect(cards[1].findAllByType(Button).some(b => b.props.children === "启动")).toBe(false);
+  expect(cards[1].findAllByType(Button).find(b => b.props.children === "删除")!.props.disabled).toBeUndefined();
+  await act(async () => { cards[1].findAllByType(Button).find(b => b.props.children === "打开窗口")!.props.onClick(); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledWith("b", "focus");
+  await act(async () => { cards[1].findAllByType(Button).find(b => b.props.children === "关闭")!.props.onClick(); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledWith("b", "stop");
+});
 
 it("shows an accessible animated workspace while detection is pending, then removes it", async () => {
   const result = deferred<ChatGptState>();
@@ -139,9 +194,9 @@ it("offers close only for a running instance and sends the stop action", async (
   const status = renderer.root.findAllByProps({ className: "chatgpt-runtime-status chatgpt-runtime-running" });
   expect(status).toHaveLength(1);
   expect(renderer.root.findAllByProps({ className: "chatgpt-profile" })[0].props["data-profile-tone"]).toBe("running");
-  expect(status[0].props["aria-label"]).toBe("实例状态：运行中");
+  expect(status[0].props["aria-label"]).toBe("实例状态：窗口已打开");
   expect(status[0].findAllByType("text")).toHaveLength(0);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-profile" })[0].findAllByType(Button).some(item => item.props.children === "删除")).toBe(false);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-profile" })[0].findAllByType(Button).find(item => item.props.children === "删除")!.props.disabled).toBeUndefined();
   act(() => { button("关闭").props.onClick(); });
   expect(button("关闭").props.children).toBe("关闭");
   expect(button("关闭").props["aria-busy"]).toBe(true);
@@ -350,14 +405,14 @@ it("syncs only the chosen project and opens its newest copy", async () => {
   expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "new-thread");
 });
 
-it("does not close a running target until the user explicitly confirms", async () => {
+it.each(["running", "background"] as const)("does not close a %s target until the user explicitly confirms", async activeStatus => {
   let running = true;
   vi.mocked(api.chatGptState).mockImplementation(async () => ({ ...state, profiles: state.profiles.map(profile =>
-    profile.id === "b" ? { ...profile, status: running ? "running" : "stopped" } : profile) }));
+    profile.id === "b" ? { ...profile, status: running ? activeStatus : "stopped" } : profile) }));
   vi.mocked(api.chatGptProfileAction).mockImplementation(async (_id, action) => {
     if (action === "stop") running = false;
     return { ...state, profiles: state.profiles.map(profile =>
-      profile.id === "b" ? { ...profile, status: running ? "running" : "stopped" } : profile) };
+      profile.id === "b" ? { ...profile, status: running ? activeStatus : "stopped" } : profile) };
   });
   const job: ChatGptJob = { id: "confirmed", targetId: "b", requests: [{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }], outcomes: [], cancelled: false };
   vi.mocked(api.chatGptBatchCreate).mockResolvedValue(job);

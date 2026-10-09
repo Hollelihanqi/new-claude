@@ -5,7 +5,7 @@ export interface ChatGptProfile {
   name: string;
   createdAt: number;
   directory: string;
-  status: "running" | "stopped" | "closing" | "error";
+  status: "running" | "background" | "stopped" | "closing" | "error";
   pid: number | null;
   issue: string | null;
   api?: { baseUrl: string; model: string; models?: { id: string; name: string }[]; hasKey: boolean; active: boolean; compatibilityEnabled?: boolean } | null;

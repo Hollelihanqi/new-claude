@@ -239,9 +239,11 @@ jobs:
           tagName: ${{ needs.channel.outputs.tag }}
           releaseName: "PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
           releaseBody: |
-            新增腾讯云 COS 国内更新源。客户端优先从国内源读取更新清单和下载安装包；GitHub 保留为更新检查的备用地址。发布流程先同步并验证所有安装包与签名，再公开 GitHub Release，最后更新国内正式版清单。
+            修复 ChatGPT 多开状态判断：区分窗口已打开和后台运行，隐藏窗口不再显示为窗口已打开。关闭实例后确认进程退出，并核验归属后清理该实例的残留客户端进程。
 
-            已安装的旧版尚未内置国内地址；首次迁移请通过现有渠道更新一次或手动安装本版。之后可直接使用国内源检查和下载更新。
+            删除按钮始终可点击。实例不能删除时，使用居中弹框说明原因和操作方法；已关闭实例保留删除确认。提示弹框统一支持 danger、success、info、primary，删除提示采用 danger 风格。
+
+            继续提供腾讯云 COS 国内更新源与 GitHub 备用更新地址。Windows 和 macOS 测试、构建及安装包与签名核验全部通过后才公开正式版。
 
             下载对应系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。安装说明见仓库 README。
           # **一律先建成 draft**：先完成的平台立刻公开的话，第二个平台失败时
