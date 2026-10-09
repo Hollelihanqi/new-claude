@@ -321,12 +321,34 @@ fn primary_process<'a>(all: &'a [Live], exe: &Path) -> Option<&'a Live> {
                     || arg == "--user-data-dir"
                     || arg.starts_with("--user-data-dir=")
             })
+            && launcher::verify_identity(p).is_ok()
     })
 }
 
 #[cfg(any(windows, target_os = "macos"))]
 pub fn open_primary(app: &discovery::Installation) -> Result<(), String> {
     let exe = Path::new(&app.executable);
+    #[cfg(windows)]
+    if launcher::package_root(exe).is_some() {
+        let mut command = Command::new(exe);
+        clear_overrides(&mut command);
+        let mut command = launcher::command(command, true)?;
+        output(&mut command)
+            .map_err(|e| format!("无法通过 Windows 应用入口打开主 ChatGPT：{e}"))?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let all = snapshot()?;
+            if let Some(live) = primary_process(&all, exe) {
+                if visible_window_pids()?.contains(&live.pid) {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        return Err(
+            "已请求 Windows 打开主 ChatGPT，但尚未确认窗口，请从系统程序列表打开后重试".into(),
+        );
+    }
     if let Some(live) = primary_process(&snapshot()?, exe) {
         let mut command = Command::new(&live.exe);
         clear_overrides(&mut command);
@@ -428,8 +450,11 @@ pub fn cleanup_reporters(dir: &Path) -> Result<(), String> {
 }
 
 pub fn close_profile(live: &Live, dir: &Path) -> Result<(), String> {
-    window_action(live, true)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    same_process(live)?;
+    // A starting or background client may have no closable native window.
+    // The explicit Stop action must still retire its verified owned processes.
+    let close_requested = window_action(live, true).is_ok();
+    let deadline = Instant::now() + Duration::from_secs(if close_requested { 5 } else { 0 });
     while Instant::now() < deadline {
         let all = snapshot()?;
         if !all
@@ -597,6 +622,7 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
 /// Re-enter the client's second-instance handler instead of showing a hidden
 /// native window. Electron must restore its own window and renderer focus.
 pub fn reopen(live: &Live, dir: &Path, thread_id: Option<&str>) -> Result<(), String> {
+    launcher::verify_identity(live)?;
     let mut command = profile_command(&live.exe, dir, thread_id)?;
     request_reopen(&mut command, live)
 }
@@ -608,7 +634,7 @@ fn profile_command(exe: &Path, dir: &Path, thread_id: Option<&str>) -> Result<Co
     if let Some(id) = thread_id {
         command.arg(thread_route(id)?);
     }
-    Ok(command)
+    launcher::command(command, false)
 }
 
 fn request_reopen(command: &mut Command, live: &Live) -> Result<(), String> {
@@ -623,7 +649,7 @@ fn request_reopen(command: &mut Command, live: &Live) -> Result<(), String> {
     std::thread::spawn(move || {
         let _ = tx.send(child.wait());
     });
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut accepted = false;
     while Instant::now() < deadline {
         if !accepted {
@@ -684,6 +710,11 @@ fn launch_at(
         super::api_config::set_runtime_bridge_url(dir, port)?;
     }
     let mut command = profile_command(Path::new(&app.executable), dir, thread_id)?;
+    let direct = path_eq(
+        Path::new(command.get_program()),
+        Path::new(&app.executable),
+        cfg!(windows),
+    );
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -694,13 +725,16 @@ fn launch_at(
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(if direct { 8 } else { 20 });
     while Instant::now() < deadline {
         let all = snapshot()?;
-        if main_process(&all, dir, Path::new(&app.executable)).is_some() {
-            return Ok(());
+        if let Some(live) = main_process(&all, dir, Path::new(&app.executable)) {
+            launcher::verify_identity(live)?;
+            if visible_window_pids()?.contains(&live.pid) {
+                return Ok(());
+            }
         }
-        if !all.iter().any(|p| p.pid == pid) {
+        if direct && !all.iter().any(|p| p.pid == pid) {
             return Err("客户端启动后退出；可能是版本或 Windows 安装类型不兼容。请重新选择客户端并查看兼容说明。".into());
         }
         std::thread::sleep(Duration::from_millis(150));

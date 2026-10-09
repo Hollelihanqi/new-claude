@@ -11,6 +11,7 @@ mod batch;
 mod bridge;
 mod discovery;
 mod history;
+mod launcher;
 #[cfg(target_os = "macos")]
 mod macos_windows;
 mod process;
