@@ -705,6 +705,7 @@ fn launch_at(
         return reopen(live, dir, thread_id);
     }
     require_stopped(&all, dir)?;
+    launcher::prepare_runtime(Path::new(&app.executable), dir)?;
     if super::api_config::compatibility(dir)?.is_some_and(|(_, _, enabled)| enabled) {
         let port = super::bridge::start(dir, Path::new(&app.executable))?;
         super::api_config::set_runtime_bridge_url(dir, port)?;

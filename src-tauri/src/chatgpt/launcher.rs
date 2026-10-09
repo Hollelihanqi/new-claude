@@ -22,6 +22,68 @@ pub fn command(original: Command, primary: bool) -> Result<Command, String> {
     Ok(original)
 }
 
+pub fn prepare_runtime(exe: &Path, dir: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    if package_root(exe).is_some() {
+        return sync_runtime_preferences(
+            &dir.join("codex/.codex-global-state.json"),
+            &crate::home().join(".codex/.codex-global-state.json"),
+        );
+    }
+    let _ = (exe, dir);
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn sync_runtime_preferences(profile: &Path, primary: &Path) -> Result<(), String> {
+    if !primary.exists() {
+        return Ok(());
+    }
+    let read_state = |path: &Path| -> Result<serde_json::Value, String> {
+        if fs::metadata(path).map_err(|e| e.to_string())?.len() > 8 * 1024 * 1024 {
+            return Err("客户端状态文件过大，无法安全同步运行框架设置".into());
+        }
+        storage::read_json(path)
+            .map_err(|_| "客户端状态文件无法解析，请在官方客户端中检查设置后重试".into())
+    };
+    let source = read_state(primary)?;
+    let flags: Vec<_> = [
+        "electron-windows-core-runtime-frameworks-enabled",
+        "electron-windows-primary-runtime-frameworks-enabled",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        source
+            .get(key)
+            .and_then(|value| value.as_bool())
+            .map(|value| (key, value))
+    })
+    .collect();
+    if flags.is_empty() {
+        return Ok(());
+    }
+    storage::plain(profile)?;
+    let mut target = if profile.exists() {
+        read_state(profile)?
+    } else {
+        serde_json::json!({})
+    };
+    let state = target
+        .as_object_mut()
+        .ok_or("实例客户端状态格式无效，已停止同步")?;
+    let mut changed = false;
+    for (key, value) in flags {
+        if state.get(key).and_then(|value| value.as_bool()) != Some(value) {
+            state.insert(key.to_owned(), value.into());
+            changed = true;
+        }
+    }
+    if changed {
+        storage::write_json(profile, &target)?;
+    }
+    Ok(())
+}
+
 #[cfg(any(windows, test))]
 fn executable_path(value: &str) -> String {
     if let Some(path) = value.strip_prefix("\\\\?\\UNC\\") {
@@ -282,6 +344,46 @@ mod tests {
             assert!(command.get_envs().any(|(key, value)| key == "CODEX_HOME"
                 && value == Some(std::ffi::OsStr::new("separate"))));
         }
+    }
+    #[test]
+    fn runtime_preferences_sync_does_not_copy_permissions_accounts_or_other_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("primary.json");
+        let profile = temp.path().join("profile.json");
+        storage::write_json(&primary, &serde_json::json!({
+            "electron-windows-primary-runtime-frameworks-enabled": true,
+            "electron-windows-core-runtime-frameworks-enabled": false,
+            "electron-persisted-atom-state": {"composer-permission-mode-visibility":{"guardian-approvals":true}},
+            "private-account-state": "primary-only"
+        })).unwrap();
+        let original = serde_json::json!({
+            "electron-windows-primary-runtime-frameworks-enabled": false,
+            "electron-persisted-atom-state": {"composer-permission-mode-visibility":false},
+            "approvals_reviewer": "user",
+            "private-account-state": "profile-only"
+        });
+        storage::write_json(&profile, &original).unwrap();
+        sync_runtime_preferences(&profile, &primary).unwrap();
+        let state: serde_json::Value = storage::read_json(&profile).unwrap();
+        assert_eq!(
+            state["electron-windows-primary-runtime-frameworks-enabled"],
+            true
+        );
+        assert_eq!(
+            state["electron-windows-core-runtime-frameworks-enabled"],
+            false
+        );
+        assert_eq!(
+            state["electron-persisted-atom-state"],
+            original["electron-persisted-atom-state"]
+        );
+        assert_eq!(state["approvals_reviewer"], "user");
+        assert_eq!(state["private-account-state"], "profile-only");
+        sync_runtime_preferences(&profile, &temp.path().join("missing.json")).unwrap();
+        assert_eq!(
+            storage::read_json::<serde_json::Value>(&profile).unwrap(),
+            state
+        );
     }
     #[cfg(windows)]
     #[test]
