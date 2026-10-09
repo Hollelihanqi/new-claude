@@ -342,7 +342,7 @@ pub async fn chatgpt_profile_action(request: ActionRequest) -> Result<State, Str
                 if matches!(request.action, Action::Stop) {
                     process::close_profile(live, &dir)?;
                 } else {
-                    process::window_action(live, false)?;
+                    process::reopen(live, &dir, None)?;
                 }
             }
             Action::Cleanup => {

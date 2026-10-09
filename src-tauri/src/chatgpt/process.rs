@@ -328,7 +328,9 @@ fn primary_process<'a>(all: &'a [Live], exe: &Path) -> Option<&'a Live> {
 pub fn open_primary(app: &discovery::Installation) -> Result<(), String> {
     let exe = Path::new(&app.executable);
     if let Some(live) = primary_process(&snapshot()?, exe) {
-        return window_action(live, false);
+        let mut command = Command::new(&live.exe);
+        clear_overrides(&mut command);
+        return request_reopen(&mut command, live);
     }
 
     #[cfg(target_os = "macos")]
@@ -546,6 +548,7 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
         struct Search {
             pid: u32,
             window: HWND,
+            close: bool,
         }
         unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
             let search = &mut *(data as *mut Search);
@@ -554,6 +557,7 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
             if pid == search.pid
                 && GetWindowTextLengthW(hwnd) > 0
                 && GetWindow(hwnd, GW_OWNER).is_null()
+                && (search.close || IsWindowVisible(hwnd) != 0)
             {
                 search.window = hwnd;
                 return 0;
@@ -563,6 +567,7 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
         let mut search = Search {
             pid: live.pid,
             window: std::ptr::null_mut(),
+            close,
         };
         unsafe {
             EnumWindows(Some(visit), &mut search as *mut Search as LPARAM);
@@ -587,6 +592,58 @@ pub fn window_action(live: &Live, close: bool) -> Result<(), String> {
         let _ = close;
         Err("当前系统不支持桌面实例管理".into())
     }
+}
+
+/// Re-enter the client's second-instance handler instead of showing a hidden
+/// native window. Electron must restore its own window and renderer focus.
+pub fn reopen(live: &Live, dir: &Path, thread_id: Option<&str>) -> Result<(), String> {
+    let mut command = profile_command(&live.exe, dir, thread_id)?;
+    request_reopen(&mut command, live)
+}
+
+fn profile_command(exe: &Path, dir: &Path, thread_id: Option<&str>) -> Result<Command, String> {
+    let mut command = Command::new(exe);
+    configure(&mut command, dir);
+    command.arg(format!("--user-data-dir={}", dir.join("desktop").display()));
+    if let Some(id) = thread_id {
+        command.arg(thread_route(id)?);
+    }
+    Ok(command)
+}
+
+fn request_reopen(command: &mut Command, live: &Live) -> Result<(), String> {
+    same_process(live)?;
+    let mut child = quiet(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("无法请求重新打开实例窗口：{e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut accepted = false;
+    while Instant::now() < deadline {
+        if !accepted {
+            match rx.try_recv() {
+                Ok(Ok(status)) if status.success() => accepted = true,
+                Ok(Ok(_)) => return Err("客户端未接受打开窗口请求，请稍后重试".into()),
+                Ok(Err(e)) => return Err(format!("无法确认打开窗口请求：{e}")),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err("无法确认打开窗口请求，请刷新后重试".into());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        same_process(live)?;
+        if accepted && visible_window_pids()?.contains(&live.pid) {
+            return window_action(live, false);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err("已请求客户端重新打开窗口，但尚未确认窗口恢复，请稍后重试".into())
 }
 
 pub fn launch(app: &discovery::Installation, dir: &Path) -> Result<(), String> {
@@ -619,31 +676,14 @@ fn launch_at(
     cleanup_reporters(dir)?;
     let all = snapshot()?;
     if let Some(live) = main_process(&all, dir, Path::new(&app.executable)) {
-        if let Some(id) = thread_id {
-            let mut command = Command::new(&app.executable);
-            configure(&mut command, dir);
-            command.arg(format!("--user-data-dir={}", dir.join("desktop").display()));
-            command.arg(thread_route(id)?);
-            quiet(&mut command)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("无法打开目标会话：{e}"))?;
-        }
-        return window_action(live, false);
+        return reopen(live, dir, thread_id);
     }
     require_stopped(&all, dir)?;
     if super::api_config::compatibility(dir)?.is_some_and(|(_, _, enabled)| enabled) {
         let port = super::bridge::start(dir, Path::new(&app.executable))?;
         super::api_config::set_runtime_bridge_url(dir, port)?;
     }
-    let mut command = Command::new(&app.executable);
-    configure(&mut command, dir);
-    command.arg(format!("--user-data-dir={}", dir.join("desktop").display()));
-    if let Some(id) = thread_id {
-        command.arg(thread_route(id)?);
-    }
+    let mut command = profile_command(Path::new(&app.executable), dir, thread_id)?;
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -781,9 +821,18 @@ mod tests {
             );
             assert!(!hwnd.is_null());
             SetWindowLongPtrW(hwnd, GWLP_WNDPROC, hide_on_close as *const () as isize);
+            if std::env::var_os("PATHMUX_REOPEN_TEST").is_some() {
+                SetTimer(hwnd, 1, 25, None);
+            }
             fs::write(Path::new(&dir).join("ready"), "ready").unwrap();
             let mut message = std::mem::zeroed();
             while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+                let request = Path::new(&dir).join("reopen-request");
+                if message.message == WM_TIMER && request.exists() {
+                    fs::remove_file(request).unwrap();
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    fs::write(Path::new(&dir).join("client-restored"), "ready").unwrap();
+                }
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -831,6 +880,172 @@ mod tests {
             "close reported success while client remained alive"
         );
         assert!(owned(&snapshot().unwrap(), dir).is_empty());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_focus_must_not_resurrect_a_closed_client_window() {
+        struct Cleanup(std::process::Child);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        fs::create_dir(dir.join("desktop")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let child = Command::new(&exe)
+            .args([
+                "--exact",
+                "chatgpt::process::tests::close_test_worker",
+                "--ignored",
+                "--skip",
+            ])
+            .arg(format!("--user-data-dir={}", dir.join("desktop").display()))
+            .env("PATHMUX_CLOSE_TEST_DIR", dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let cleanup = Cleanup(child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dir.join("ready").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(dir.join("ready").exists());
+        let all = snapshot().unwrap();
+        let live = main_process(&all, dir, &exe).unwrap();
+        assert!(!visible_window_pids().unwrap().contains(&cleanup.0.id()));
+        // A client close can leave a hidden OS window after its own UI teardown.
+        // Native focus must never make that window visible behind the client's back.
+        assert!(window_action(live, false).is_err());
+        assert!(
+            !visible_window_pids().unwrap().contains(&cleanup.0.id()),
+            "native focus resurrected a client-hidden window without a client reopen request"
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "secondary-instance request helper for client reopen regression"]
+    fn reopen_test_request() {
+        let Some(dir) = std::env::var_os("PATHMUX_REOPEN_REQUEST_DIR") else {
+            return;
+        };
+        let dir = Path::new(&dir);
+        assert_eq!(std::env::current_dir().unwrap(), dir);
+        assert_eq!(
+            std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH"),
+            Some(dir.join("desktop").into_os_string())
+        );
+        fs::write(dir.join("reopen-request"), "request").unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn client_reopen_restores_selected_window_after_close_without_restarting() {
+        struct Cleanup(std::process::Child);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let start = |name: &str| {
+            let dir = temp.path().join(name);
+            fs::create_dir_all(dir.join("desktop")).unwrap();
+            let child = Command::new(&exe)
+                .args([
+                    "--exact",
+                    "chatgpt::process::tests::close_test_worker",
+                    "--ignored",
+                    "--skip",
+                ])
+                .arg(format!("--user-data-dir={}", dir.join("desktop").display()))
+                .env("PATHMUX_CLOSE_TEST_DIR", &dir)
+                .env("PATHMUX_REOPEN_TEST", "1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let cleanup = Cleanup(child);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !dir.join("ready").exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(dir.join("ready").exists());
+            (dir, cleanup)
+        };
+        let (dir, selected) = start("selected");
+        let (other_dir, other) = start("other");
+        let all = snapshot().unwrap();
+        let live = main_process(&all, &dir, &exe).unwrap();
+        // Exercise the same request path after repeated client-side closes.
+        for _ in 0..2 {
+            let mut command = Command::new(&exe);
+            command.args([
+                "--exact",
+                "chatgpt::process::tests::reopen_test_request",
+                "--ignored",
+                "--skip",
+            ]);
+            configure(&mut command, &dir);
+            command
+                .arg(format!("--user-data-dir={}", dir.join("desktop").display()))
+                .env("PATHMUX_REOPEN_REQUEST_DIR", &dir);
+            let result = request_reopen(&mut command, live);
+            // Foreground policy may reject focus in an unattended CI session.
+            assert!(result.is_ok() || result.unwrap_err().contains("Windows 阻止切换前台"));
+            assert!(dir.join("client-restored").exists());
+            assert!(visible_window_pids().unwrap().contains(&selected.0.id()));
+            assert!(!visible_window_pids().unwrap().contains(&other.0.id()));
+            assert!(!other_dir.join("client-restored").exists());
+            same_process(live).expect("reopen must preserve the original main process");
+            window_action(live, true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while visible_window_pids().unwrap().contains(&live.pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(!visible_window_pids().unwrap().contains(&live.pid));
+            fs::remove_file(dir.join("client-restored")).unwrap();
+        }
+    }
+    #[test]
+    fn reopening_keeps_profile_environment_and_thread_route_on_both_platforms() {
+        let id = uuid::Uuid::new_v4().to_string();
+        for (exe, dir) in [
+            ("C:/Apps/ChatGPT.exe", "C:/Profiles/工作 space/a"),
+            (
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+                "/tmp/profiles/工作 space/a",
+            ),
+        ] {
+            let dir = Path::new(dir);
+            for thread in [None, Some(id.as_str())] {
+                let command = profile_command(Path::new(exe), dir, thread).unwrap();
+                assert_eq!(command.get_program(), exe);
+                assert_eq!(command.get_current_dir(), Some(dir));
+                let args: Vec<_> = command.get_args().collect();
+                assert_eq!(
+                    args[0],
+                    format!("--user-data-dir={}", dir.join("desktop").display()).as_str()
+                );
+                assert_eq!(args.len(), if thread.is_some() { 2 } else { 1 });
+                if thread.is_some() {
+                    assert_eq!(args[1], format!("codex://threads/{id}").as_str());
+                }
+                for (key, relative) in [
+                    ("CODEX_HOME", "codex"),
+                    ("CODEX_ELECTRON_USER_DATA_PATH", "desktop"),
+                    ("CODEX_SQLITE_HOME", "codex/db"),
+                ] {
+                    assert!(command.get_envs().any(|(name, value)| {
+                        name == key && value == Some(dir.join(relative).as_os_str())
+                    }));
+                }
+            }
+        }
     }
     #[cfg(windows)]
     #[test]
