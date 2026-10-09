@@ -89,6 +89,26 @@ it("shows an accessible animated workspace while detection is pending, then remo
   expect(renderer.root.findAllByProps({ className: "chatgpt-loading" })).toHaveLength(0);
 });
 
+it("keeps close feedback busy until the backend confirms exit", async () => {
+  const current: ChatGptState = { ...state, profiles: [{ ...state.profiles[0], status: "running" }] };
+  const result = deferred<ChatGptState>();
+  vi.mocked(api.chatGptState).mockResolvedValue(current);
+  vi.mocked(api.chatGptProfileAction).mockReturnValue(result.promise);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { button("关闭").props.onClick(); });
+  const closing = button("正在关闭");
+  expect(closing.props["aria-busy"]).toBe(true);
+  expect(closing.props.disabled).toBe(true);
+  expect(closing.props.leftSection.props.className).toBe("chatgpt-button-spinner");
+  await act(async () => { closing.props.onClick(); });
+  expect(api.chatGptProfileAction).toHaveBeenCalledTimes(1);
+  const stopped: ChatGptState = { ...current, profiles: [{ ...current.profiles[0], status: "stopped" }] };
+  vi.mocked(api.chatGptState).mockResolvedValue(stopped);
+  await act(async () => { result.resolve(stopped); });
+  expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("正在关闭"))).toBe(false);
+  expect(button("启动").props["aria-busy"]).toBe(false);
+});
+
 it("opens the primary client separately from managed profiles", async () => {
   vi.mocked(api.chatGptOpenPrimary).mockResolvedValue();
   await act(async () => { renderer = create(<ChatGptPanel />); });
@@ -198,9 +218,9 @@ it("offers close only for a running instance and sends the stop action", async (
   expect(status[0].findAllByType("text")).toHaveLength(0);
   expect(renderer.root.findAllByProps({ className: "chatgpt-profile" })[0].findAllByType(Button).find(item => item.props.children === "删除")!.props.disabled).toBeUndefined();
   act(() => { button("关闭").props.onClick(); });
-  expect(button("关闭").props.children).toBe("关闭");
+  expect(button("关闭").props.children).toBe("正在关闭…");
   expect(button("关闭").props["aria-busy"]).toBe(true);
-  expect(button("关闭").props.disabled).toBeUndefined();
+  expect(button("关闭").props.disabled).toBe(true);
   await act(async () => { result.resolve(state); });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "stop");
   expect(renderer.root.findAllByProps({ className: "chatgpt-feedback" })).toHaveLength(0);

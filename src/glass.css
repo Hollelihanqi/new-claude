@@ -2152,10 +2152,9 @@ html[data-theme="apple"] .side-nav-item:active {
 }
 .chatgpt-page .mantine-Button-root:active:not(:disabled):not([data-disabled]) { filter: brightness(.97); box-shadow: inset 0 1px 3px rgba(20, 39, 48, .13); }
 .chatgpt-page .mantine-Button-root:focus-visible { outline: 2px solid var(--theme-base); outline-offset: 2px; }
-.chatgpt-button-spinner { animation: chatgpt-button-spin .9s linear infinite; }
+.chatgpt-button-spinner { display: block; transform-box: fill-box; transform-origin: center; animation: chatgpt-button-spin .9s linear infinite; }
 @keyframes chatgpt-button-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .chatgpt-page .mantine-Button-root { transition: none; } }
-@media (prefers-reduced-motion: reduce) { .chatgpt-button-spinner { animation: none; } }
 .chatgpt-page-empty { min-height: 100%; }
 .chatgpt-page-empty .chatgpt-console { flex: 1; display: flex; flex-direction: column; }
 .chatgpt-page-empty .chatgpt-onboarding { flex: 1; }
