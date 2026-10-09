@@ -190,11 +190,7 @@ pub fn visible_window_pids() -> Result<std::collections::HashSet<u32>, String> {
     }
     #[cfg(target_os = "macos")]
     {
-        // CoreGraphics window metadata needs neither UI scripting nor account access.
-        let script = "ObjC.import('CoreGraphics'); const windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID)); JSON.stringify(windows.filter(w => w.kCGWindowLayer === 0).map(w => w.kCGWindowOwnerPID));";
-        let json =
-            output(Command::new("/usr/bin/osascript").args(["-l", "JavaScript", "-e", script]))?;
-        serde_json::from_str(&json).map_err(|e| format!("无法读取窗口状态：{e}"))
+        super::macos_windows::visible_pids()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {

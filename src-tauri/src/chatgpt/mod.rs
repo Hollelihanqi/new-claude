@@ -11,6 +11,8 @@ mod batch;
 mod bridge;
 mod discovery;
 mod history;
+#[cfg(target_os = "macos")]
+mod macos_windows;
 mod process;
 mod rpc;
 mod snapshot;
