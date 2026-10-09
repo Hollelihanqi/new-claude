@@ -1,10 +1,8 @@
 //! Keep Store app identity without sharing a profile's credentials or directories.
 use super::*;
 
+#[cfg(windows)]
 pub fn package_root(exe: &Path) -> Option<PathBuf> {
-    if !cfg!(windows) {
-        return None;
-    }
     exe.ancestors()
         .skip(1)
         .take(4)
@@ -165,7 +163,7 @@ if ($env:PATHMUX_PACKAGE_PRIMARY -eq '1') {
 exit 0
 "#;
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn encoded_script(script: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(
@@ -348,8 +346,11 @@ mod tests {
     #[test]
     fn runtime_preferences_sync_does_not_copy_permissions_accounts_or_other_state() {
         let temp = tempfile::tempdir().unwrap();
-        let primary = temp.path().join("primary.json");
-        let profile = temp.path().join("profile.json");
+        // macOS exposes its temporary directory through the /var system alias.
+        // Keep the fixture on the physical path so it obeys managed-path checks.
+        let root = temp.path().canonicalize().unwrap();
+        let primary = root.join("primary.json");
+        let profile = root.join("profile.json");
         storage::write_json(&primary, &serde_json::json!({
             "electron-windows-primary-runtime-frameworks-enabled": true,
             "electron-windows-core-runtime-frameworks-enabled": false,
@@ -379,7 +380,7 @@ mod tests {
         );
         assert_eq!(state["approvals_reviewer"], "user");
         assert_eq!(state["private-account-state"], "profile-only");
-        sync_runtime_preferences(&profile, &temp.path().join("missing.json")).unwrap();
+        sync_runtime_preferences(&profile, &root.join("missing.json")).unwrap();
         assert_eq!(
             storage::read_json::<serde_json::Value>(&profile).unwrap(),
             state
