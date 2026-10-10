@@ -12,6 +12,8 @@ mod bridge;
 mod discovery;
 mod history;
 mod launcher;
+#[cfg(windows)]
+pub use launcher::run_package_worker;
 #[cfg(target_os = "macos")]
 mod macos_windows;
 mod process;

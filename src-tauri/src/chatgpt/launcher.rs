@@ -158,7 +158,7 @@ if ($entries.Count -ne 1) { throw 'Selected executable does not match a register
 if ($env:PATHMUX_PACKAGE_PRIMARY -eq '1') {
  Start-Process -FilePath ('shell:AppsFolder\'+$package.PackageFamilyName+'!'+$entries[0].Id)
 } else {
- Invoke-CommandInDesktopPackage -PackageFamilyName $package.PackageFamilyName -AppId $entries[0].Id -Command $env:PATHMUX_PACKAGE_POWERSHELL -Args ('-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand '+$env:PATHMUX_PACKAGE_WORKER) -PreventBreakaway -ErrorAction Stop
+ Invoke-CommandInDesktopPackage -PackageFamilyName $package.PackageFamilyName -AppId $entries[0].Id -Command $env:PATHMUX_PACKAGE_LAUNCHER -Args ('--chatgpt-package-worker '+$env:PATHMUX_PACKAGE_WORKER) -PreventBreakaway -ErrorAction Stop
 }
 exit 0
 "#;
@@ -181,12 +181,64 @@ fn packaged_command(
     primary: bool,
     target: &Path,
 ) -> Result<Command, String> {
+    packaged_command_with_scripts(original, root, primary, target, ACTIVATE, WORKER)
+}
+
+#[cfg(windows)]
+fn package_worker_command(script: &str) -> Result<Command, String> {
+    use base64::Engine;
+    // Enter before Tauri initialization. The GUI executable receives package
+    // identity without allocating a console and starts the isolated script
+    // with CREATE_NO_WINDOW, rather than hiding an already created terminal.
+    if script.len() > 30_000 {
+        return Err("实例启动参数过长".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(script)
+        .map_err(|_| "实例启动参数无效")?;
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return Err("实例启动参数无效".into());
+    }
+    let shell = PathBuf::from(std::env::var_os("SystemRoot").ok_or("无法定位 Windows 系统目录")?)
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut command = Command::new(shell);
+    command.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", script]);
+    process::quiet(&mut command);
+    Ok(command)
+}
+
+#[cfg(windows)]
+pub fn run_package_worker(script: &str) -> Result<i32, String> {
+    let status = package_worker_command(script)?
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("无法启动实例后台助手：{e}"))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(windows)]
+fn packaged_command_with_scripts(
+    original: Command,
+    root: &Path,
+    primary: bool,
+    target: &Path,
+    activation: &str,
+    worker: &str,
+) -> Result<Command, String> {
     use base64::Engine;
     let shell = PathBuf::from(std::env::var_os("SystemRoot").ok_or("无法定位 Windows 系统目录")?)
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     if !shell.is_file() {
         return Err("无法定位 Windows 应用启动组件，请从系统程序列表打开 ChatGPT".into());
     }
+    let launcher = std::env::current_exe().map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    let launcher = PathBuf::from(
+        std::env::var_os("PATHMUX_PACKAGE_TEST_LAUNCHER")
+            .unwrap_or_else(|| launcher.into_os_string()),
+    );
     let env: std::collections::BTreeMap<_, _> = original
         .get_envs()
         .filter_map(|(key, value)| {
@@ -214,15 +266,15 @@ fn packaged_command(
             "-WindowStyle",
             "Hidden",
             "-EncodedCommand",
-            &encoded_script(ACTIVATE),
+            &encoded_script(activation),
         ])
         .env("PATHMUX_PACKAGE_ROOT", root)
         .env("PATHMUX_PACKAGE_TARGET", target)
         .env("PATHMUX_PACKAGE_PRIMARY", if primary { "1" } else { "0" })
-        .env("PATHMUX_PACKAGE_POWERSHELL", &shell)
+        .env("PATHMUX_PACKAGE_LAUNCHER", launcher)
         .env(
             "PATHMUX_PACKAGE_WORKER",
-            encoded_script(&WORKER.replace("__PAYLOAD__", &payload)),
+            encoded_script(&worker.replace("__PAYLOAD__", &payload)),
         );
     for (key, value) in original.get_envs() {
         match value {
@@ -237,6 +289,7 @@ fn packaged_command(
     if let Some(dir) = original.get_current_dir() {
         command.current_dir(dir);
     }
+    process::quiet(&mut command);
     Ok(command)
 }
 
@@ -322,6 +375,8 @@ mod tests {
         }
         assert!(ACTIVATE.contains("shell:AppsFolder"));
         assert!(ACTIVATE.contains("-PreventBreakaway"));
+        assert!(ACTIVATE.contains("-Command $env:PATHMUX_PACKAGE_LAUNCHER"));
+        assert!(!ACTIVATE.contains("-Command $env:PATHMUX_PACKAGE_POWERSHELL"));
     }
     #[test]
     fn non_store_and_macos_launches_keep_original_arguments_and_environment() {
@@ -384,6 +439,97 @@ mod tests {
         assert_eq!(
             storage::read_json::<serde_json::Value>(&profile).unwrap(),
             state
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires a registered official Store app; probes helpers without opening ChatGPT"]
+    fn native_package_helpers_do_not_allocate_terminal_windows() {
+        use base64::Engine;
+        use std::time::{Duration, Instant};
+        let exe = PathBuf::from(
+            std::env::var_os("PATHMUX_PACKAGE_TEST_EXE").expect("set installed app path"),
+        );
+        let root = package_root(&exe).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = PathBuf::from(
+            std::env::var_os("PATHMUX_PACKAGE_TEST_LAUNCHER").expect("set built GUI helper path"),
+        );
+        let image = fs::read(&launcher).unwrap();
+        let pe_offset = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
+        let subsystem_offset = pe_offset + 4 + 20 + 68;
+        assert_eq!(
+            u16::from_le_bytes(
+                image[subsystem_offset..subsystem_offset + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            2,
+            "package activation must target a GUI executable"
+        );
+        let outer = temp.path().join("outer.json");
+        let inner = temp.path().join("inner.json");
+        let probe = |path: &Path| {
+            let path =
+                base64::engine::general_purpose::STANDARD.encode(path.to_string_lossy().as_bytes());
+            format!(
+                r#"
+Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class ConsoleProbe{{[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();}}'
+@{{console=[ConsoleProbe]::GetConsoleWindow().ToInt64()}} | ConvertTo-Json -Compress | Set-Content -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{path}'))) -Encoding UTF8
+"#
+            )
+        };
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut original = Command::new(shell);
+        original.args(["-NoProfile", "-NonInteractive", "-Command", "exit 0"]);
+        process::configure(&mut original, temp.path());
+        let mut command = packaged_command_with_scripts(
+            original,
+            &root,
+            false,
+            &exe,
+            &format!("{}{}", probe(&outer), ACTIVATE),
+            &format!("{}{}", probe(&inner), WORKER),
+        )
+        .unwrap();
+        // Use the launch call site's plain spawn: quiet() here would conceal
+        // a missing console-creation flag on the returned activation command.
+        let mut child = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !inner.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let read = |path: &Path| -> serde_json::Value {
+            let text = fs::read_to_string(path).expect("console probe did not finish");
+            serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap()
+        };
+        let outer_console = read(&outer)["console"].as_i64().unwrap();
+        let inner_console = read(&inner)["console"].as_i64().unwrap();
+        assert_eq!(
+            (outer_console, inner_console),
+            (0, 0),
+            "launch helpers allocated terminal windows: outer={outer_console}, inner={inner_console}"
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn package_worker_rejects_invalid_or_oversized_encoded_scripts() {
+        for invalid in ["", "not-base64", "YQ=="] {
+            assert!(package_worker_command(invalid).is_err());
+        }
+        assert!(package_worker_command(&"A".repeat(30_001)).is_err());
+        let valid = encoded_script("exit 0");
+        let command = package_worker_command(&valid).unwrap();
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["-NoProfile", "-NonInteractive", "-EncodedCommand", &valid]
         );
     }
     #[cfg(windows)]

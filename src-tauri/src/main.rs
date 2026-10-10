@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -3415,6 +3415,18 @@ async fn usage_stats() -> Result<UsageStats, String> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    {
+        let mut worker_args = std::env::args();
+        let _ = worker_args.next();
+        if worker_args.next().as_deref() == Some("--chatgpt-package-worker") {
+            let result = match (worker_args.next(), worker_args.next()) {
+                (Some(script), None) => chatgpt::run_package_worker(&script),
+                _ => Err("实例后台助手启动参数无效".into()),
+            };
+            std::process::exit(result.unwrap_or(1));
+        }
+    }
     let mut bridge_args = std::env::args_os();
     let _ = bridge_args.next();
     if bridge_args.next().as_deref() == Some(std::ffi::OsStr::new("--chatgpt-api-bridge")) {
