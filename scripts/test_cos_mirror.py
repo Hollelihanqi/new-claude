@@ -158,6 +158,99 @@ class MirrorTests(unittest.TestCase):
 
 
 class MultipartTests(unittest.TestCase):
+    def test_persistent_failure_aborts_without_completing_or_uploading_later_parts(self):
+        class ServiceError(Exception):
+            def __init__(self, status):
+                self.status = status
+
+            def get_status_code(self):
+                return self.status
+
+        class Client:
+            def __init__(self, failure):
+                self.failure = failure
+                self.calls = []
+                self.aborted = False
+                self.completed = False
+
+            def head_object(self, **kwargs):
+                raise ServiceError(404)
+
+            def create_multipart_upload(self, **kwargs):
+                return {"UploadId": "test-upload"}
+
+            def upload_part(self, **kwargs):
+                self.calls.append(kwargs["PartNumber"])
+                raise self.failure
+
+            def abort_multipart_upload(self, **kwargs):
+                self.aborted = True
+
+            def complete_multipart_upload(self, **kwargs):
+                self.completed = True
+
+        for failure, attempts in ((TimeoutError("write timeout"), 3),
+                                  (ServiceError(503), 3), (ServiceError(403), 1),
+                                  (RuntimeError("invalid part"), 1)):
+            with self.subTest(error=type(failure).__name__, attempts=attempts), \
+                    tempfile.TemporaryDirectory() as temp, patch.dict(
+                        sys.modules, {"qcloud_cos": types.SimpleNamespace(
+                            CosServiceError=ServiceError, CosClientError=TimeoutError
+                        )}
+                    ), patch("cos_mirror.PART_SIZE", 4), patch("cos_mirror.time.sleep"):
+                path = Path(temp) / "installer.dmg"
+                path.write_bytes(b"abcdefgh")
+                store = CosStore.__new__(CosStore)
+                store.bucket = "test-bucket"
+                store.client = Client(failure)
+                with self.assertRaises(type(failure)):
+                    store.put_immutable_file("pathmux/releases/v3.2.0/installer.dmg", path, 8, sha256(path.read_bytes()))
+                self.assertEqual(store.client.calls, [1] * attempts)
+                self.assertTrue(store.client.aborted)
+                self.assertFalse(store.client.completed)
+
+    def test_timeout_retries_only_the_failed_part_with_identical_bytes(self):
+        class Missing(Exception):
+            def get_status_code(self):
+                return 404
+
+        class ClientError(Exception):
+            pass
+
+        class Client:
+            def __init__(self):
+                self.calls = []
+                self.completed = None
+
+            def head_object(self, **kwargs):
+                raise Missing()
+
+            def create_multipart_upload(self, **kwargs):
+                return {"UploadId": "test-upload"}
+
+            def upload_part(self, **kwargs):
+                self.calls.append((kwargs["PartNumber"], kwargs["Body"]))
+                if len(self.calls) == 1:
+                    raise ClientError("write operation timed out")
+                return {"ETag": str(kwargs["PartNumber"])}
+
+            def complete_multipart_upload(self, **kwargs):
+                self.completed = kwargs["MultipartUpload"]["Part"]
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            sys.modules, {"qcloud_cos": types.SimpleNamespace(
+                CosServiceError=Missing, CosClientError=ClientError
+            )}
+        ), patch("cos_mirror.PART_SIZE", 4), patch("cos_mirror.time.sleep"):
+            path = Path(temp) / "installer.dmg"
+            path.write_bytes(b"abcdefghijkl")
+            store = CosStore.__new__(CosStore)
+            store.bucket = "test-bucket"
+            store.client = Client()
+            store.put_immutable_file("pathmux/releases/v3.2.0/installer.dmg", path, 12, sha256(path.read_bytes()))
+            self.assertEqual(store.client.calls, [(1, b"abcd"), (1, b"abcd"), (2, b"efgh"), (3, b"ijkl")])
+            self.assertEqual([part["PartNumber"] for part in store.client.completed], [1, 2, 3])
+
     def test_large_file_parts_are_ordered_and_completed(self):
         class Missing(Exception):
             def get_status_code(self):
@@ -183,7 +276,7 @@ class MultipartTests(unittest.TestCase):
                 self.completed = kwargs["MultipartUpload"]["Part"]
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(
-            sys.modules, {"qcloud_cos": types.SimpleNamespace(CosServiceError=Missing)}
+            sys.modules, {"qcloud_cos": types.SimpleNamespace(CosServiceError=Missing, CosClientError=TimeoutError)}
         ), patch("cos_mirror.PART_SIZE", 4):
             path = Path(temp) / "installer.dmg"
             path.write_bytes(b"abcdefghijkl")
@@ -216,7 +309,7 @@ class MultipartTests(unittest.TestCase):
                 self.aborted = True
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(
-            sys.modules, {"qcloud_cos": types.SimpleNamespace(CosServiceError=Missing)}
+            sys.modules, {"qcloud_cos": types.SimpleNamespace(CosServiceError=Missing, CosClientError=TimeoutError)}
         ), patch("cos_mirror.PART_SIZE", 4):
             path = Path(temp) / "installer.dmg"
             path.write_bytes(b"abcdefgh")

@@ -13,7 +13,7 @@ import json
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import Request, urlopen
@@ -22,7 +22,8 @@ from urllib.request import Request, urlopen
 PREFIX = "pathmux"
 NO_CACHE = "no-store, no-cache, must-revalidate, max-age=0"
 IMMUTABLE = "public, max-age=31536000, immutable"
-PART_SIZE = 5 * 1024 * 1024
+PART_SIZE = 1024 * 1024
+PART_ATTEMPTS = 3
 TAG_PATTERN = re.compile(r"v(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -107,8 +108,8 @@ class CosStore:
         self.client = CosS3Client(CosConfig(
             Region=region, SecretId=os.environ["TENCENT_COS_SECRET_ID"],
             SecretKey=os.environ["TENCENT_COS_SECRET_KEY"], Scheme="https",
-            Timeout=120,
-        ))
+            Timeout=45,
+        ), retry=1)
 
     def read(self, key):
         from qcloud_cos import CosServiceError
@@ -171,22 +172,19 @@ class CosStore:
         )
         upload_id = response["UploadId"]
         try:
-            futures = {}
-            with ThreadPoolExecutor(max_workers=3) as pool, path.open("rb") as source:
+            parts = []
+            total_parts = (size + PART_SIZE - 1) // PART_SIZE
+            with path.open("rb") as source:
                 part_number = 0
                 while chunk := source.read(PART_SIZE):
                     part_number += 1
-                    future = pool.submit(
-                        self.client.upload_part, Bucket=self.bucket, Key=key,
+                    result = self.upload_part_with_retry(
+                        Bucket=self.bucket, Key=key,
                         Body=chunk, PartNumber=part_number, UploadId=upload_id,
                         EnableMD5=True,
                     )
-                    futures[future] = part_number
-                parts = []
-                for future in as_completed(futures):
-                    number = futures[future]
-                    parts.append({"PartNumber": number, "ETag": future.result()["ETag"]})
-                    print(f"Uploaded {key} part {number}/{part_number}", flush=True)
+                    parts.append({"PartNumber": part_number, "ETag": result["ETag"]})
+                    print(f"Uploaded {key} part {part_number}/{total_parts}", flush=True)
             self.client.complete_multipart_upload(
                 Bucket=self.bucket, Key=key, UploadId=upload_id,
                 MultipartUpload={"Part": sorted(parts, key=lambda part: part["PartNumber"])},
@@ -199,6 +197,22 @@ class CosStore:
             except Exception:
                 pass
             raise
+
+    def upload_part_with_retry(self, **kwargs):
+        from qcloud_cos import CosClientError, CosServiceError
+        # Serial 1 MiB requests reduce stalled writes on the cross-border route.
+        # Retry the same immutable bytes and upload ID; never restart good parts.
+        for attempt in range(PART_ATTEMPTS):
+            try:
+                return self.client.upload_part(**kwargs)
+            except (CosClientError, CosServiceError) as error:
+                transient = (isinstance(error, CosClientError)
+                             or error.get_status_code() in (429, 500, 502, 503, 504))
+                if not transient or attempt == PART_ATTEMPTS - 1:
+                    raise
+                print(f"Retrying {kwargs['Key']} part {kwargs['PartNumber']} "
+                      f"(attempt {attempt + 2}/{PART_ATTEMPTS})", flush=True)
+                time.sleep(2 ** attempt)
 
 
 def public_digest(url):

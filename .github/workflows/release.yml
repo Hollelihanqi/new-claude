@@ -239,6 +239,8 @@ jobs:
           tagName: ${{ needs.channel.outputs.tag }}
           releaseName: "PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
           releaseBody: |
+            国内发布镜像改用串行 1MiB 分片上传；上传超时和临时服务错误有限重试同一分片，永久错误及时停止并撤销未完成上传。保留原有签名、不可变文件与公开下载完整校验，全部通过后才公开版本。
+
             修复 Windows 启动 ChatGPT 独立实例时弹出 PowerShell / Windows Terminal 窗口：外层命令禁止创建终端；包内先启动不带终端的 PathMux 助手，再以禁止创建终端的方式运行原有隔离脚本，保留应用身份与独立目录。开发版也使用 Windows GUI 入口。
 
             修复 Windows 商店版 ChatGPT 启动环境：主程序通过系统应用入口打开，独立实例保留应用包身份和独立数据目录；启动后核验实际进程身份与可见窗口。macOS 与非商店客户端保留原有启动方式。
