@@ -15,6 +15,16 @@ const STATUS = {
   error: "需要处理",
 };
 
+function accountLabel(profile: ChatGptProfile): { label: string; detail: string } {
+  if (profile.api?.active) return { label: "API 模式", detail: "使用此实例的 API 配置，无法通过 API Key 识别账号邮箱。" };
+  switch (profile.account?.status) {
+    case "chatgpt": return { label: profile.account.email, detail: `本地保存的账号：${profile.account.email}。授权是否有效以官方客户端为准。` };
+    case "apiKey": return { label: "API Key 登录", detail: "官方客户端保存了 API Key，无法据此识别账号邮箱。" };
+    case "signedOut": return { label: "未登录", detail: "点击「启动」，在官方窗口完成账号登录后刷新。" };
+    default: return { label: "账号暂不可读取", detail: "请在官方窗口确认账号，再点击「刷新」。" };
+  }
+}
+
 const DELETE_BLOCKED: Partial<Record<ChatGptProfile["status"], string>> = {
   running: "实例窗口仍在运行，暂时不能删除。请先点击「关闭」，完全退出后再删除。",
   background: "实例仍在后台运行，暂时不能删除。请先点击「关闭」，完全退出后再删除。",
@@ -254,13 +264,17 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
 
     {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="独立实例">
       <Title order={4}>独立实例</Title>
+      <Text size="xs" c="dimmed" className="chatgpt-login-hint">账号登录：启动实例，在官方窗口选择账号登录；完成后点击「刷新」查看邮箱。API 模式需先关闭实例，在「API 配置」中切回账号登录。</Text>
       <div className="chatgpt-profile-list">
       {profiles.map((p) => { const diagnostic = diagnostics[p.id]; const tone = p.status === "stopped" ? !diagnostic || diagnostic.pending ? "checking" : diagnostic.healthy ? "healthy" : "warning" : p.status; return <div key={p.id} className="chatgpt-profile" data-profile-tone={tone}>
         <div className="chatgpt-profile-top">
           <div className="chatgpt-profile-main">
             <span className="chatgpt-profile-icon"><IconBrandOpenai size={23} /></span>
             <div className="chatgpt-profile-copy">
-              <Text fw={700} className="chatgpt-profile-name">{p.name}</Text>
+              <div className="chatgpt-profile-heading">
+                <Text fw={700} className="chatgpt-profile-name">{p.name}</Text>
+                <Text size="xs" c="dimmed" className="chatgpt-profile-account" title={accountLabel(p).detail}>{accountLabel(p).label}</Text>
+              </div>
               {p.api && <Text size="xs" c="dimmed" className="chatgpt-profile-api-mode">{p.api.active ? `API · ${p.api.model}` : "账号登录 · API 配置已保存"}</Text>}
             </div>
           </div>

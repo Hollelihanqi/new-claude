@@ -8,6 +8,7 @@ export interface ChatGptProfile {
   status: "running" | "background" | "stopped" | "closing" | "error";
   pid: number | null;
   issue: string | null;
+  account?: { status: "chatgpt"; email: string } | { status: "apiKey" | "signedOut" | "unavailable" };
   api?: { baseUrl: string; model: string; models?: { id: string; name: string }[]; hasKey: boolean; active: boolean; compatibilityEnabled?: boolean } | null;
 }
 
@@ -30,6 +31,7 @@ export interface ChatGptHistoryItem {
   key: string;
   threadId: string;
   title: string;
+  summary?: string;
   workspace: string;
   revision: string;
   bytes: number;
@@ -42,6 +44,12 @@ export interface ChatGptHistory {
   items: ChatGptHistoryItem[];
   warnings: string[];
   complete: boolean;
+}
+
+export interface ChatGptConversation {
+  key: string; title: string; workspace: string; threadId: string; modifiedAt: number;
+  messages: { role: "user" | "assistant"; text: string; timestamp: string | null }[];
+  truncated: boolean;
 }
 
 export interface ChatGptTransferRequest {
@@ -621,6 +629,7 @@ export const api = {
   chatGptProfileAction: (id: string, action: ChatGptAction): Promise<ChatGptState> =>
     invoke("chatgpt_profile_action", { request: { id, action } }),
   chatGptHistory: (sourceId: string): Promise<ChatGptHistory> => invoke("chatgpt_history", { sourceId }),
+  chatGptConversation: (sourceId: string, key: string, revision: string): Promise<ChatGptConversation> => invoke("chatgpt_conversation", { sourceId, key, revision }),
   chatGptTransfer: (request: ChatGptTransferRequest): Promise<ChatGptTransferResult> => invoke("chatgpt_transfer", { request }),
   listProfiles: (): Promise<Profile[]> => invoke("list_profiles"),
   saveProfile: (

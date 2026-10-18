@@ -3527,6 +3527,7 @@ fn main() {
             chatgpt::chatgpt_set_api_compatibility,
             chatgpt::chatgpt_profile_action,
             chatgpt::chatgpt_history,
+            chatgpt::chatgpt_conversation,
             chatgpt::chatgpt_transfer,
             chatgpt::chatgpt_open_thread,
             chatgpt::chatgpt_preview,

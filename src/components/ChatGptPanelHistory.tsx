@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Checkbox, Group, Modal, Select, Stack, Text, TextInput, Title } from "@mantine/core";
-import { IconHistory, IconLoader2 } from "@tabler/icons-react";
+import { IconArrowRight, IconChevronDown, IconCopy, IconHistory, IconLoader2, IconRefresh, IconSearch, IconSettings, IconUser, IconRobot } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type ChatGptState, type ChatGptHistory, type ChatGptPreview, type ChatGptTransferRequest, type ChatGptPending, type ChatGptJob } from "../api";
+import { api, type ChatGptConversation, type ChatGptState, type ChatGptHistory, type ChatGptPreview, type ChatGptTransferRequest, type ChatGptPending, type ChatGptJob } from "../api";
 
 export default function ChatGptPanelHistory({ state, active, initialCopy, coordinate }: {
   state: ChatGptState; active: boolean; initialCopy: { source: string | null; target: string } | null; coordinate: (operation: () => Promise<void>) => Promise<void>;
@@ -14,6 +14,14 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
   const [scope, setScope] = useState<"selected" | "project" | "all">("selected");
   const [project, setProject] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const [conversation, setConversation] = useState<ChatGptConversation | null>(null);
+  const [conversationError, setConversationError] = useState("");
+  const [conversationLoading, setConversationLoading] = useState(false);
+  const [conversationRetry, setConversationRetry] = useState(0);
+  const [openAfterCopy, setOpenAfterCopy] = useState(false);
+  const [settingsOpened, setSettingsOpened] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(50);
   const [loadedPair, setLoadedPair] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [busy, setBusy] = useState("");
@@ -31,7 +39,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
 
   async function load(sourceId: string | null) {
     const generation = ++historyGen.current;
-    setSource(sourceId); if (sourceId !== source) { setSelected([]); setProject(null); } setPreviews(null); setHistory(null); setError("");
+    setSource(sourceId); if (sourceId !== source) { setSelected([]); setProject(null); } setPreviews(null); setHistory(null); setFocusedKey(null); setConversation(null); setQuery(""); setVisibleLimit(50); setError("");
     if (!sourceId) return;
     try {
       const value = await api.chatGptHistory(sourceId);
@@ -40,7 +48,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
   }
   async function loadTarget(targetId: string | null) {
     const generation = ++targetGen.current;
-    setTarget(targetId); setPending([]); setJobs([]);
+    setTarget(targetId); setPending([]); setJobs([]); if (targetId !== target) setOpenAfterCopy(false);
     if (!targetId) return;
     try {
       const [p, j] = await Promise.all([api.chatGptPending(targetId), api.chatGptBatchList(targetId)]);
@@ -74,6 +82,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
     try {
       const saved = JSON.parse(localStorage.getItem(`pathmux:chatgpt-sync:${pair}`) ?? "null");
       setScope(["selected", "project", "all"].includes(saved?.scope) ? saved.scope : "selected");
+      setSettingsOpened(saved?.scope === "project" || saved?.scope === "all");
       setProject(typeof saved?.project === "string" ? saved.project : null);
       setSelected(Array.isArray(saved?.selected) ? saved.selected.filter((key: unknown) => typeof key === "string").slice(0,100) : []);
     } catch { setScope("selected"); setProject(null); setSelected([]); }
@@ -99,20 +108,22 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
     });
   }
   const actionPending = (label: string) => pendingActions.includes(label);
-  const locked = !!busy;
+  const locked = !!busy || previews !== null || confirmClosingTarget !== null;
   const sourceProfile = state.profiles.find(p => p.id === source);
   const targetProfile = state.profiles.find(p => p.id === target);
-  const ready = !!source && !!targetProfile && source !== target && targetProfile.status === "stopped"
-    && !!state.installation?.compatible && !!state.installation.cli;
   const request = (key: string, fingerprint?: string): ChatGptTransferRequest => ({ sourceId: source!, targetId: target!, key,
     revision: history!.items.find(i => i.key === key)!.revision, ...(workspace.trim() ? { workspace: workspace.trim() } : {}), ...(fingerprint ? { fingerprint } : {}) });
 
   async function inspect(keys: string[]) {
-    await run(`检查记录与附件:${keys.join(",")}`, async () => {
-      if (!ready || keys.length === 0 || keys.length > 100) return;
+    await run("检查复制范围", async () => {
+      if (!source || !target || source === target || keys.length === 0) return;
       const results = [];
-      for (const key of keys) results.push(await api.chatGptPreview(request(key)));
-      if (alive.current) { setSelected(keys); setPreviews(results); }
+      for (let index = 0; index < keys.length; index++) {
+        if (stop.current || !alive.current) return;
+        setBusy(`正在检查 ${index + 1}/${keys.length}`);
+        results.push(await api.chatGptPreview(request(keys[index])));
+      }
+      if (alive.current && !stop.current) { setSelected(keys); setPreviews(results); }
     });
   }
   async function drive(job: ChatGptJob): Promise<ChatGptJob> {
@@ -131,29 +142,30 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
   const projects = [...new Set(history?.items.map(i => i.workspace).filter(Boolean) ?? [])].sort();
   const scopeItems = scope === "selected" ? history?.items.filter(i => selected.includes(i.key)) ?? []
     : scope === "project" ? history?.items.filter(i => i.workspace === project) ?? [] : history?.items ?? [];
-  const visibleItems = (history?.items ?? []).filter(i => !query || `${i.title} ${i.workspace}`.toLowerCase().includes(query.toLowerCase()));
-  async function syncAndSwitch(confirmedTarget: string | null = null) {
-    await run("准备同步", async () => {
-      if (!source || !target || !history || source === target || !state.installation?.compatible || !state.installation.cli) return;
-      if (scope === "all" && workspace.trim()) throw new Error("全部会话包含不同项目，请清空接续项目目录后再同步。");
-      if (scope !== "selected" && !history.complete) throw new Error("记录扫描未完整完成，不能保证同步整个项目或全部记录。请先处理列表中的提示。");
-      if (scopeItems.length === 0) throw new Error("请先选择会话、项目或全部记录。");
-      const unsupported = scopeItems.filter(i => !i.transferable);
-      if (unsupported.length) throw new Error(`所选范围中有 ${unsupported.length} 条记录暂不能迁移。请改选可迁移的会话。`);
-      const current = await api.chatGptState();
-      if (current.profiles.some(p => p.id === target && (p.status === "running" || p.status === "background")) && confirmedTarget !== target) {
-        setConfirmClosingTarget(target);
-        return;
-      }
-      const plans: ChatGptTransferRequest[] = [];
-      for (let index = 0; index < scopeItems.length; index++) {
-        if (stop.current) break;
-        setBusy(`正在检查 ${index + 1}/${scopeItems.length}`);
-        const item = scopeItems[index];
-        const preview = await api.chatGptPreview(request(item.key));
-        plans.push(request(item.key, preview.fingerprint));
-      }
-      if (stop.current) { setMessage("已暂停，尚未建立新的复制队列。"); return; }
+  const visibleItems = (history?.items ?? []).filter(i => !query || `${i.title} ${i.summary ?? ""} ${i.workspace}`.toLowerCase().includes(query.toLowerCase()));
+  const focusedItem = visibleItems.find(item => item.key === focusedKey);
+  const previewItem = focusedItem ?? visibleItems[0];
+  useEffect(() => {
+    let cancelled = false;
+    setConversation(null); setConversationError("");
+    if (!active || !source || !previewItem) { setConversationLoading(false); return; }
+    setConversationLoading(true);
+    api.chatGptConversation(source, previewItem.key, previewItem.revision).then(value => {
+      if (!cancelled && alive.current) setConversation(value);
+    }).catch(error => { if (!cancelled && alive.current) setConversationError(String(error)); })
+      .finally(() => { if (!cancelled && alive.current) setConversationLoading(false); });
+    return () => { cancelled = true; };
+  }, [active, source, previewItem?.key, previewItem?.revision, conversationRetry]);
+  const profileLabel = (id: string) => {
+    const profile = state.profiles.find(p => p.id === id);
+    return profile ? `${profile.name}${profile.api?.active ? " · API 模式" : profile.account?.status === "chatgpt" ? ` · ${profile.account.email}` : ""}` : "";
+  };
+  const projectName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "未关联项目";
+  const displayTitle = (item: NonNullable<typeof previewItem>) => item.title === "未命名会话" ? `未命名会话 · ${new Date(item.modifiedAt * 1000).toLocaleString()}` : item.title;
+  async function copySelected(confirmedTarget: string | null = null) {
+    await run("准备复制", async () => {
+      if (!source || !target || !history || !previews || source === target || !state.installation?.compatible || !state.installation.cli) return;
+      const plans = previews.map(preview => request(preview.key, preview.fingerprint));
       const latest = await api.chatGptState();
       const status = latest.profiles.find(p => p.id === target)?.status;
       if (status === "running" || status === "background") {
@@ -177,56 +189,98 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
         const job = await api.chatGptBatchCreate(plans.slice(offset, offset + 100));
         const completed = await drive(job);
         if (completed.lastError || stop.current || completed.outcomes.length < completed.requests.length) {
-          throw new Error("同步已暂停。复制队列已保存，可从下方继续；目标实例尚未打开。");
+          throw new Error("复制已暂停。复制队列已保存，可从下方继续；目标实例尚未打开。");
         }
         const failed = completed.outcomes.filter(o => o.error);
-        if (failed.length) throw new Error(`${failed.length} 条会话同步失败。请查看复制队列；目标实例尚未打开。`);
+        if (failed.length) throw new Error(`${failed.length} 条会话复制失败。请查看复制队列；目标实例尚未打开。`);
         copied += completed.outcomes.length;
         openId ??= completed.outcomes.find(o => o.result)?.result?.targetThreadId ?? null;
       }
-      if (!openId) throw new Error("未能找到可打开的目标会话。");
-      setBusy("正在打开目标会话");
-      await api.chatGptOpenThread(target, openId);
-      setMessage(`已同步 ${copied} 条本地会话，并在目标账号中打开最近的一条。源账号和原记录保持完整。`);
+      setPreviews(null);
+      if (openAfterCopy && openId) {
+        setBusy("正在打开目标会话");
+        try { await api.chatGptOpenThread(target, openId); }
+        catch (error) { throw new Error(`已复制 ${copied} 条会话，但打开目标会话失败：${String(error)}。副本已保留，可手动打开目标实例。`); }
+      }
+      setMessage(`已复制 ${copied} 条会话到${targetProfile?.name ?? "目标实例"}${openAfterCopy && openId ? "，并打开一条目标会话" : ""}。来源记录保留。`);
     });
   }
   const unfinished = jobs.filter(j => !j.cancelled && j.outcomes.length < j.requests.length);
-  return <section className="chatgpt-history" aria-label="跨账号会话同步"><Stack gap="md">
-    <div className="chatgpt-history-heading"><Title order={4}>跨账号会话同步</Title>
-      <Text size="sm" c="dimmed" mt={3}>选择来源与目标，复制本地工作记录。云端聊天与实时同步暂不支持。</Text>
+  const canInspect = !!source && !!target && source !== target && !!history && scopeItems.length > 0
+    && scopeItems.every(item => item.transferable) && !!state.installation?.compatible && !!state.installation.cli
+    && (scope === "selected" || !!history.complete) && !(scope === "all" && !!workspace.trim());
+  return <section className="chatgpt-history" aria-label="复制会话"><Stack gap="md">
+    <div className="chatgpt-history-heading"><Title order={4}>复制会话</Title>
+      <Text size="sm" c="dimmed" mt={3}>把本地对话复制到另一个实例，继续处理工作。普通云端聊天不包含在此列表中。</Text>
     </div>
     {error && <Alert role="alert" color="red">{error}</Alert>}
     {message && <Alert role="status" color="teal">{message}</Alert>}
-    <div className="chatgpt-history-grid"><div className="chatgpt-sync-options">
-    <Stack gap="sm"><Group grow align="flex-start" className="chatgpt-sync-pair">
-      <Select label="来源实例" clearable disabled={locked} value={source} data={[{ value: "default", label: "默认实例的本地 Codex 记录" }, ...state.profiles.map(p => ({ value: p.id, label: p.name }))]}
-        onChange={value => { if (value === target) void loadTarget(null); void load(value); }} />
-      <Select label="目标实例" clearable disabled={locked} value={target} data={state.profiles.filter(p => p.id !== source).map(p => ({ value: p.id, label: p.name }))} onChange={value => { setPreviews(null); void loadTarget(value); }} />
-    </Group>
-    <Group align="end" className="chatgpt-sync-directory"><TextInput label="接续项目目录（可选）" description="留空使用原目录；项目文件不会复制。" style={{ flex: 1 }} value={workspace} disabled={locked || scope === "all"} onChange={e => { setWorkspace(e.currentTarget.value); setPreviews(null); }} />
-      <Button variant="default" disabled={scope === "all"} leftSection={actionPending("选择项目目录") ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconHistory size={15} />} aria-busy={actionPending("选择项目目录")} onClick={() => void run("选择项目目录", async () => { const path = await open({ directory: true, multiple: false }); if (typeof path === "string" && alive.current) { setWorkspace(path); setPreviews(null); } })}>选择目录</Button></Group>
-    <Group grow align="flex-start" className="chatgpt-sync-scope"><Select label="同步范围" disabled={locked} value={scope} onChange={value => { setScope((value ?? "selected") as typeof scope); if (value === "all") setWorkspace(""); setPreviews(null); }} data={[{ value: "selected", label: "勾选的会话" }, { value: "project", label: "整个项目" }, { value: "all", label: "全部本地会话" }]} />
-      {scope === "project" && <Select label="选择项目" searchable disabled={locked} value={project} onChange={setProject} data={projects.map(p => ({ value: p, label: p }))} />}</Group>
-    <Button className="chatgpt-sync-primary" leftSection={actionPending("准备同步") ? <IconLoader2 size={16} className="chatgpt-button-spinner" /> : <IconHistory size={16} />} aria-busy={actionPending("准备同步")} disabled={!source || !target || !history || scopeItems.length === 0 || !state.installation?.compatible} onClick={() => void syncAndSwitch()}>同步并切换账号（{scopeItems.length} 条）</Button>
-    </Stack></div>
-    <div className="chatgpt-records"><Title order={5}>工作记录</Title>
-    {source && <Group gap="xs" className="chatgpt-record-actions"><Button size="xs" variant="subtle" onClick={() => void load(source)}>重新读取记录</Button>
-      <Button variant="subtle" disabled={!history} onClick={() => setSelected(history!.items.filter(i => i.transferable).slice(0,100).map(i => i.key))}>选择前 100 条可复制记录</Button>
-      <Button variant="subtle" onClick={() => setSelected([])}>清空选择</Button></Group>}
-    {history?.warnings.map(w => <Text key={w} size="xs" c="dimmed">{w}</Text>)}
-    {!source && <div className="chatgpt-records-placeholder"><span className="chatgpt-records-placeholder-icon"><IconHistory size={24} /></span><Text size="sm" c="dimmed">选择来源实例后，在这里查看会话。</Text></div>}
-    {source && !history && !error && <Text role="status">正在读取工作记录…</Text>}
-    {history?.items.length === 0 && <Text c="dimmed">没有可复制的本地 Codex 工作记录。普通 ChatGPT 聊天不会出现在这里。</Text>}
-    {history && <TextInput label="查找会话" placeholder="标题或项目路径" value={query} disabled={locked} onChange={e => setQuery(e.currentTarget.value)} />}
-    {source && <div className="chatgpt-record-list">{visibleItems.slice(0,200).map(item => <Card key={item.key} className="chatgpt-record-row" p="sm"><Group justify="space-between" wrap="nowrap">
-      <Checkbox label={item.title} description={`${new Date(item.modifiedAt * 1000).toLocaleString()} · ${item.workspace} · ${item.detail}`} checked={selected.includes(item.key)} disabled={locked || !item.transferable || (!selected.includes(item.key) && selected.length >= 100)}
-        onChange={e => { const checked = e.currentTarget.checked; setSelected(old => checked ? [...old,item.key] : old.filter(k => k !== item.key)); setPreviews(null); }} />
-      <Button size="xs" variant="light" aria-busy={actionPending(`检查记录与附件:${item.key}`)} disabled={!ready || !item.transferable} onClick={() => void inspect([item.key])}>复制到目标</Button>
-    </Group></Card>)}</div>}
-    {visibleItems.length > 200 && <Text size="sm" c="dimmed">列表只渲染前 200 条。可用项目或全部范围同步其余记录，也可搜索具体会话。</Text>}
-    {(selected.length > 0 || busy) && <Group className="chatgpt-record-footer">{selected.length > 0 && <Button aria-busy={actionPending(`检查记录与附件:${selected.join(",")}`)} disabled={!ready} onClick={() => void inspect(selected)}>预览选中的 {selected.length} 条记录</Button>}{busy && <Text role="status" size="sm">{busy}</Text>}</Group>}
-    {source && target && !ready && <Text size="sm" c="orange">单独复制需要先关闭目标实例；“同步并切换账号”会在关闭运行中的目标前请你确认。</Text>}
-    </div></div>
+    <div className="chatgpt-copy-workspace">
+      <div className="chatgpt-copy-toolbar">
+        <Select label="来源实例" placeholder="选择来源" clearable disabled={locked} value={source}
+          data={[{ value: "default", label: "默认实例的本地 Codex 记录" }, ...state.profiles.map(p => ({ value: p.id, label: profileLabel(p.id) }))]}
+          onChange={value => { if (value === target) void loadTarget(null); void load(value); }} />
+        <IconArrowRight className="chatgpt-copy-direction" size={23} aria-hidden="true" />
+        <Select label="目标实例" placeholder="选择复制到哪个实例" clearable disabled={locked} value={target}
+          data={state.profiles.filter(p => p.id !== source).map(p => ({ value: p.id, label: profileLabel(p.id) }))}
+          onChange={value => { setPreviews(null); void loadTarget(value); }} />
+        <Button className="chatgpt-copy-settings-button" variant="subtle" leftSection={<IconSettings size={17} />} rightSection={<IconChevronDown size={14} />} disabled={locked} onClick={() => setSettingsOpened(value => !value)} aria-expanded={settingsOpened}>更多设置</Button>
+      </div>
+      {settingsOpened && <div className="chatgpt-copy-settings">
+        <Select label="复制范围" description={scope !== "selected" ? "按范围复制，无需逐条勾选。" : undefined} disabled={locked} value={scope} onChange={value => { setScope((value ?? "selected") as typeof scope); if (value === "all") setWorkspace(""); setPreviews(null); }} data={[{ value: "selected", label: "勾选的会话" }, { value: "project", label: "整个项目" }, { value: "all", label: "全部本地会话" }]} />
+        {scope === "project" && <Select label="选择项目" searchable disabled={locked} value={project} onChange={setProject} data={projects.map(p => ({ value: p, label: p }))} />}
+        <Group align="end" className="chatgpt-sync-directory"><TextInput label="接续项目目录（可选）" description="留空使用原目录；项目文件不会复制。" style={{ flex: 1 }} value={workspace} disabled={locked || scope === "all"} onChange={e => { setWorkspace(e.currentTarget.value); setPreviews(null); }} />
+          <Button variant="default" disabled={locked || scope === "all"} leftSection={<IconHistory size={15} />} onClick={() => void run("选择项目目录", async () => { const path = await open({ directory: true, multiple: false }); if (typeof path === "string" && alive.current) { setWorkspace(path); setPreviews(null); } })}>选择目录</Button></Group>
+          {history?.warnings.length ? <details className="chatgpt-history-notes"><summary>记录读取说明{!history.complete ? " · 列表不完整" : ""}</summary>{history.warnings.map(w => <Text key={w} size="xs" c="dimmed">{w}</Text>)}</details> : null}
+          {history && visibleItems.some(item => item.transferable) && <Button variant="subtle" size="xs" disabled={locked} onClick={() => setSelected(visibleItems.filter(item => item.transferable).slice(0, 100).map(item => item.key))}>选择当前结果的前 100 条可复制会话</Button>}
+      </div>}
+      <div className="chatgpt-conversation-grid">
+        <div className="chatgpt-records">
+          <TextInput label="查找会话" placeholder="搜索标题、提问内容或项目" leftSection={<IconSearch size={17} />} value={query} onChange={e => { setQuery(e.currentTarget.value); setVisibleLimit(50); }} />
+          <Group justify="space-between" className="chatgpt-record-actions"><Text fw={600}>会话 · {visibleItems.length} 条</Text>
+            <Button size="xs" variant="subtle" leftSection={<IconRefresh size={15} />} disabled={!source || locked} onClick={() => void load(source)}>刷新记录</Button></Group>
+          {history && !history.complete && <Text size="xs" c="orange">列表读取不完整，请在更多设置中查看原因；暂不能复制整个项目或全部会话。</Text>}
+          {!source && <div className="chatgpt-records-placeholder"><IconHistory size={26} /><Text c="dimmed" size="sm">选择来源实例后，在这里查看会话。</Text></div>}
+          {source && !history && !error && <Text role="status">正在读取会话…</Text>}
+          {history && visibleItems.length === 0 && <Text c="dimmed" size="sm">{query ? "没有匹配的会话，请换个关键词。" : "没有可读取的本地会话。普通云端聊天不会出现在这里。"}</Text>}
+          <div className="chatgpt-record-list">{visibleItems.slice(0, visibleLimit).map((item, index) => <Fragment key={item.key}>
+            {(index === 0 || new Date(visibleItems[index - 1].modifiedAt * 1000).toDateString() !== new Date(item.modifiedAt * 1000).toDateString()) && <Text className="chatgpt-conversation-date" size="xs" c="dimmed" fw={600}>{new Date(item.modifiedAt * 1000).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })}</Text>}
+            <div className="chatgpt-conversation-row" data-focused={previewItem?.key === item.key}>
+            <Checkbox aria-label={`选择会话：${displayTitle(item)}`} checked={scope === "selected" ? selected.includes(item.key) : scopeItems.includes(item)} disabled={locked || scope !== "selected" || !item.transferable || (!selected.includes(item.key) && selected.length >= 100)}
+              onChange={e => { const checked = e.currentTarget.checked; setSelected(old => checked ? [...new Set([...old, item.key])] : old.filter(k => k !== item.key)); }} />
+            <button type="button" className="chatgpt-conversation-select" aria-label={`预览会话：${displayTitle(item)}`} aria-pressed={previewItem?.key === item.key} onClick={() => setFocusedKey(item.key)}>
+              <span className="chatgpt-conversation-title">{displayTitle(item)}</span>
+              <span className="chatgpt-conversation-summary">{item.summary || "尚未提取到有效问题，请预览后确认。"}</span>
+              <span className="chatgpt-conversation-meta"><span title={item.workspace}>{projectName(item.workspace)}</span><span>{new Date(item.modifiedAt * 1000).toLocaleString()}</span></span>
+              {!item.transferable && <span className="chatgpt-conversation-unavailable">暂不能复制：{item.detail}</span>}
+            </button>
+          </div></Fragment>)}</div>
+          {visibleItems.length > visibleLimit && <Button variant="subtle" size="xs" onClick={() => setVisibleLimit(value => value + 50)}>加载更多会话（剩余 {visibleItems.length - visibleLimit} 条）</Button>}
+        </div>
+        <div className="chatgpt-conversation-preview" aria-label="对话预览" aria-busy={conversationLoading}>
+          <Title order={5}>对话预览</Title>
+          {previewItem ? <><Text className="chatgpt-preview-title" fw={700}>{displayTitle(previewItem)}</Text>
+            <Text size="xs" c="dimmed">项目：{projectName(previewItem.workspace)} · {new Date(previewItem.modifiedAt * 1000).toLocaleString()}</Text>
+            {conversationLoading && <Text role="status" size="sm">正在读取对话正文…</Text>}
+            {conversationError && <Alert color="orange"><Text size="sm">{conversationError}</Text><Button variant="subtle" size="xs" onClick={() => setConversationRetry(value => value + 1)}>重试正文预览</Button></Alert>}
+            {conversation && <div className="chatgpt-conversation-messages">{conversation.messages.length === 0 && <Text c="dimmed" size="sm">没有提取到可显示的用户提问或回答。记录详情仍可查看。</Text>}{conversation.messages.map((item, index) => <div className="chatgpt-conversation-message" data-role={item.role} key={index}>
+              <span className="chatgpt-message-avatar" aria-hidden="true">{item.role === "user" ? <IconUser size={19} /> : <IconRobot size={19} />}</span>
+              <div className="chatgpt-message-copy"><Group gap="sm"><Text fw={600} size="sm">{item.role === "user" ? "你" : "助手"}</Text>{item.timestamp && <Text size="xs" c="dimmed">{new Date(item.timestamp).toLocaleString()}</Text>}</Group><Text size="sm" className="chatgpt-message-text">{item.text}</Text></div>
+            </div>)}{conversation.truncated && <Text size="xs" c="dimmed">正文预览仅展示前 100 条消息，每条最多 6000 字；复制时仍检查完整记录。</Text>}</div>}
+            <details className="chatgpt-record-details"><summary>记录详情</summary><Text size="xs">会话编号：{previewItem.threadId}</Text><Text size="xs">项目目录：{previewItem.workspace || "未关联项目"}</Text><Text size="xs">记录大小：{Math.ceil(previewItem.bytes / 1024)} KB</Text><Text size="xs">{previewItem.detail}</Text></details>
+          </> : <div className="chatgpt-records-placeholder"><IconHistory size={26} /><Text c="dimmed" size="sm">点击左侧会话，查看真实提问和回答。</Text></div>}
+        </div>
+      </div>
+      <div className="chatgpt-copy-footer">
+        <div className="chatgpt-copy-summary"><Group gap="sm"><Text fw={600}>已选择 {scopeItems.length} 条会话</Text>{scope !== "selected" && <Text size="xs" c="dimmed">范围：{scope === "project" ? "整个项目" : "全部本地会话"}</Text>}<Button size="compact-xs" variant="subtle" disabled={locked || selected.length === 0} onClick={() => setSelected([])}>清空选择</Button><Text size="sm" c="dimmed">目标：{targetProfile?.name ?? "未选择"}</Text></Group>
+          {query && scopeItems.some(item => !visibleItems.includes(item)) && <Text size="xs" c="orange">其中 {scopeItems.filter(item => !visibleItems.includes(item)).length} 条已选会话不在当前搜索结果中。</Text>}
+          <Text size="xs" c="dimmed">创建独立副本，来源会话保留；项目文件不会随会话复制。</Text></div>
+        <Group className="chatgpt-copy-footer-actions"><Checkbox label="复制完成后打开目标会话" checked={openAfterCopy} disabled={locked} onChange={e => setOpenAfterCopy(e.currentTarget.checked)} />
+          <Button leftSection={actionPending("检查复制范围") ? <IconLoader2 size={17} className="chatgpt-button-spinner" /> : <IconCopy size={17} />} aria-busy={actionPending("检查复制范围")} disabled={locked || !canInspect} onClick={() => void inspect(scopeItems.map(item => item.key))}>{`${scope === "selected" ? "复制所选会话" : scope === "project" ? "复制项目会话" : "复制全部会话"}（${scopeItems.length} 条）`}</Button></Group>
+        {scopeItems.some(item => !item.transferable) && <Text size="xs" c="orange" className="chatgpt-copy-progress">所选范围中有暂不能复制的会话，请调整复制范围或选择其他会话。</Text>}
+        {busy && <Text role="status" size="sm" className="chatgpt-copy-progress">{busy}</Text>}
+      </div>
+    </div>
     {target && (pending.length > 0 || unfinished.length > 0 || jobs.some(job => job.outcomes.length > 0) || busy.startsWith("正在复制") || busy.startsWith("正在检查")) && <Stack className="chatgpt-queue" gap="xs"><Group justify="space-between"><Title order={5}>复制队列与中断恢复</Title><Button size="xs" variant="subtle" onClick={() => void loadTarget(target)}>刷新队列</Button></Group>
       {pending.map(p => <Card key={p.key} className="chatgpt-queue-row" p="sm"><Text>{p.title || "未完成的副本"}</Text><Group mt="xs">
         <Button size="xs" aria-busy={actionPending(`恢复副本:${p.key}`)} disabled={targetProfile?.status !== "stopped"} onClick={() => void run(`恢复副本:${p.key}`, async () => { const value = await api.chatGptRecover(target,p.key,false); if (alive.current) setMessage(value.detail); })}>继续恢复</Button>
@@ -240,11 +294,13 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
       </details>)}
       {pending.length === 0 && unfinished.length === 0 && <Text size="sm" c="dimmed">没有未完成的复制任务。</Text>}
     </Stack>}
-    <Modal opened={active && previews !== null} onClose={() => { if (!locked) setPreviews(null); }} title="确认复制范围" centered>
+    <Modal opened={active && previews !== null && confirmClosingTarget === null} onClose={() => { if (!busy) setPreviews(null); }} title="确认复制范围" centered>
       <Stack><Text>{source === "default" ? "默认实例的本地 Codex 记录" : sourceProfile?.name} → {targetProfile?.name}</Text>
-        {previews?.map(p => <div key={p.key}><Text fw={600}>{p.title}</Text><Text size="sm">{Math.ceil(p.bytes/1024)} KB · {p.images} 张本地图片 · 项目：{p.workspace}</Text></div>)}
+        {previews?.slice(0, 10).map(p => <div key={p.key}><Text fw={600}>{p.title}</Text><Text size="sm">{Math.ceil(p.bytes/1024)} KB · {p.images} 张本地图片 · 项目：{p.workspace}</Text></div>)}
         <Text size="sm">历史与列出的图片将复制到目标实例，续聊时可能由目标账号发送处理。账号凭证及工具授权保持独立；项目文件不会随记录复制。</Text>
-        <Button aria-busy={actionPending("创建复制队列")} disabled={!ready} onClick={() => void run("创建复制队列", async () => { if (!previews) return; const job = await api.chatGptBatchCreate(previews.map(p => request(p.key,p.fingerprint))); setPreviews(null); await drive(job); })}>创建独立副本</Button>
+        {previews && previews.length > 10 && <Text size="sm">另有 {previews.length - 10} 条，共 {previews.length} 条会话。</Text>}
+        <Text size="sm">复制完成后{openAfterCopy ? "会打开目标实例中的一条会话。" : "保持目标实例关闭，可稍后手动打开。"}</Text>
+        <Button aria-busy={actionPending("准备复制")} disabled={!!busy} onClick={() => void copySelected()}>确认复制</Button>
       </Stack>
     </Modal>
     <Modal opened={active && discarding !== null} onClose={() => { if (!locked) setDiscarding(null); }} title="撤回未完成副本" centered><Stack>
@@ -252,10 +308,10 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
       <Alert color="orange">如果你曾打开并修改过这份未完成副本，撤回也会删除其中的修改。</Alert>
       <Button color="red" aria-busy={actionPending("撤回复制")} onClick={() => void run("撤回复制", async () => { if (!target || !discarding) return; const value = await api.chatGptRecover(target,discarding.key,true); setDiscarding(null); setMessage(value.detail); })}>确认撤回</Button>
     </Stack></Modal>
-    <Modal opened={active && confirmClosingTarget !== null} onClose={() => setConfirmClosingTarget(null)} title="关闭目标窗口后同步？" centered><Stack>
-      <Text>目标实例正在运行。继续会关闭它；复制成功后才会重新打开。正在进行的问答或任务可能中断，请先在目标窗口完成当前工作。</Text>
+    <Modal opened={active && confirmClosingTarget !== null} onClose={() => setConfirmClosingTarget(null)} title="关闭目标窗口后复制？" centered><Stack>
+      <Text>目标实例正在运行。复制前需要关闭它；是否在完成后打开由你勾选的选项决定。正在进行的问答或任务可能中断，请先在目标窗口完成当前工作。</Text>
       <Group justify="flex-end"><Button variant="default" onClick={() => setConfirmClosingTarget(null)}>暂不关闭</Button>
-        <Button color="orange" onClick={() => { const confirmed = confirmClosingTarget; setConfirmClosingTarget(null); if (confirmed) void syncAndSwitch(confirmed); }}>确认关闭并同步</Button></Group>
+        <Button color="orange" onClick={() => { const confirmed = confirmClosingTarget; setConfirmClosingTarget(null); if (confirmed) void copySelected(confirmed); }}>确认关闭并复制</Button></Group>
     </Stack></Modal>
   </Stack></section>;
 }

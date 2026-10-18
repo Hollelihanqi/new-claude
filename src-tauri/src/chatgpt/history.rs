@@ -12,6 +12,7 @@ pub struct HistoryItem {
     key: String,
     thread_id: String,
     title: String,
+    summary: String,
     workspace: String,
     revision: String,
     bytes: u64,
@@ -162,7 +163,8 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
     let mut item = HistoryItem {
         key: path_key(home, path)?,
         thread_id: String::new(),
-        title: "本地工作记录".into(),
+        title: "未命名会话".into(),
+        summary: String::new(),
         workspace: String::new(),
         revision: revision(&meta),
         bytes: meta.len(),
@@ -198,10 +200,8 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
     item.title = payload
         .get("title")
         .and_then(Value::as_str)
-        .unwrap_or(&item.thread_id)
-        .chars()
-        .take(100)
-        .collect();
+        .and_then(conversation::title)
+        .unwrap_or_else(|| "未命名会话".into());
     if payload
         .get("history_mode")
         .and_then(Value::as_str)
@@ -210,54 +210,29 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
         item.detail = "未知的历史格式，请更新适配器".into();
         return Ok(item);
     }
-    if payload.get("title").and_then(Value::as_str).is_none() {
-        let file = fs::File::open(path).map_err(|e| e.to_string())?;
-        let reader: Box<dyn Read> = if path.to_string_lossy().ends_with(".jsonl.zst") {
-            Box::new(zstd::stream::read::Decoder::new(file).map_err(|_| "压缩记录无法解码")?)
-        } else {
-            Box::new(file)
-        };
-        let mut prefix = vec![];
-        reader
-            .take(256 * 1024)
-            .read_to_end(&mut prefix)
-            .map_err(|_| "会话摘要读取失败")?;
-        let mut fallback = None;
-        for line in prefix.split(|b| *b == b'\n').take(300) {
-            if let Ok(value) = serde_json::from_slice::<Value>(line) {
-                if value["type"] == "event_msg"
-                    && value["payload"]["type"] == "item_completed"
-                    && value["payload"]["item"]["type"] == "UserMessage"
-                {
-                    let text = value["payload"]["item"]["content"]
-                        .as_array()
-                        .and_then(|parts| parts.iter().find_map(|part| part["text"].as_str()));
-                    if let Some(title) = text.and_then(short_title) {
-                        item.title = title;
-                        break;
-                    }
-                }
-                if fallback.is_none() {
-                    let text = if value["type"] == "event_msg"
-                        && value["payload"]["type"] == "user_message"
-                    {
-                        value["payload"]["message"].as_str()
-                    } else if value["type"] == "response_item" && value["payload"]["role"] == "user"
-                    {
-                        value["payload"]["content"]
-                            .as_array()
-                            .and_then(|parts| parts.iter().find_map(|part| part["text"].as_str()))
-                    } else {
-                        None
-                    };
-                    fallback = text.and_then(short_title);
-                }
-            }
-        }
-        if item.title == item.thread_id {
-            if let Some(title) = fallback {
-                item.title = title;
-            }
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader: Box<dyn Read> = if path.to_string_lossy().ends_with(".jsonl.zst") {
+        Box::new(zstd::stream::read::Decoder::new(file).map_err(|_| "压缩记录无法解码")?)
+    } else {
+        Box::new(file)
+    };
+    let mut prefix = Vec::new();
+    reader
+        .take(256 * 1024)
+        .read_to_end(&mut prefix)
+        .map_err(|_| "会话摘要读取失败")?;
+    let (messages, _) = conversation::messages(&prefix, 100);
+    if let Some(first) = messages.iter().find(|message| message.role == "user") {
+        item.summary = first
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(180)
+            .collect();
+        if item.title == "未命名会话" {
+            item.title = conversation::title(&first.text).unwrap_or_else(|| "未命名会话".into());
         }
     }
     if path
@@ -273,10 +248,50 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
     Ok(item)
 }
 
-fn short_title(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let title: String = normalized.chars().take(80).collect();
-    (!title.is_empty()).then_some(title)
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conversation {
+    key: String,
+    title: String,
+    workspace: String,
+    thread_id: String,
+    modified_at: u64,
+    messages: Vec<conversation::Message>,
+    truncated: bool,
+}
+
+/// Reads only the selected source history. No target, login, RPC or writes.
+pub fn conversation(
+    root: &Path,
+    registry: &Registry,
+    source_id: &str,
+    key: &str,
+    expected_revision: &str,
+) -> Result<Conversation, String> {
+    let home = source_home(root, registry, source_id)?;
+    let candidates = paths(&home)?.0;
+    let path = candidates
+        .iter()
+        .find(|path| path_key(&home, path).ok().as_deref() == Some(key))
+        .ok_or("会话已移动或不存在，请刷新列表")?;
+    let item = inspect(&home, path)?;
+    if item.revision != expected_revision {
+        return Err("会话已更新，请刷新列表后重新预览".into());
+    }
+    let bytes = snapshot::materialize(path, &candidates, false)?;
+    let (messages, truncated) = conversation::messages(&bytes, 100);
+    if revision(&fs::metadata(path).map_err(|e| e.to_string())?) != item.revision {
+        return Err("读取期间会话已更新，请刷新后重试".into());
+    }
+    Ok(Conversation {
+        key: item.key,
+        title: item.title,
+        workspace: item.workspace,
+        thread_id: item.thread_id,
+        modified_at: item.modified_at,
+        messages,
+        truncated,
+    })
 }
 
 pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, String> {
@@ -1416,6 +1431,82 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inspect(&home, &path).unwrap().title, "项目 A 的 登录问题");
+    }
+
+    #[test]
+    fn conversation_preview_is_read_only_and_isolated_for_both_platform_layouts() {
+        let temp = tempfile::tempdir().unwrap();
+        for layout in ["windows/PathMux/chatgpt", "macos/PathMux/chatgpt"] {
+            let root = temp.path().join(layout);
+            let id = uuid::Uuid::new_v4().to_string();
+            let other_id = uuid::Uuid::new_v4().to_string();
+            let profile_dir = root.join("profiles").join(&id);
+            let other_dir = root.join("profiles").join(&other_id);
+            for (dir, profile_id) in [(&profile_dir, &id), (&other_dir, &other_id)] {
+                fs::create_dir_all(dir.join("codex/sessions")).unwrap();
+                storage::write_json(
+                    &dir.join("profile.json"),
+                    &json!({"owner":"pathmux-chatgpt", "id":profile_id}),
+                )
+                .unwrap();
+                fs::write(dir.join("codex/auth.json"), "private-login-marker").unwrap();
+            }
+            let registry = Registry {
+                version: 1,
+                installation: None,
+                profiles: [&id, &other_id]
+                    .iter()
+                    .map(|id| Profile {
+                        id: (*id).clone(),
+                        name: "Production-like fixture".into(),
+                        created_at: 1,
+                        last_executable: None,
+                    })
+                    .collect(),
+            };
+            let thread_id = uuid::Uuid::new_v4().to_string();
+            let text = [
+                json!({"type":"session_meta","payload":{"id":thread_id,"title":thread_id,"cwd":"/example/project","history_mode":"legacy"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"# AGENTS.md instructions for test\n<INSTRUCTIONS>rules</INSTRUCTIONS>"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"请核对凭证展示字段"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"请展示凭证编号与验证时间"}]}}),
+            ].iter().map(|value| format!("{value}\n")).collect::<String>();
+            for compressed in [false, true] {
+                let suffix = if compressed { "jsonl.zst" } else { "jsonl" };
+                let path = profile_dir
+                    .join("codex")
+                    .join("sessions")
+                    .join(format!("rollout-{thread_id}.{suffix}"));
+                let bytes = if compressed {
+                    zstd::stream::encode_all(text.as_bytes(), 1).unwrap()
+                } else {
+                    text.as_bytes().to_vec()
+                };
+                fs::write(&path, &bytes).unwrap();
+                let before = fs::metadata(&path).unwrap().modified().unwrap();
+                let item = inspect(&profile_dir.join("codex"), &path).unwrap();
+                assert_eq!(item.title, "请核对凭证展示字段");
+                assert_eq!(item.summary, "请核对凭证展示字段");
+                let value = conversation(&root, &registry, &id, &item.key, &item.revision).unwrap();
+                assert_eq!(value.messages.len(), 2);
+                assert!(conversation(&root, &registry, &id, &item.key, "stale").is_err());
+                assert!(
+                    conversation(&root, &registry, &other_id, &item.key, &item.revision).is_err()
+                );
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+                assert_eq!(
+                    fs::read_to_string(profile_dir.join("codex/auth.json")).unwrap(),
+                    "private-login-marker"
+                );
+                assert_eq!(
+                    fs::read_to_string(other_dir.join("codex/auth.json")).unwrap(),
+                    "private-login-marker"
+                );
+                assert!(!profile_dir.join("transfers").exists());
+                fs::remove_file(path).unwrap();
+            }
+        }
     }
 
     #[test]

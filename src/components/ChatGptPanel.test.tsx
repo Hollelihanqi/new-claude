@@ -9,7 +9,7 @@ import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "..
 vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Collapse", "Group", "Modal", "PasswordInput", "Select", "SimpleGrid", "Stack", "Switch", "Text", "TextInput", "Title", "Tooltip"].map(name => [name, name.toLowerCase()])));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("./RiskConfirm", () => ({ default: "risk-confirm" }));
-vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptOpenPrimary", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose", "chatGptSaveApiConfig", "chatGptDiscoverApiModels", "chatGptUseAccountLogin", "chatGptSetApiCompatibility"].map(name => [name, vi.fn()])) }));
+vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptConversation", "chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptOpenPrimary", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose", "chatGptSaveApiConfig", "chatGptDiscoverApiModels", "chatGptUseAccountLogin", "chatGptSetApiCompatibility"].map(name => [name, vi.fn()])) }));
 const state: ChatGptState = {
   installation: { path: "test-app", version: "test", compatible: true, detail: "test", cli: "test-cli" }, installationIssue: null,
   profiles: ["a", "b"].map(id => ({ id, name: id, createdAt: 1, directory: id, status: "stopped", pid: null, issue: null })),
@@ -18,10 +18,134 @@ const state: ChatGptState = {
 const history: ChatGptHistory = { warnings: [], complete: true, items: [{ key: "record", threadId: "thread", title: "Current record", workspace: "/project", revision: "v1", bytes: 10, modifiedAt: 1, transferable: true, detail: "Ready" }] };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 let renderer: ReactTestRenderer;
-beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.chatGptState).mockResolvedValue(state); vi.mocked(api.chatGptHistory).mockResolvedValue(history); vi.mocked(api.chatGptPending).mockResolvedValue([]); vi.mocked(api.chatGptBatchList).mockResolvedValue([]); vi.mocked(api.chatGptDiagnose).mockResolvedValue({ healthy: true, details: ["目录正常", "服务正常", "已登录"] }); vi.mocked(api.chatGptPreview).mockResolvedValue({ key: "record", title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" }); });
+beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.chatGptState).mockResolvedValue(state); vi.mocked(api.chatGptHistory).mockResolvedValue(history); vi.mocked(api.chatGptConversation).mockResolvedValue({ key: "record", title: "Current record", workspace: "/project", threadId: "thread", modifiedAt: 1, messages: [{ role: "user", text: "Real question", timestamp: null }, { role: "assistant", text: "Real answer", timestamp: null }], truncated: false }); vi.mocked(api.chatGptPending).mockResolvedValue([]); vi.mocked(api.chatGptBatchList).mockResolvedValue([]); vi.mocked(api.chatGptDiagnose).mockResolvedValue({ healthy: true, details: ["目录正常", "服务正常", "已登录"] }); vi.mocked(api.chatGptPreview).mockImplementation(async request => ({ key: request.key, title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" })); });
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const button = (label: string) => renderer.root.findAllByType(Button).find(b => String(b.props.children).includes(label))!;
 const select = (label: string) => renderer.root.findAllByType(Select).find(s => s.props.label === label)!;
+
+it("previews real messages without choosing a target or starting a transfer", async () => {
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  expect(api.chatGptConversation).toHaveBeenCalledWith("a", "record", "v1");
+  expect(renderer.root.findAllByProps({ className: "chatgpt-message-text" }).map(node => node.props.children)).toEqual(["Real question", "Real answer"]);
+  expect(renderer.root.findAllByType(Checkbox).find(node => node.props.label === "复制完成后打开目标会话")!.props.checked).toBe(false);
+  expect(api.chatGptPreview).not.toHaveBeenCalled();
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+  expect(api.chatGptBatchCreate).not.toHaveBeenCalled();
+  expect(button("复制所选会话").props.disabled).toBe(true);
+});
+
+it("keeps preview focus separate from checked conversations and searches question summaries", async () => {
+  vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items: [history.items[0], { ...history.items[0], key: "second", title: "Another", summary: "验证码交互", revision: "v2" }] });
+  vi.mocked(api.chatGptConversation).mockImplementation(async (_source, key) => ({ key, title: key, workspace: "/project", threadId: key, modifiedAt: 1, messages: [{ role: "user", text: key, timestamp: null }], truncated: false }));
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  await act(async () => { renderer.root.findAllByProps({ className: "chatgpt-conversation-select" })[1].props.onClick(); });
+  expect(api.chatGptConversation).toHaveBeenLastCalledWith("a", "second", "v2");
+  const choices = renderer.root.findAllByType(Checkbox).filter(node => node.props["aria-label"]?.startsWith("选择会话："));
+  expect(choices.every(node => !node.props.checked)).toBe(true);
+  act(() => choices[0].props.onChange({ currentTarget: { checked: true } }));
+  expect(api.chatGptConversation).toHaveBeenCalledTimes(2);
+  act(() => renderer.root.findAllByType(TextInput).find(node => node.props.label === "查找会话")!.props.onChange({ currentTarget: { value: "验证码" } }));
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-title" }).map(node => node.props.children)).toEqual(["Another"]);
+});
+
+it("does not replace the selected conversation with a late preview from another source", async () => {
+  const late = deferred<Awaited<ReturnType<typeof api.chatGptConversation>>>();
+  vi.mocked(api.chatGptConversation).mockReturnValueOnce(late.promise).mockResolvedValue({ key: "record", title: "B", workspace: "/project", threadId: "b", modifiedAt: 1, messages: [{ role: "user", text: "B question", timestamp: null }], truncated: false });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  await act(async () => { select("来源实例").props.onChange("b"); });
+  await act(async () => { late.resolve({ key: "record", title: "A", workspace: "/project", threadId: "a", modifiedAt: 1, messages: [{ role: "user", text: "STALE", timestamp: null }], truncated: false }); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-message-text" }).map(node => node.props.children)).toEqual(["B question"]);
+});
+
+it("copies without opening the target by default and preserves duplicate-click protection", async () => {
+  const job: ChatGptJob = { id: "copy-only", targetId: "b", requests: [{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }], outcomes: [], cancelled: false };
+  vi.mocked(api.chatGptBatchCreate).mockResolvedValue(job);
+  vi.mocked(api.chatGptBatchStep).mockResolvedValue({ ...job, outcomes: [{ key: "record", result: { targetThreadId: "copied", duplicate: false, detail: "done" }, error: null }] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制所选会话").props.onClick(); });
+  await act(async () => { const click = button("确认复制").props.onClick; click(); click(); });
+  expect(api.chatGptBatchCreate).toHaveBeenCalledTimes(1);
+  expect(api.chatGptOpenThread).not.toHaveBeenCalled();
+  expect(api.chatGptProfileAction).not.toHaveBeenCalled();
+});
+
+it("allows retrying failed read-only previews without changing copy selections", async () => {
+  vi.mocked(api.chatGptConversation).mockRejectedValueOnce(new Error("会话已更新"))
+    .mockResolvedValue({ key: "record", title: "Current record", workspace: "/project", threadId: "thread", modifiedAt: 1, messages: [], truncated: false });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  expect(button("重试正文预览")).toBeTruthy();
+  await act(async () => { button("重试正文预览").props.onClick(); });
+  expect(api.chatGptConversation).toHaveBeenCalledTimes(2);
+  expect(api.chatGptPreview).not.toHaveBeenCalled();
+});
+
+it.each(["E:/项目/接续", "/Users/dev/项目/接续"])("keeps optional project relocation in advanced settings for %s", async workspace => {
+  vi.mocked(open).mockResolvedValue(workspace);
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  expect(renderer.root.findAllByType(TextInput).some(node => node.props.label === "接续项目目录（可选）")).toBe(false);
+  act(() => button("更多设置").props.onClick());
+  await act(async () => { button("选择目录").props.onClick(); });
+  expect(renderer.root.findAllByType(TextInput).find(node => node.props.label === "接续项目目录（可选）")!.props.value).toBe(workspace);
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制所选会话").props.onClick(); });
+  expect(api.chatGptPreview).toHaveBeenCalledWith({ sourceId: "a", targetId: "b", key: "record", revision: "v1", workspace });
+  expect(api.chatGptBatchCreate).not.toHaveBeenCalled();
+});
+
+it.each(["exe", "app"])("shows each account beside its instance name on the %s client", async extension => {
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, pickerExtensions: [extension], profiles: [
+    { ...state.profiles[0], name: "可乐", account: { status: "chatgpt", email: "cola@example.com" } },
+    { ...state.profiles[1], name: "小黄", status: "running", account: { status: "chatgpt", email: "yellow@example.com" } },
+  ] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  const headings = renderer.root.findAllByProps({ className: "chatgpt-profile-heading" });
+  expect(headings[0].findByProps({ className: "chatgpt-profile-name" }).props.children).toBe("可乐");
+  expect(headings[0].findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("cola@example.com");
+  expect(headings[1].findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("yellow@example.com");
+  expect(headings[1].findByProps({ className: "chatgpt-profile-account" }).props.title).toContain("授权是否有效以官方客户端为准");
+  expect(renderer.root.findByProps({ className: "chatgpt-login-hint" }).props.children).toContain("官方窗口");
+});
+
+it.each([
+  [{ status: "signedOut" }, "未登录"],
+  [{ status: "unavailable" }, "账号暂不可读取"],
+  [{ status: "apiKey" }, "API Key 登录"],
+  [undefined, "账号暂不可读取"],
+] as const)("distinguishes account state %j without inferring identity from the instance name", async (account, label) => {
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...state.profiles[0], account }] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe(label);
+});
+
+it("hides saved account emails during API mode and restores them only in account mode", async () => {
+  const profile = { ...state.profiles[0], account: { status: "chatgpt" as const, email: "saved@example.com" },
+    api: { baseUrl: "https://api.example.com/v1", model: "m", hasKey: true, active: true } };
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [profile] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("API 模式");
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...profile, api: { ...profile.api, active: false } }] });
+  await act(async () => { button("刷新").props.onClick(); });
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("saved@example.com");
+});
+
+it("refreshes the email after switching accounts and removes it after logout", async () => {
+  const next = (email: string): ChatGptState => ({ ...state, profiles: [{ ...state.profiles[0], status: "running", account: { status: "chatgpt", email } }] });
+  vi.mocked(api.chatGptState).mockResolvedValue(next("first@example.com"));
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  vi.mocked(api.chatGptState).mockResolvedValue(next("second@example.com"));
+  await act(async () => { vi.advanceTimersByTime(15000); });
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("second@example.com");
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...state.profiles[0], account: { status: "signedOut" } }] });
+  await act(async () => { button("刷新").props.onClick(); });
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("未登录");
+});
 
 it.each(["running", "background", "closing", "error"] as const)("keeps delete clickable for %s and explains the blocker in a centered dialog", async status => {
   vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...state.profiles[0], status }] });
@@ -188,7 +312,7 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
   expect(overview.findAllByProps({ className: "chatgpt-profile" })).toHaveLength(0);
   expect(overview.findAllByType(Button).some(item => item.props.children === "创建实例")).toBe(true);
   expect(renderer.root.findByProps({ className: "chatgpt-profile-section" }).findByProps({ className: "chatgpt-profile-list" }).findAllByProps({ className: "chatgpt-profile" })).toHaveLength(2);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(1);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(2);
   expect(renderer.root.findAllByType(Title).some(item => item.props.children === "ChatGPT 多开")).toBe(false);
   expect(renderer.root.findAll(node => typeof node.props.children === "string" && /\d+ 个实例|按次复制/.test(node.props.children))).toHaveLength(0);
   expect(renderer.root.findAllByType(Button).some(item => item.props.children === "关闭")).toBe(false);
@@ -197,7 +321,7 @@ it("keeps client details in one toolbar, scrolls, and launches without a success
   expect(renderer.root.findAll(node => typeof node.props.className === "string" && node.props.className.includes("chatgpt-runtime-stopped"))).toHaveLength(2);
   expect(renderer.root.findAllByProps({ className: "chatgpt-runtime-line" })).toHaveLength(2);
   expect(renderer.root.findAllByProps({ className: "chatgpt-profile-actions" })[0].findAllByType(Button).every(item => item.props.className?.includes("chatgpt-profile-action"))).toBe(true);
-  expect(renderer.root.findAllByType(Title).some(item => item.props.children === "跨账号会话同步")).toBe(true);
+  expect(renderer.root.findAllByType(Title).some(item => item.props.children === "复制会话")).toBe(true);
   expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("改名"))).toBe(false);
   await act(async () => { button("启动").props.onClick(); });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "launch");
@@ -311,20 +435,17 @@ it("queues two profile actions while only their own buttons show progress", asyn
   expect(api.chatGptProfileAction).toHaveBeenNthCalledWith(2, "b", "launch");
 });
 
-it("keeps history buttons independent while their operations wait in order", async () => {
+it("locks copy settings while the selected records are checked", async () => {
   const preview = deferred<Awaited<ReturnType<typeof api.chatGptPreview>>>();
   vi.mocked(api.chatGptPreview).mockReturnValue(preview.promise);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
-  act(() => { button("复制到目标").props.onClick(); });
-  expect(button("复制到目标").props["aria-busy"]).toBe(true);
-  expect(button("选择目录").props.disabled).toBe(false);
-  expect(button("重新读取记录").props.disabled).toBeUndefined();
-  act(() => { button("选择目录").props.onClick(); });
-  expect(button("选择目录").props["aria-busy"]).toBe(true);
-  expect(open).not.toHaveBeenCalled();
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制所选会话").props.onClick(); });
+  expect(button("复制所选会话").props["aria-busy"]).toBe(true);
+  expect(select("来源实例").props.disabled).toBe(true);
   await act(async () => { preview.resolve({ key: "record", title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" }); });
-  expect(open).toHaveBeenCalledTimes(1);
+  expect(renderer.root.findAllByType(Modal).find(m => m.props.title === "确认复制范围")!.props.opened).toBe(true);
 });
 
 it("shows only the client and creation entry before the first instance exists", async () => {
@@ -356,8 +477,8 @@ it("late history from the previous source cannot replace the selected source", a
   act(() => select("来源实例").props.onChange("a"));
   await act(async () => { select("来源实例").props.onChange("b"); });
   await act(async () => { first.resolve({ warnings: ["STALE"], complete: true, items: [] }); });
-  expect(renderer.root.findAllByType(Checkbox).map(node => node.props.label).join(" ")).not.toContain("STALE");
-  expect(renderer.root.findAllByType(Checkbox).map(node => node.props.label).join(" ")).toContain("Current record");
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-title" }).map(node => node.props.children).join(" ")).not.toContain("STALE");
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-title" }).map(node => node.props.children).join(" ")).toContain("Current record");
   expect(renderer.root.findAllByProps({ className: "chatgpt-records" })).toHaveLength(1);
   expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(0);
 });
@@ -367,7 +488,7 @@ it("unsupported histories cannot be transferred", async () => {
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); });
   act(() => select("目标实例").props.onChange("b"));
-  expect(button("复制到目标").props.disabled).toBe(true);
+  expect(button("复制所选会话").props.disabled).toBe(true);
   expect(api.chatGptTransfer).not.toHaveBeenCalled();
 });
 
@@ -376,11 +497,12 @@ it("preview remains open and double clicks create only one durable queue", async
   vi.mocked(api.chatGptBatchCreate).mockReturnValue(waiting.promise);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
-  await act(async () => { button("复制到目标").props.onClick(); });
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制所选会话").props.onClick(); });
   expect(api.chatGptPreview).toHaveBeenCalledWith({ sourceId: "a", targetId: "b", key: "record", revision: "v1" });
   expect(renderer.root.findAllByType(Modal).find(m => m.props.title === "确认复制范围")!.props.opened).toBe(true);
   expect(api.chatGptBatchCreate).not.toHaveBeenCalled();
-  await act(async () => { const click = button("创建独立副本").props.onClick; click(); click(); });
+  await act(async () => { const click = button("确认复制").props.onClick; click(); click(); });
   expect(api.chatGptBatchCreate).toHaveBeenCalledTimes(1);
   expect(api.chatGptBatchCreate).toHaveBeenCalledWith([{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }]);
   await act(async () => { waiting.resolve({ id: "job", targetId: "b", requests: [], outcomes: [], cancelled: false }); });
@@ -408,7 +530,7 @@ it("discard requires a separate confirmation and targets the pending copy", asyn
   expect(api.chatGptRecover).toHaveBeenCalledWith("b", "pending", true);
 });
 
-it("syncs only the chosen project and opens its newest copy", async () => {
+it("copies only the chosen project and opens a copy when explicitly enabled", async () => {
   const other = { ...history.items[0], key: "other", threadId: "other", workspace: "/other", title: "Other project" };
   vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items: [history.items[0], other] });
   const job = { id: "project-job", targetId: "b", requests: [{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }], outcomes: [], cancelled: false };
@@ -417,9 +539,12 @@ it("syncs only the chosen project and opens its newest copy", async () => {
   vi.mocked(api.chatGptOpenThread).mockResolvedValue(state);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
-  act(() => select("同步范围").props.onChange("project"));
+  act(() => button("更多设置").props.onClick());
+  act(() => select("复制范围").props.onChange("project"));
   act(() => select("选择项目").props.onChange("/project"));
-  await act(async () => { button("同步并切换账号").props.onClick(); });
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props.label === "复制完成后打开目标会话")!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制项目会话").props.onClick(); });
+  await act(async () => { button("确认复制").props.onClick(); });
   expect(api.chatGptPreview).toHaveBeenCalledTimes(1);
   expect(api.chatGptBatchCreate).toHaveBeenCalledWith([job.requests[0]]);
   expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "new-thread");
@@ -440,25 +565,26 @@ it.each(["running", "background"] as const)("does not close a %s target until th
   vi.mocked(api.chatGptOpenThread).mockResolvedValue(state);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
-  act(() => renderer.root.findAllByType(Checkbox)[0].props.onChange({ currentTarget: { checked: true } }));
-  await act(async () => { button("同步并切换账号").props.onClick(); });
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制所选会话").props.onClick(); });
+  await act(async () => { button("确认复制").props.onClick(); });
   expect(api.chatGptProfileAction).not.toHaveBeenCalled();
-  expect(renderer.root.findAllByType(Modal).find(modal => modal.props.title === "关闭目标窗口后同步？")!.props.opened).toBe(true);
+  expect(renderer.root.findAllByType(Modal).find(modal => modal.props.title === "关闭目标窗口后复制？")!.props.opened).toBe(true);
   act(() => button("暂不关闭").props.onClick());
   expect(api.chatGptProfileAction).not.toHaveBeenCalled();
-  expect(api.chatGptPreview).not.toHaveBeenCalled();
+  expect(api.chatGptPreview).toHaveBeenCalledTimes(1);
   expect(api.chatGptBatchCreate).not.toHaveBeenCalled();
-  await act(async () => { button("同步并切换账号").props.onClick(); });
+  await act(async () => { button("确认复制").props.onClick(); });
   await act(async () => {
-    button("确认关闭并同步").props.onClick();
+    button("确认关闭并复制").props.onClick();
     await vi.advanceTimersByTimeAsync(500);
   });
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("b", "stop");
   expect(api.chatGptBatchCreate).toHaveBeenCalledWith(job.requests);
-  expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "copied");
+  expect(api.chatGptOpenThread).not.toHaveBeenCalled();
 });
 
-it("syncs all local records through durable 100-item batches", async () => {
+it("copies all local records through durable 100-item batches", async () => {
   const items = Array.from({ length: 101 }, (_, n) => ({ ...history.items[0], key: `record-${n}`, threadId: `thread-${n}`, title: `Record ${n}` }));
   vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items });
   const jobs = new Map<string, ChatGptJob>();
@@ -474,8 +600,11 @@ it("syncs all local records through durable 100-item batches", async () => {
   vi.mocked(api.chatGptOpenThread).mockResolvedValue(state);
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
-  act(() => select("同步范围").props.onChange("all"));
-  await act(async () => { button("同步并切换账号").props.onClick(); });
+  act(() => button("更多设置").props.onClick());
+  act(() => select("复制范围").props.onChange("all"));
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props.label === "复制完成后打开目标会话")!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制全部会话").props.onClick(); });
+  await act(async () => { button("确认复制").props.onClick(); });
   expect(api.chatGptBatchCreate).toHaveBeenCalledTimes(2);
   expect(vi.mocked(api.chatGptBatchCreate).mock.calls.map(call => call[0].length)).toEqual([100, 1]);
   expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "new-record-0");
@@ -486,13 +615,14 @@ it("remembers the selected project for the same account pair", async () => {
   vi.stubGlobal("localStorage", { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); } });
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
-  act(() => select("同步范围").props.onChange("project"));
+  act(() => button("更多设置").props.onClick());
+  act(() => select("复制范围").props.onChange("project"));
   act(() => select("选择项目").props.onChange("/project"));
   expect(JSON.parse(saved.get("pathmux:chatgpt-sync:a:b")!).project).toBe("/project");
   act(() => renderer.unmount());
   await act(async () => { renderer = create(<ChatGptPanel />); });
   expect(select("来源实例").props.value).toBe("a");
   expect(select("目标实例").props.value).toBe("b");
-  expect(select("同步范围").props.value).toBe("project");
+  expect(select("复制范围").props.value).toBe("project");
   expect(select("选择项目").props.value).toBe("/project");
 });

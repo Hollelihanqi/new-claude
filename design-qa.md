@@ -1,3 +1,49 @@
+# Design QA — 会话复制（2026-10-18）
+
+- Source visual truth: `docs/testing/chatgpt-copy-redesign-2026-10-18/approved-design.png`，用户确认的第 1 版及最终按钮文案。
+- Implementation screenshot: `docs/testing/chatgpt-copy-redesign-2026-10-18/desktop.png`。
+- Viewport: 1440 × 832 CSS px；source 1650 × 953 pixels，归一化到 1440 × 832 后对照；浏览器截图 1440 × 832 pixels。IAB 对桌面覆盖视口的截图有重采样，辅以 DOM 读取的 16px 标题、14px 正文及布局几何检查。
+- State: 仅合成的来源/目标实例，勾选 1 条会话，右侧显示相应提问和回答；复制后打开默认不勾选。
+- Full-view comparison: `docs/testing/chatgpt-copy-redesign-2026-10-18/comparison.png`，同一画布并排显示设计稿和实际组件。
+- Focused comparison: `docs/testing/chatgpt-copy-redesign-2026-10-18/footer-comparison.png`，核对底部按钮、目标名称和独立打开选项。
+
+## Findings and comparison history
+
+1. [P2, fixed] 第一轮长列表/长正文使工作区超出桌面视口；限制双栏高度，列表及正文分别滚动，底部操作可见。最终桌面截图无横向溢出（documentWidth = viewport = 1440）。
+2. [P2, fixed] 第一轮搜索后仍预览被过滤掉的会话；改为预览当前结果，并提示被当前搜索隐藏的已选会话，避免复制对象不明。
+3. [P2, fixed] 次要批量选择及格式说明占据列表空间；移到「更多设置」，不完整扫描仍在主区域提示。
+4. [P3, accepted] 账号选择框沿用现有可搜索/可清空下拉，名称与邮箱同一行；保留原有组件体系、键盘操作与错误提示。真实正文按原文显示，不对业务内容擅自改写。
+5. [P3, accepted] 设计图使用示例的语义标题；真实数据使用可读的已有标题或真实提问摘录，无有效内容时明确标为未命名，不捏造会话主题。
+
+## Required fidelity surfaces
+
+| Surface | Result |
+| --- | --- |
+| Fonts / typography | 沿用系统字体与项目字体回退；会话标题 16px、正文 14px，长标题最多两行，正文保留换行。 |
+| Spacing / layout | 桌面 40% / 60% 双栏；来源与目标工具条、正文、底部操作的层级与设计一致。640px 窄屏单列，documentWidth = viewport = 640。 |
+| Colors / tokens | 使用现有主题变量、蓝色主按钮和浅色表面；深色主题截图验证文字及控件可识别。 |
+| Image quality / assets | 无产品图片；图标均复用 Tabler 图标库，未添加手绘图标或占位图片。截图仅作验证证据。 |
+| Copy / content | 「复制所选会话（N 条）」和「复制完成后打开目标会话」准确区分两个动作；UUID 和环境指令不再作为标题。 |
+
+## Interactions tested
+
+- 搜索标题/摘要、切换预览、勾选与预览分离、清空选择、无记录时禁用复制。
+- 来源及目标选择、高级范围和目录选项、复制范围确认、默认只复制、主动勾选后打开。
+- 运行目标的关闭确认及取消；该场景同样仅操作内存中的合成目标。
+- 正文加载失败重试、迟到响应保护、100 项批次与中断恢复的回归测试。
+- 正文只读回归覆盖 Windows/macOS 两套目录布局、普通/压缩文件、错误版本、错误来源，核对来源文件内容、修改时间及登录标记未改变。
+- Console errors: IAB 页面检查为 []。
+
+## Boundaries and cleanup
+
+- 三个生产实例未启动、关闭或写入。界面验证直接复用真实组件，所有服务方法替换为内存测试实现；后端测试使用自动回收的临时目录。
+- 浏览器覆盖视口、临时页面和测试服务在验证后恢复/关闭；临时测试目录及脚本移除。仅保留本报告与设计/验证截图。
+- 此结果针对组件界面及隔离测试；不能替代真实账号端到端验证或 Windows/macOS CI。
+
+final result: passed
+
+---
+
 # Design QA — Theme Studio
 
 - Source visual truth: the user's Apple HIG direction plus `/Users/hq/.codex/generated_images/01a0b8ba-2bbd-7442-8450-fe48425127a6/exec-acb86f5a-c173-4d2d-9697-dd60fd5ee390.png` for the Apple Liquid Glass backdrop; the earlier festival source remains `/Users/hq/.codex/generated_images/01a0b8ba-2bbd-7442-8450-fe48425127a6/exec-b9f44926-88cc-4208-ab2f-021ddefc333e.png`.

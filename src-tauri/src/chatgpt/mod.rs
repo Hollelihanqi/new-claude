@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+mod account;
 mod api_config;
 mod batch;
 mod bridge;
+mod conversation;
 mod discovery;
 mod history;
 mod launcher;
@@ -67,6 +69,7 @@ pub struct ProfileView {
     pid: Option<u32>,
     issue: Option<String>,
     api: Option<api_config::Summary>,
+    account: account::Account,
 }
 
 #[derive(Serialize)]
@@ -150,6 +153,11 @@ fn state_at(root: &Path) -> Result<State, String> {
                 .or_else(|| installation.as_ref().map(|a| a.executable.as_str()));
             let live = exe.and_then(|e| process::main_process(&all, &directory, Path::new(e)));
             let owned = process::owned(&all, &directory);
+            let account = if issue.is_none() {
+                account::read(&directory)
+            } else {
+                account::Account::Unavailable
+            };
             ProfileView {
                 profile: p.clone(),
                 directory: directory.to_string_lossy().into(),
@@ -163,6 +171,7 @@ fn state_at(root: &Path) -> Result<State, String> {
                 pid: live.map(|p| p.pid),
                 issue,
                 api,
+                account,
             }
         })
         .collect();
@@ -407,6 +416,20 @@ pub async fn chatgpt_history(source_id: String) -> Result<history::HistoryList, 
         let root = storage::root()?;
         let r = storage::registry(&root)?;
         history::list(&root, &r, &source_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn chatgpt_conversation(
+    source_id: String,
+    key: String,
+    revision: String,
+) -> Result<history::Conversation, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        history::conversation(&root, &registry, &source_id, &key, &revision)
     })
     .await
 }
