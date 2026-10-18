@@ -1436,8 +1436,9 @@ mod tests {
     #[test]
     fn conversation_preview_is_read_only_and_isolated_for_both_platform_layouts() {
         let temp = tempfile::tempdir().unwrap();
+        let temp_root = temp.path().canonicalize().unwrap();
         for layout in ["windows/PathMux/chatgpt", "macos/PathMux/chatgpt"] {
-            let root = temp.path().join(layout);
+            let root = temp_root.join(layout);
             let id = uuid::Uuid::new_v4().to_string();
             let other_id = uuid::Uuid::new_v4().to_string();
             let profile_dir = root.join("profiles").join(&id);

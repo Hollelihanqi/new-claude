@@ -88,8 +88,11 @@ mod tests {
     #[test]
     fn reads_each_profiles_current_identity_on_both_platform_layouts() {
         let temp = tempfile::tempdir().unwrap();
+        // macOS exposes its temporary directory through /var -> /private/var.
+        // Resolve the test root without weakening the production link checks.
+        let temp_root = temp.path().canonicalize().unwrap();
         for layout in ["windows/PathMux/chatgpt", "macos/PathMux/chatgpt"] {
-            let root = temp.path().join(layout);
+            let root = temp_root.join(layout);
             let a = root.join("profiles/a");
             let b = root.join("profiles/b");
             fs::create_dir_all(a.join("codex")).unwrap();
@@ -161,11 +164,34 @@ mod tests {
             assert_eq!(identity(&value), Account::Unavailable);
         }
         let temp = tempfile::tempdir().unwrap();
-        fs::create_dir(temp.path().join("codex")).unwrap();
-        let path = temp.path().join("codex/auth.json");
+        let temp_root = temp.path().canonicalize().unwrap();
+        fs::create_dir(temp_root.join("codex")).unwrap();
+        let path = temp_root.join("codex/auth.json");
         fs::write(&path, "broken-json-private-token").unwrap();
-        assert_eq!(read(temp.path()), Account::Unavailable);
+        assert_eq!(read(&temp_root), Account::Unavailable);
         fs::write(&path, vec![b' '; 64 * 1024 + 1]).unwrap();
-        assert_eq!(read(temp.path()), Account::Unavailable);
+        assert_eq!(read(&temp_root), Account::Unavailable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_test_root_is_rejected_but_its_canonical_directory_is_readable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let actual = root.join("actual");
+        fs::create_dir_all(actual.join("codex")).unwrap();
+        let auth_path = actual.join("codex/auth.json");
+        let bytes = auth("actual@example.com").to_string();
+        fs::write(&auth_path, &bytes).unwrap();
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        assert_eq!(read(&alias), Account::Unavailable);
+        assert_eq!(
+            read(&alias.canonicalize().unwrap()),
+            Account::Chatgpt {
+                email: "actual@example.com".into()
+            }
+        );
+        assert_eq!(fs::read_to_string(auth_path).unwrap(), bytes);
     }
 }
