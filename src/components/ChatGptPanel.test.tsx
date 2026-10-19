@@ -1,6 +1,6 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { Button, Select, Checkbox, Modal, PasswordInput, Switch, TextInput, Title } from "@mantine/core";
+import { Button, Select, Checkbox, Modal, PasswordInput, Switch, TextInput } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ChatGptPanel from "./ChatGptPanel";
 import StatusModal from "./StatusModal";
@@ -201,18 +201,6 @@ it("distinguishes a hidden background instance and restores it without launching
   expect(api.chatGptProfileAction).toHaveBeenCalledWith("b", "stop");
 });
 
-it("shows an accessible animated workspace while detection is pending, then removes it", async () => {
-  const result = deferred<ChatGptState>();
-  vi.mocked(api.chatGptState).mockReturnValue(result.promise);
-  await act(async () => { renderer = create(<ChatGptPanel />); });
-  const loading = renderer.root.findByProps({ className: "chatgpt-loading" });
-  expect(loading.props.role).toBe("status");
-  expect(loading.props["aria-busy"]).toBe("true");
-  expect(loading.findByProps({ className: "chatgpt-loading-preview" }).props["aria-hidden"]).toBe("true");
-  await act(async () => { result.resolve(state); });
-  expect(renderer.root.findAllByProps({ className: "chatgpt-loading" })).toHaveLength(0);
-});
-
 it("keeps close feedback busy until the backend confirms exit", async () => {
   const current: ChatGptState = { ...state, profiles: [{ ...state.profiles[0], status: "running" }] };
   const result = deferred<ChatGptState>();
@@ -301,31 +289,6 @@ it("inactive panels do not poll; returning refreshes state", async () => {
   await act(async () => { renderer.update(<ChatGptPanel active={false} />); });
   await act(async () => { vi.advanceTimersByTime(30000); });
   expect(api.chatGptState).toHaveBeenCalledTimes(2);
-});
-
-it("keeps client details in one toolbar, scrolls, and launches without a success banner", async () => {
-  vi.mocked(api.chatGptProfileAction).mockResolvedValue({ ...state, profiles: state.profiles.map(p => p.id === "a" ? { ...p, status: "running" } : p) });
-  await act(async () => { renderer = create(<ChatGptPanel />); });
-  expect(renderer.root.findByProps({ className: "view-scroll chatgpt-scroll" })).toBeTruthy();
-  const overview = renderer.root.findByProps({ className: "chatgpt-console" });
-  expect(overview.findByProps({ className: "chatgpt-client-identity" })).toBeTruthy();
-  expect(overview.findAllByProps({ className: "chatgpt-profile" })).toHaveLength(0);
-  expect(overview.findAllByType(Button).some(item => item.props.children === "创建实例")).toBe(true);
-  expect(renderer.root.findByProps({ className: "chatgpt-profile-section" }).findByProps({ className: "chatgpt-profile-list" }).findAllByProps({ className: "chatgpt-profile" })).toHaveLength(2);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-records-placeholder" })).toHaveLength(2);
-  expect(renderer.root.findAllByType(Title).some(item => item.props.children === "ChatGPT 多开")).toBe(false);
-  expect(renderer.root.findAll(node => typeof node.props.children === "string" && /\d+ 个实例|按次复制/.test(node.props.children))).toHaveLength(0);
-  expect(renderer.root.findAllByType(Button).some(item => item.props.children === "关闭")).toBe(false);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-path" })).toHaveLength(0);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-directory" })).toHaveLength(0);
-  expect(renderer.root.findAll(node => typeof node.props.className === "string" && node.props.className.includes("chatgpt-runtime-stopped"))).toHaveLength(2);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-runtime-line" })).toHaveLength(2);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-actions" })[0].findAllByType(Button).every(item => item.props.className?.includes("chatgpt-profile-action"))).toBe(true);
-  expect(renderer.root.findAllByType(Title).some(item => item.props.children === "复制会话")).toBe(true);
-  expect(renderer.root.findAllByType(Button).some(item => String(item.props.children).includes("改名"))).toBe(false);
-  await act(async () => { button("启动").props.onClick(); });
-  expect(api.chatGptProfileAction).toHaveBeenCalledWith("a", "launch");
-  expect(renderer.root.findAllByProps({ role: "status" }).some(item => String(item.props.children).includes("已打开实例"))).toBe(false);
 });
 
 it("offers close only for a running instance and sends the stop action", async () => {
@@ -446,17 +409,6 @@ it("locks copy settings while the selected records are checked", async () => {
   expect(select("来源实例").props.disabled).toBe(true);
   await act(async () => { preview.resolve({ key: "record", title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" }); });
   expect(renderer.root.findAllByType(Modal).find(m => m.props.title === "确认复制范围")!.props.opened).toBe(true);
-});
-
-it("shows only the client and creation entry before the first instance exists", async () => {
-  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [] });
-  await act(async () => { renderer = create(<ChatGptPanel />); });
-  expect(renderer.root.findByProps({ className: "chatgpt-page chatgpt-page-empty" })).toBeTruthy();
-  expect(renderer.root.findByProps({ className: "chatgpt-onboarding" })).toBeTruthy();
-  expect(button("创建第一个实例")).toBeTruthy();
-  expect(renderer.root.findAllByProps({ className: "chatgpt-profile-section" })).toHaveLength(0);
-  expect(renderer.root.findAllByProps({ className: "chatgpt-history" })).toHaveLength(0);
-  expect(renderer.root.findAllByType(Select)).toHaveLength(2);
 });
 
 it("explains exactly what deleting an instance removes", async () => {

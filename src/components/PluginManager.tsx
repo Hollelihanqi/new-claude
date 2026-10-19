@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionIcon, Alert, Badge, Button, Checkbox, Drawer, Group, Loader, Menu, Modal, Select, Stack, Switch, Table, Tabs, Text, TextInput, ThemeIcon } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { open } from "@tauri-apps/plugin-dialog";
-import { IconAlertTriangle, IconArrowsExchange, IconCheck, IconCircleCheckFilled, IconClock, IconDots, IconFolder, IconInfoCircle, IconLoader2, IconPackage, IconPlus, IconRefresh, IconSearch, IconTrash, IconWorld } from "@tabler/icons-react";
+import { IconAlertTriangle, IconArrowsExchange, IconCheck, IconCircleCheckFilled, IconClock, IconDots, IconFolder, IconInfoCircle, IconLoader2, IconPackage, IconPlus, IconRefresh, IconTrash, IconWorld } from "@tabler/icons-react";
 import { api, type PluginRow } from "../api";
 import { usePageActivation } from "./PersistentPage";
-import { createPluginTask, executePluginTasks, planPluginCopy, pluginIdentity, pluginStateLabel, validatePluginSource, type PluginTask } from "./pluginTasks";
+import { createPluginTask, executePluginTasks, planPluginCopy, pluginIdentity, pluginStateLabel, validatePluginSource, PluginCommandQueue, type PluginTask } from "./pluginTasks";
 import "./pluginManager.css";
 
 const ENVIRONMENT_KEY = "pathmux-plugin-environment";
 type Panel = "install" | "details" | "copy" | "operation" | null;
 type Confirmation = { action: "update" | "uninstall"; row: PluginRow; env: string };
-type Operation = { title: string; tasks: PluginTask[] };
+type Operation = { id: number; title: string; tasks: PluginTask[] };
 
 function rememberedEnvironment() {
   try { return window.localStorage.getItem(ENVIRONMENT_KEY) ?? ""; } catch { return ""; }
@@ -21,13 +20,18 @@ export default function PluginManager() {
   const [rows, setRows] = useState<PluginRow[]>([]);
   const [envs, setEnvs] = useState<string[]>([]);
   const [target, setTarget] = useState(rememberedEnvironment);
-  const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState("");
   const [formError, setFormError] = useState("");
   const [panel, setPanel] = useState<Panel>(null);
   const [running, setRunning] = useState(false);
   const [operation, setOperation] = useState<Operation | null>(null);
+  const [records, setRecords] = useState<Operation[]>([]);
+  const [centerId, setCenterId] = useState<number | null>(null);
+  const [viewedId, setViewedId] = useState<number | null>(null);
+  const [pendingKeys, setPendingKeys] = useState<string[]>([]);
+  const commandQueue = useRef(new PluginCommandQueue());
+  const operationId = useRef(0);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [detailName, setDetailName] = useState("");
   const [installEnv, setInstallEnv] = useState("");
@@ -76,62 +80,59 @@ export default function PluginManager() {
     }
   }, [target, envs]);
 
-  const canChange = !!target && !loading && !running && !readError;
-  const visibleRows = useMemo(() => rows.filter((row) => row.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [rows, query]);
-  const installed = visibleRows.filter((row) => row.envs.some((entry) => entry.env === target && entry.installed));
-  const available = visibleRows.filter((row) => !row.envs.some((entry) => entry.env === target && entry.installed));
+  const canChange = envs.includes(target) && !readError;
+  const installed = rows.filter((row) => row.envs.some((entry) => entry.env === target && entry.installed));
+  const available = rows.filter((row) => !row.envs.some((entry) => entry.env === target && entry.installed));
   const detail = rows.find((row) => row.name === detailName);
   const sourceRow = rows.find((row) => row.name === copyPlugin);
   const copyRows = rows.filter((row) => row.envs.some((entry) => entry.env === copySource && entry.installed));
   const otherEnvs = envs.filter((env) => env !== copySource);
   const copyPlan = useMemo(() => sourceRow ? planPluginCopy(sourceRow, copySource, copyTargets) : [], [sourceRow, copySource, copyTargets]);
-  const unresolved = operation?.tasks.filter((task) => task.status === "failed" || task.status === "unverified") ?? [];
 
-  const begin = async (tasks: PluginTask[], title: string, showDrawer = true): Promise<void> => {
-    if (mutating.current || tasks.length === 0) return;
+  const begin = async (tasks: PluginTask[], title: string, feedback: "drawer" | "inline" | "center" = "drawer", retryId?: number): Promise<void> => {
+    if (tasks.length === 0) return;
     if (tasks.some((task) => !envs.includes(task.env))) { setFormError("目标环境已不存在，请刷新后重新选择"); return; }
-    mutating.current = true;
-    ++generation.current;
-    setRunning(true); setFormError(""); setReadError(""); setConfirmation(null);
-    setOperation({ title, tasks });
-    if (showDrawer) setPanel("operation");
-    try {
-      const result = await executePluginTasks(tasks, api, (next) => {
-        if (mounted.current) setOperation({ title, tasks: next });
-      });
+    const id = retryId ?? ++operationId.current;
+    const record = (next: PluginTask[], active = true) => {
       if (!mounted.current) return;
-      if (result.rows) setRows(result.rows);
-      setReadError(result.readError);
-      setOperation({ title, tasks: result.tasks });
-      const succeeded = result.tasks.filter((task) => task.status === "succeeded").length;
-      const hasWarning = result.tasks.some((task) => task.warnings.length);
-      if (succeeded !== result.tasks.length) setPanel("operation");
-      const singleStep = tasks.length === 1 && tasks[0].steps.length === 1 && tasks[0].steps[0];
-      const undoAction = singleStep && "action" in singleStep && (singleStep.action === "disable" || singleStep.action === "enable")
-        ? singleStep.action === "disable" ? "enable" : "disable" : null;
-      notifications.show({
-        title: succeeded === result.tasks.length ? title : "操作未全部完成",
-        message: undoAction && succeeded === 1 ? <Group gap="sm">
-          <Text size="sm">已核对 {tasks[0].env} 的实际状态</Text>
-          <Button size="compact-xs" variant="subtle" onClick={() => void begin([
-            createPluginTask(tasks[0].env, result.tasks[0].plugin, [{ action: undoAction }], { installed: true, enabled: undoAction === "enable" }),
-          ], `在 ${tasks[0].env} ${undoAction === "enable" ? "启用" : "停用"} ${pluginIdentity(result.tasks[0].plugin).name}`, false)}>
-            {undoAction === "enable" ? "重新启用" : "重新停用"}
-          </Button>
-        </Group> : `${succeeded}/${result.tasks.length} 个目标环境已完成并核对${hasWarning ? "，另有记录提示" : ""}`,
-        color: succeeded === result.tasks.length && !hasWarning ? "teal" : "orange",
-        className: "plugin-action-notification",
-      });
+      const nextOperation = { id, title, tasks: next };
+      setRecords((current) => [...current.filter((entry) => entry.id !== id), nextOperation].sort((a, b) => a.id - b.id));
+      if (active) setOperation(nextOperation);
+    };
+    const keys = tasks.map((task) => `${task.env}:${task.plugin}`);
+    return commandQueue.current.enqueue(keys, async () => {
+      if (!mounted.current) return;
+      mutating.current = true;
+      ++generation.current;
+      setRunning(true); setLoading(false); setFormError(""); setReadError("");
+      record(tasks);
       try {
-        const nextEnvs = await api.pluginTargets();
-        if (mounted.current) acceptTargets(nextEnvs);
-      } catch (error) {
-        if (mounted.current) setReadError(`操作结果已保留，环境列表刷新失败：${String(error)}`);
+        const result = await executePluginTasks(tasks, api, (next) => {
+          record(next);
+        });
+        if (!mounted.current) return;
+        if (result.rows) setRows(result.rows);
+        setReadError(result.readError);
+        record(result.tasks);
+        try {
+          const nextEnvs = await api.pluginTargets();
+          if (mounted.current) acceptTargets(nextEnvs);
+        } catch (error) {
+          if (mounted.current) setReadError(`操作结果已保留，环境列表刷新失败：${String(error)}`);
+        }
+      } finally {
+        mutating.current = false;
+        if (mounted.current) setRunning(false);
       }
-    } finally {
-      mutating.current = false;
-      if (mounted.current) setRunning(false);
-    }
+    }, (keys) => {
+      if (!mounted.current) return;
+      setPendingKeys(keys);
+      if (keys.some((key) => tasks.some((task) => key === `${task.env}:${task.plugin}`))) {
+        record(tasks, false);
+        if (feedback === "center") { setCenterId(id); setConfirmation(null); setPanel(null); }
+        if (feedback === "drawer") { setViewedId(id); setPanel("operation"); }
+      }
+    });
   };
 
   const openInstaller = (row?: PluginRow, env = target) => {
@@ -172,7 +173,7 @@ export default function PluginManager() {
     if (!canChange) return;
     const enabled = row.envs.find((entry) => entry.env === target)?.value === true;
     void begin([createPluginTask(target, row.name, [{ action: enabled ? "disable" : "enable" }], { installed: true, enabled: !enabled })],
-      `在 ${target} ${enabled ? "停用" : "启用"} ${pluginIdentity(row.name).name}`, false);
+      `在 ${target} ${enabled ? "停用" : "启用"} ${pluginIdentity(row.name).name}`, "inline");
   };
 
   const confirm = () => {
@@ -182,7 +183,7 @@ export default function PluginManager() {
     void begin([createPluginTask(env, row.name,
       action === "uninstall" ? [{ action }] : [{ action }, { action: enabled ? "enable" : "disable" }],
       action === "uninstall" ? { installed: false } : { installed: true, enabled })],
-    `${action === "uninstall" ? "从" : "在"} ${env} ${action === "uninstall" ? "卸载" : "更新"} ${pluginIdentity(row.name).name}`);
+    `${action === "uninstall" ? "从" : "在"} ${env} ${action === "uninstall" ? "卸载" : "更新"} ${pluginIdentity(row.name).name}`, "center");
   };
 
   const renderRows = (items: PluginRow[], isInstalled: boolean) => <div className="plugin-environment-table-scroll" role="region" aria-label={isInstalled ? "当前环境已安装插件" : "当前环境可添加插件"} tabIndex={0}>
@@ -194,26 +195,26 @@ export default function PluginManager() {
       <Table.Tbody>{items.map((row) => {
         const identity = pluginIdentity(row.name);
         const state = row.envs.find((entry) => entry.env === target);
-        const pending = running && operation?.tasks.some((task) => task.plugin === row.name && task.env === target && task.status === "running");
+        const pending = pendingKeys.includes(`${target}:${row.name}`);
         return <Table.Tr key={row.name} aria-busy={!!pending}>
           <Table.Td><Group gap={12} wrap="nowrap"><ThemeIcon variant="light" radius="md" size={40}><IconPackage size={22} /></ThemeIcon>
-            <button className="plugin-name-button" onClick={() => { setDetailName(row.name); setPanel("details"); }} disabled={running}>{identity.name}</button>
+            <button className="plugin-name-button" onClick={() => { setDetailName(row.name); setPanel("details"); }}>{identity.name}</button>
           </Group></Table.Td>
           <Table.Td><Text size="sm" c="dimmed">{(isInstalled ? state?.version : row.defaultVersion) ? `v${isInstalled ? state?.version : row.defaultVersion}` : "未记录"}</Text></Table.Td>
           <Table.Td><Text size="sm" c="dimmed" className="plugin-source-name">{identity.source}</Text></Table.Td>
           <Table.Td className="plugin-description-column"><Text size="sm" c="dimmed">{row.defaultInstalled ? "默认 Claude 中已发现" : "已在本机发现的 Claude Code 插件"}</Text></Table.Td>
           <Table.Td>{isInstalled ? <Group gap={10} wrap="nowrap" className="plugin-status-control">
             <Text size="sm" c={state?.value ? "teal.6" : "dimmed"} fw={600}>{state?.value ? "已启用" : "已停用"}</Text>
-            <Switch size="md" color="#00a675" withThumbIndicator={false} checked={state?.value === true} disabled={!canChange}
+            <Switch size="md" color="#00a675" withThumbIndicator={false} checked={state?.value === true} disabled={!canChange || pending}
               aria-label={`${row.name} 在环境 ${target} ${state?.value ? "停用" : "启用"}`} aria-busy={!!pending}
               thumbIcon={pending ? <IconLoader2 size={13} className="plugin-switch-spinner" /> : undefined}
               onChange={() => toggle(row)} />
           </Group> : <Text size="sm" c="dimmed">未安装到 {target}</Text>}</Table.Td>
           <Table.Td><Group gap={8} wrap="nowrap">
-            {isInstalled ? <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!canChange}
+            {isInstalled ? <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!canChange || pending}
               aria-label={`更新 ${row.name}`} onClick={() => setConfirmation({ action: "update", row, env: target })}>更新</Button>
-              : <Button size="sm" variant="light" disabled={!canChange} onClick={() => openInstaller(row)}>安装到 {target}</Button>}
-            <Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon size={34} variant="subtle" color="gray" disabled={!canChange} aria-label={`${identity.name} 更多操作`}><IconDots size={19} /></ActionIcon></Menu.Target>
+              : <Button size="sm" variant="light" disabled={!canChange || pending} onClick={() => openInstaller(row)}>安装到 {target}</Button>}
+            <Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon size={34} variant="subtle" color="gray" disabled={!canChange || pending} aria-label={`${identity.name} 更多操作`}><IconDots size={19} /></ActionIcon></Menu.Target>
               <Menu.Dropdown>
                 <Menu.Item leftSection={<IconInfoCircle size={15} />} onClick={() => { setDetailName(row.name); setPanel("details"); }}>插件详情</Menu.Item>
                 {isInstalled && <Menu.Item leftSection={<IconArrowsExchange size={15} />} onClick={() => showCopy(row)}>复制配置到其他环境</Menu.Item>}
@@ -226,42 +227,69 @@ export default function PluginManager() {
     </Table>
   </div>;
 
+  const renderResult = (operation: Operation, close: () => void, centered = false) => {
+    const running = operation.tasks.some((task) => task.status === "waiting" || task.status === "running");
+    const unresolved = operation.tasks.filter((task) => task.status === "failed" || task.status === "unverified");
+    return <Stack gap="lg" className={centered ? "plugin-center-result" : "plugin-flow-layout"}>
+        <div className="plugin-operation-heading">{running ? <Loader size={36} /> : unresolved.length ? <ThemeIcon size={46} radius="xl" color="orange" variant="light"><IconAlertTriangle size={26} /></ThemeIcon> : <ThemeIcon size={46} radius="xl" color="teal" variant="light"><IconCheck size={27} /></ThemeIcon>}
+          <Text fw={750} size="lg">{operation.title}</Text><Text size="sm" c="dimmed">{running ? "按目标环境逐项执行，以实际返回结果为准。" : `${operation.tasks.filter((task) => task.status === "succeeded").length}/${operation.tasks.length} 个环境已完成并核对`}</Text>
+        </div>
+        <Stack gap="sm">{operation.tasks.map((task) => {
+          const actual = rows.find((row) => row.name === task.plugin)?.envs.find((entry) => entry.env === task.env);
+          return <div className={`plugin-task-result ${task.status}`} key={task.env}>
+            <Group justify="space-between" wrap="nowrap"><Text fw={700}>{task.env}</Text>
+              <Group gap={6}>{task.status === "running" ? <Loader size={15} /> : task.status === "succeeded" ? <IconCircleCheckFilled size={18} color="#00a675" /> : task.status === "waiting" ? <IconClock size={18} /> : <IconAlertTriangle size={18} />}
+                <Text size="sm">{({ waiting: "等待执行", running: "执行中", succeeded: task.steps.length ? "已完成" : "无需修改", failed: "失败", unverified: "待核对" })[task.status]}</Text></Group>
+            </Group>
+            <Text size="sm" fw={600} mt={8}>{pluginIdentity(task.plugin).name}</Text><Text size="sm" c="dimmed" mt={5} className="plugin-task-detail">{task.detail}</Text>
+            {!running && !readError && <Text size="sm" mt={8}>当前：{actual?.installed ? actual.value ? "已启用" : "已停用" : "未安装"}{actual?.installed && actual.version ? ` · v${actual.version}` : ""}</Text>}
+            {task.reloadHint && <Text size="xs" c="dimmed" mt={8} className="plugin-task-detail">{task.reloadHint}</Text>}
+            {[...new Set(task.warnings)].map((warning) => <Alert color="orange" mt="sm" key={warning}>{warning}</Alert>)}
+          </div>;
+        })}</Stack>
+        {readError && <Alert color="orange">执行记录已保留。{readError}</Alert>}
+        <Text size="sm" c="dimmed">仅处理上述目标环境。已完成的环境和步骤不会因重试而重复执行。</Text>
+        <div className="plugin-flow-actions">
+          <Button variant="default" onClick={close}>{running ? "关闭后在后台继续" : "完成"}</Button>
+          {!running && unresolved.length > 0 && <Button onClick={() => void begin(operation.tasks, operation.title, centered ? "center" : "drawer", operation.id)}>{unresolved.some((task) => task.status === "failed") ? `重试 ${unresolved.filter((task) => task.status === "failed").length} 个失败环境` : "重新核对实际状态"}</Button>}
+          {!running && unresolved.length === 0 && operation.tasks.length === 1 && !operation.tasks[0].expected.installed && <Button onClick={() => openInstaller(rows.find((row) => row.name === operation.tasks[0].plugin) ?? { name: operation.tasks[0].plugin, envs: [] }, operation.tasks[0].env)}>重新安装</Button>}
+        </div>
+      </Stack>;
+  };
+  const centerOperation = records.find((entry) => entry.id === centerId);
+  const viewedOperation = records.find((entry) => entry.id === viewedId) ?? operation;
+  const failures = records.filter((entry) => entry.tasks.some((task) => task.status === "failed" || task.status === "unverified"));
+
   return <Stack gap="md" className="extension-manager plugin-environment-manager">
     <div className="plugin-environment-toolbar">
       <div className="plugin-env-tabs" role="tablist" aria-label="选择插件环境">
         {envs.map((env) => <button type="button" role="tab" key={env} className="plugin-env-tab" aria-selected={target === env}
-          disabled={running} onClick={() => { setTarget(env); setFormError(""); }}>{env}</button>)}
+          onClick={() => { setTarget(env); setFormError(""); }}>{env}</button>)}
         {envs.length === 0 && <Text size="sm" c="dimmed">{loading ? "正在读取环境…" : "暂无受管理环境"}</Text>}
       </div>
       <Button variant="default" leftSection={<IconArrowsExchange size={17} />} disabled={!canChange || envs.length < 2} onClick={() => showCopy()}>跨环境管理</Button>
     </div>
     <div className="plugin-scope-banner"><ThemeIcon size={40} radius="md" variant="light"><IconPackage size={22} /></ThemeIcon>
       <Text fw={750}>当前管理：{target || "未选择环境"}</Text><span className="plugin-scope-divider" />
-      <Text size="sm">{target ? `所有安装、启用和停用操作仅影响 ${target}。` : "先创建受管理环境，再添加插件。"}</Text>
-    </div>
-    {readError && <Alert color="red" title="读取状态未完成" icon={<IconAlertTriangle size={18} />}>
-      <Text size="sm">{readError}</Text><Button mt="sm" size="compact-sm" variant="light" disabled={running} onClick={() => void load()}>重新读取</Button>
-    </Alert>}
-    {(running || unresolved.length > 0) && <div className="plugin-task-strip" role="status">
-      {running ? <Loader size={16} /> : <IconAlertTriangle size={18} />}<Text size="sm">{running ? `${operation?.title} · 正在执行` : `${unresolved.length} 个环境仍需处理`}</Text>
-      <Button variant="subtle" size="compact-sm" onClick={() => setPanel("operation")}>{running ? "查看进度" : "查看结果"}</Button>
-    </div>}
-    <section className="plugin-environment-content" aria-label="当前环境插件">
-      <div className="plugin-environment-heading"><Text size="xl" fw={750}>插件</Text>
-        <TextInput leftSection={<IconSearch size={17} />} placeholder="搜索插件" aria-label="搜索插件" value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="plugin-search" />
-        <ActionIcon size={36} variant="subtle" aria-label="刷新插件状态" loading={loading} disabled={running} onClick={() => void load()}><IconRefresh size={18} /></ActionIcon>
-        <Button leftSection={<IconPlus size={17} />} disabled={!canChange} onClick={() => openInstaller()}>安装插件</Button>
+      <div className="plugin-scope-feedback" role="status" aria-live="polite">
+        <span className="plugin-feedback-icon">{running || loading ? <Loader size={16} /> : readError || failures.length ? <IconAlertTriangle size={18} /> : operation ? <IconCircleCheckFilled size={18} /> : null}</span>
+        <Text size="sm" truncate title={readError || operation?.title}>{readError ? "读取失败，请重新刷新" : running ? operation?.title : loading ? "正在刷新…" : failures.length ? `${failures.length} 项操作需要处理` : operation ? `${operation.title} · 已完成` : target ? `安装、启停和更新仅影响 ${target}` : "请先创建环境"}</Text>
+        <Button className="plugin-result-entry" variant="subtle" size="compact-sm" style={{ visibility: records.length ? "visible" : "hidden" }} onClick={() => { setViewedId((failures[failures.length - 1] ?? operation)?.id ?? null); setPanel("operation"); }}>{running ? "查看进度" : "查看结果"}</Button>
       </div>
-      {loading && rows.length === 0 ? <div className="extension-empty-state" role="status"><Loader size="sm" /><Text size="sm" c="dimmed">正在读取插件状态…</Text></div>
-        : !loading && !readError && !target ? <div className="extension-empty-state"><IconPackage size={34} /><Text fw={650}>还没有受管理环境</Text><Text size="sm" c="dimmed">先在“环境”页面创建一个环境。</Text></div>
-        : target && query.trim() && visibleRows.length === 0 ? <div className="extension-empty-state"><IconSearch size={36} /><Text fw={650}>无匹配插件</Text><Text size="sm" c="dimmed">尝试其他关键词，或清空搜索。</Text><Button variant="light" onClick={() => setQuery("")}>清空搜索</Button></div>
+    </div>
+    <section className="plugin-environment-content" aria-label="当前环境插件">
+      <div className="plugin-environment-heading">
+        <Group gap={10}><Text fw={750}>已安装</Text><Badge variant="light">{installed.length}</Badge></Group>
+        <Group gap={12}>
+          <ActionIcon size={36} variant="subtle" aria-label="刷新插件状态" aria-busy={loading} aria-disabled={loading || running} onClick={() => { if (!loading && !running) void load(); }}><IconRefresh size={18} className={loading ? "plugin-refresh-spinner" : undefined} /></ActionIcon>
+          <Button leftSection={<IconPlus size={17} />} disabled={!canChange} onClick={() => openInstaller()}>安装插件</Button>
+        </Group>
+      </div>
+      {loading && envs.length === 0 ? <div className="extension-empty-state" role="status"><Loader size="sm" /><Text size="sm" c="dimmed">正在读取插件状态…</Text></div>
+        : !loading && !readError && !target ? <div className="extension-empty-state"><IconPackage size={34} /><Text fw={650}>还没有受管理环境</Text><Text size="sm" c="dimmed">先创建一个环境。</Text></div>
         : target && <>
-          <Group gap={10} className="plugin-section-title"><Text fw={750}>已安装</Text><Badge variant="light">{installed.length}</Badge></Group>
-          {installed.length > 0 ? renderRows(installed, true) : <div className="plugin-installed-empty"><Text size="sm" c="dimmed">{query ? "当前搜索下没有已安装插件" : `${target} 尚未安装插件`}</Text>
-            {!query && <Button size="compact-sm" variant="subtle" onClick={() => showCopy()} disabled={!canChange || envs.length < 2}>从其他环境复制</Button>}</div>}
-          <Group gap={10} className="plugin-section-title"><Text fw={750}>可添加</Text><Badge variant="light">{available.length}</Badge></Group>
-          {available.length > 0 ? renderRows(available, false) : <Text size="sm" c="dimmed" px="sm" pb="lg">{query ? "当前搜索下没有可添加插件" : "暂无其他已发现插件，可通过“安装插件”添加新的来源。"}</Text>}
-          <Group gap={8} className="plugin-environment-footnote"><IconInfoCircle size={17} /><Text size="sm" c="dimmed">各环境独立管理；跨环境复制仅执行一次，不建立持续同步。</Text></Group>
+          {installed.length > 0 ? renderRows(installed, true) : <div className="plugin-installed-empty"><Text size="sm" c="dimmed">{target} 尚未安装插件</Text><Button size="compact-sm" variant="subtle" onClick={() => showCopy()} disabled={!canChange || envs.length < 2}>从其他环境复制</Button></div>}
+          {available.length > 0 && <><Group gap={10} className="plugin-section-title"><Text fw={750}>可添加</Text><Badge variant="light">{available.length}</Badge></Group>{renderRows(available, false)}</>}
         </>}
     </section>
 
@@ -295,9 +323,9 @@ export default function PluginManager() {
         {detail.envs.some((entry) => entry.env === target && entry.installed) ? <>
           <Group justify="space-between"><Text size="sm">在 {target} 中启用</Text><Switch aria-label={`${detail.name} 详情中启用`} color="#00a675" withThumbIndicator={false} checked={detail.envs.find((item) => item.env === target)?.value === true} disabled={!canChange} onChange={() => toggle(detail)} /></Group>
           <Alert icon={<IconInfoCircle size={18} />}>新会话使用当前配置。已有会话可重新加载插件，具体提示在执行结果中显示。</Alert>
-          <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => setConfirmation({ action: "update", row: detail, env: target })} disabled={!canChange}>检查并更新</Button>
+          <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => { setPanel(null); setConfirmation({ action: "update", row: detail, env: target }); }} disabled={!canChange}>检查并更新</Button>
           <Button variant="default" leftSection={<IconArrowsExchange size={16} />} onClick={() => showCopy(detail)} disabled={!canChange || envs.length < 2}>复制配置到其他环境</Button>
-          <div className="plugin-flow-actions"><Button color="red" variant="subtle" leftSection={<IconTrash size={16} />} onClick={() => setConfirmation({ action: "uninstall", row: detail, env: target })} disabled={!canChange}>从 {target} 卸载</Button></div>
+          <div className="plugin-flow-actions"><Button color="red" variant="subtle" leftSection={<IconTrash size={16} />} onClick={() => { setPanel(null); setConfirmation({ action: "uninstall", row: detail, env: target }); }} disabled={!canChange}>从 {target} 卸载</Button></div>
         </> : <Button onClick={() => openInstaller(detail)} disabled={!canChange}>安装到 {target}</Button>}
       </Stack>}
       {panel === "copy" && <Stack gap="lg" className="plugin-flow-layout">
@@ -321,35 +349,15 @@ export default function PluginManager() {
         <Alert icon={<IconInfoCircle size={18} />}>这是一次性复制，不会建立持续同步关系。</Alert>
         <div className="plugin-flow-actions"><Button variant="default" onClick={() => setPanel(null)}>取消</Button><Button disabled={!canChange || copyPlan.length === 0} onClick={() => void begin(copyPlan, `复制 ${pluginIdentity(copyPlugin).name} 的配置`)}>应用到 {copyPlan.length} 个环境</Button></div>
       </Stack>}
-      {panel === "operation" && operation && <Stack gap="lg" className="plugin-flow-layout">
-        <div className="plugin-operation-heading">{running ? <Loader size={36} /> : unresolved.length ? <ThemeIcon size={46} radius="xl" color="orange" variant="light"><IconAlertTriangle size={26} /></ThemeIcon> : <ThemeIcon size={46} radius="xl" color="teal" variant="light"><IconCheck size={27} /></ThemeIcon>}
-          <Text fw={750} size="lg">{operation.title}</Text><Text size="sm" c="dimmed">{running ? "按目标环境逐项执行，以实际返回结果为准。" : `${operation.tasks.filter((task) => task.status === "succeeded").length}/${operation.tasks.length} 个环境已完成并核对`}</Text>
-        </div>
-        <Stack gap="sm">{operation.tasks.map((task) => {
-          const actual = rows.find((row) => row.name === task.plugin)?.envs.find((entry) => entry.env === task.env);
-          return <div className={`plugin-task-result ${task.status}`} key={task.env}>
-            <Group justify="space-between" wrap="nowrap"><Text fw={700}>{task.env}</Text>
-              <Group gap={6}>{task.status === "running" ? <Loader size={15} /> : task.status === "succeeded" ? <IconCircleCheckFilled size={18} color="#00a675" /> : task.status === "waiting" ? <IconClock size={18} /> : <IconAlertTriangle size={18} />}
-                <Text size="sm">{({ waiting: "等待执行", running: "执行中", succeeded: task.steps.length ? "已完成" : "无需修改", failed: "失败", unverified: "待核对" })[task.status]}</Text></Group>
-            </Group>
-            <Text size="sm" fw={600} mt={8}>{pluginIdentity(task.plugin).name}</Text><Text size="sm" c="dimmed" mt={5} className="plugin-task-detail">{task.detail}</Text>
-            {!running && !readError && <Text size="sm" mt={8}>当前：{actual?.installed ? actual.value ? "已启用" : "已停用" : "未安装"}{actual?.installed && actual.version ? ` · v${actual.version}` : ""}</Text>}
-            {task.reloadHint && <Text size="xs" c="dimmed" mt={8} className="plugin-task-detail">{task.reloadHint}</Text>}
-            {[...new Set(task.warnings)].map((warning) => <Alert color="orange" mt="sm" key={warning}>{warning}</Alert>)}
-          </div>;
-        })}</Stack>
-        {readError && <Alert color="orange">执行记录已保留。{readError}</Alert>}
-        <Text size="sm" c="dimmed">仅处理上述目标环境。已完成的环境和步骤不会因重试而重复执行。</Text>
-        <div className="plugin-flow-actions">
-          <Button variant="default" onClick={() => setPanel(null)}>{running ? "关闭后在后台继续" : "完成"}</Button>
-          {!running && unresolved.length > 0 && <Button onClick={() => void begin(operation.tasks, operation.title)}>{unresolved.some((task) => task.status === "failed") ? `重试 ${unresolved.filter((task) => task.status === "failed").length} 个失败环境` : "重新核对实际状态"}</Button>}
-          {!running && unresolved.length === 0 && operation.tasks.length === 1 && !operation.tasks[0].expected.installed && <Button onClick={() => openInstaller(rows.find((row) => row.name === operation.tasks[0].plugin) ?? { name: operation.tasks[0].plugin, envs: [] }, operation.tasks[0].env)}>重新安装</Button>}
-        </div>
+      {panel === "operation" && <Stack gap="md">
+        {records.length > 1 && <Select label="执行记录" value={String(viewedOperation?.id ?? "")} data={[...records].reverse().map((entry) => ({ value: String(entry.id), label: entry.title }))} onChange={(value) => setViewedId(Number(value))} />}
+        {viewedOperation && renderResult(viewedOperation, () => setPanel(null))}
       </Stack>}
     </Drawer>
-    <Modal opened={confirmation !== null} onClose={() => setConfirmation(null)} centered size="md" title={confirmation?.action === "uninstall" ? `从 ${confirmation.env} 卸载插件？` : `更新 ${confirmation?.env ?? ""} 中的插件`}
+    <Modal opened={confirmation !== null || centerOperation !== undefined} onClose={() => { setConfirmation(null); setCenterId(null); }} centered size="md" title={centerOperation ? centerOperation.title : confirmation?.action === "uninstall" ? `从 ${confirmation.env} 卸载插件？` : `更新 ${confirmation?.env ?? ""} 中的插件`}
       closeButtonProps={{ "aria-label": "取消当前操作" }}
       classNames={{ content: "plugin-remove-modal-content", header: "plugin-remove-modal-header", body: "plugin-remove-modal-body" }}>
+      {centerOperation && renderResult(centerOperation, () => setCenterId(null), true)}
       {confirmation && <Stack gap="md">
         <div className="plugin-flow-identity"><ThemeIcon size={40} variant="light" radius="md"><IconPackage size={22} /></ThemeIcon><div><Text fw={750}>{pluginIdentity(confirmation.row.name).name}</Text><Text size="sm" c="dimmed">{pluginIdentity(confirmation.row.name).source}</Text></div></div>
         <Text size="sm">仅影响 {confirmation.env}，其他环境保持不变。</Text>

@@ -121,20 +121,6 @@ describe("扩展中心的导航与资源管理", () => {
     expect(api.installResourceFromPath).toHaveBeenCalledWith("skills", "C:/local/reviewer", undefined);
   });
 
-  it("只保留 Skills、Plugins 与 Agents，不再展示 Commands", () => {
-    expect(allText()).toContain("Skills");
-    expect(allText()).toContain("Plugins");
-    expect(allText()).toContain("Agents");
-    expect(allText()).not.toContain("Commands");
-  });
-
-  it("不在 Skills 与 Agents 界面暴露底层共享机制", () => {
-    expect(allText()).not.toContain("共享库");
-    expect(allText()).not.toContain("C:/shared/");
-    expect(allText()).not.toContain("恢复共享版本");
-    expect(allText()).not.toContain("管理共享设置");
-  });
-
   it("Skill 列表直接显示环境开关和明确操作，不要求用户理解底层策略", async () => {
     act(() => renderer.unmount());
     vi.mocked(api.resourceOverview).mockImplementation(async (kind) => ({

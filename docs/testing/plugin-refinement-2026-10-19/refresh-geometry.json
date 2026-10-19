@@ -1,0 +1,88 @@
+{
+  "viewport": "1440x900",
+  "before": {
+    ".plugin-environment-content": {
+      "bottom": 656.640625,
+      "height": 364.640625,
+      "left": 260,
+      "right": 1426,
+      "top": 292,
+      "width": 1166,
+      "x": 260,
+      "y": 292
+    },
+    ".plugin-environment-table-scroll": {
+      "bottom": 633.640625,
+      "height": 264.640625,
+      "left": 283,
+      "right": 1403,
+      "top": 369,
+      "width": 1120,
+      "x": 283,
+      "y": 369
+    },
+    ".plugin-scope-banner": {
+      "bottom": 276,
+      "height": 66,
+      "left": 260,
+      "right": 1426,
+      "top": 210,
+      "width": 1166,
+      "x": 260,
+      "y": 210
+    },
+    "[aria-label=\"刷新插件状态\"]": {
+      "bottom": 351,
+      "height": 36,
+      "left": 1240,
+      "right": 1276,
+      "top": 315,
+      "width": 36,
+      "x": 1240,
+      "y": 315
+    }
+  },
+  "during": {
+    ".plugin-environment-content": {
+      "bottom": 656.640625,
+      "height": 364.640625,
+      "left": 260,
+      "right": 1426,
+      "top": 292,
+      "width": 1166,
+      "x": 260,
+      "y": 292
+    },
+    ".plugin-environment-table-scroll": {
+      "bottom": 633.640625,
+      "height": 264.640625,
+      "left": 283,
+      "right": 1403,
+      "top": 369,
+      "width": 1120,
+      "x": 283,
+      "y": 369
+    },
+    ".plugin-scope-banner": {
+      "bottom": 276,
+      "height": 66,
+      "left": 260,
+      "right": 1426,
+      "top": 210,
+      "width": 1166,
+      "x": 260,
+      "y": 210
+    },
+    "[aria-label=\"刷新插件状态\"]": {
+      "bottom": 351,
+      "height": 36,
+      "left": 1240,
+      "right": 1276,
+      "top": 315,
+      "width": 36,
+      "x": 1240,
+      "y": 315
+    }
+  },
+  "unchanged": true
+}

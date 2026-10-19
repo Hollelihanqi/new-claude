@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginAction, PluginActionReport, PluginRow } from "../api";
-import { createPluginTask, executePluginTasks, planPluginCopy, validatePluginSource, type PluginTaskExecutor } from "./pluginTasks";
+import { createPluginTask, executePluginTasks, planPluginCopy, validatePluginSource, PluginCommandQueue, type PluginTaskExecutor } from "./pluginTasks";
 
 function fixture() {
   const rows: PluginRow[] = [{ name: "demo@market", defaultInstalled: true, envs: [
@@ -30,6 +30,44 @@ function fixture() {
 }
 
 describe("独立环境插件任务", () => {
+  it("不同插件的写入按提交顺序执行，同一插件重复提交会被合并", async () => {
+    const queue = new PluginCommandQueue();
+    const events: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const first = queue.enqueue(["hq:ecc"], async () => { events.push("ecc"); await pending; }, () => {});
+    const second = queue.enqueue(["hq:rust"], async () => { events.push("rust"); }, () => {});
+    await queue.enqueue(["hq:ecc"], async () => { events.push("duplicate"); }, () => {});
+    expect(events).toEqual(["ecc"]);
+    release(); await Promise.all([first, second]);
+    expect(events).toEqual(["ecc", "rust"]);
+  });
+
+  it("一个插件失败后继续处理下一项，并释放重复提交锁", async () => {
+    const queue = new PluginCommandQueue();
+    const first = queue.enqueue(["hq:ecc"], async () => { throw new Error("失败"); }, () => {});
+    const run = vi.fn(async () => {});
+    const second = queue.enqueue(["hq:rust"], run, () => {});
+    await expect(first).rejects.toThrow("失败");
+    await second;
+    await queue.enqueue(["hq:ecc"], run, () => {});
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+  it.each([true, false])("更新后状态已为 %s 时不重复启停，不能把已启用/已停用当作更新失败", async (enabled) => {
+    const { rows, executor } = fixture();
+    rows[0].envs[0].value = enabled;
+    const original = executor.managePlugin;
+    executor.managePlugin = vi.fn(async (action, plugin, envs, scope) => {
+      if (action === "enable" || action === "disable") return {
+        action, plugin, results: [{ env: envs[0], ok: false, detail: `Plugin is already ${enabled ? "enabled" : "disabled"} at user scope` }], reloadHint: "",
+      };
+      return original(action, plugin, envs, scope);
+    });
+    const result = await executePluginTasks([createPluginTask("hq", "demo@market", [{ action: "update" }, { action: enabled ? "enable" : "disable" }], { installed: true, enabled })], executor, () => {});
+    expect(result.tasks[0].status).toBe("succeeded");
+    expect(executor.managePlugin).toHaveBeenCalledTimes(1);
+    expect(result.tasks[0].reloadHint).toBe("需要重启会话");
+  });
   it("复制停用配置时只对缺失目标安装并停用，已有状态相同的环境无需执行", async () => {
     const { rows, executor } = fixture();
     const plan = planPluginCopy(rows[0], "hq", ["hq", "ba", "ba", "__main__"]);

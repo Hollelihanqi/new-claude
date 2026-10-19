@@ -16,7 +16,6 @@
 .plugin-scope-divider { height: 26px; border-left: 1px solid color-mix(in srgb, var(--theme-base) 50%, var(--app-border)); }
 .plugin-environment-content { min-width: 0; padding: 22px; border-radius: 18px; border: 1px solid var(--app-border); background: var(--app-surface-subtle); }
 .plugin-environment-heading { display: flex; gap: 20px; align-items: center; margin-bottom: 18px; }
-.plugin-search { width: min(370px, 42%); margin-right: auto; }
 .plugin-section-title { margin: 18px 0 12px; }
 .plugin-environment-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--app-border); border-radius: 13px; }
 .plugin-environment-table { min-width: 980px; table-layout: auto; }
@@ -32,9 +31,6 @@
 .plugin-source-name { max-width: 190px; overflow-wrap: anywhere; }
 .plugin-status-control { min-width: 124px; }
 .plugin-installed-empty { min-height: 80px; padding: 18px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 12px; background: var(--app-surface-soft); }
-.plugin-environment-footnote { margin-top: 20px; color: var(--app-secondary-text); }
-.plugin-task-strip { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--app-border); background: var(--app-surface-soft); }
-.plugin-task-strip .mantine-Button-root { margin-left: auto; }
 .plugin-flow-drawer { display: flex; flex-direction: column; color: var(--app-text); background: var(--app-surface) !important; border-left: 1px solid var(--app-border); }
 .plugin-flow-drawer-header { padding: 22px 24px; color: var(--app-strong-text); background: var(--app-surface) !important; border-bottom: 1px solid var(--app-subtle-border); }
 .plugin-flow-drawer-header .mantine-Drawer-title { font-weight: 750; font-size: 19px; }
@@ -72,10 +68,28 @@
   .plugin-scope-banner > p:last-child { flex-basis: 100%; }
   .plugin-environment-heading { flex-wrap: wrap; gap: 12px; }
   .plugin-environment-heading > p { margin-right: auto; }
-  .plugin-search { order: 4; width: 100%; }
   .plugin-environment-content { padding: 14px; }
 }
 @media (max-width: 480px) {
   .plugin-flow-drawer-body { padding: 18px !important; }
   .plugin-flow-drawer-header { padding: 18px; }
+}
+
+.plugin-environment-heading { justify-content: space-between; min-height: 36px; }
+.plugin-scope-banner { min-height: 66px; flex-wrap: nowrap; }
+.plugin-scope-banner > .mantine-Text-root { flex: 0 0 auto; }
+.plugin-scope-feedback { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.plugin-scope-feedback > .mantine-Text-root { flex: 1; min-width: 0; }
+.plugin-feedback-icon { display: flex; align-items: center; flex: 0 0 18px; width: 18px; }
+.plugin-result-entry { flex: 0 0 84px; width: 84px; }
+.plugin-center-result { min-height: 0; }
+.plugin-center-result .plugin-operation-heading { padding-block: 0 8px; }
+.plugin-center-result .plugin-flow-actions { position: static; box-shadow: none; }
+.plugin-status-control .mantine-Switch-input:checked:disabled + .mantine-Switch-track { background: #00a675; border-color: #00a675; }
+.plugin-refresh-spinner { animation: plugin-refresh-rotation 0.8s linear infinite; }
+@keyframes plugin-refresh-rotation { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .plugin-refresh-spinner { animation: none; } }
+@media (max-width: 800px) {
+  .plugin-scope-banner { flex-wrap: wrap; }
+  .plugin-scope-feedback { flex-basis: 100%; }
 }

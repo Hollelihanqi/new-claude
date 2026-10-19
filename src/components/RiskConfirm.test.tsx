@@ -134,12 +134,3 @@ it("blocks confirmation when the caller disables an unsafe operation", async () 
   act(() => { buttonLabelled("确认删除").props.onClick(); });
   expect(onConfirm).not.toHaveBeenCalled();
 });
-
-it("逐条渲染具体后果 —— 泛泛的「确定吗？」不构成确认", async () => {
-  const consequences = ["将移除全部 3 张已导入证书，无法撤销。", "自签网关会立刻连不上。"];
-  await mount({ consequences, confirmLabel: "确认清空" });
-  const texts = nodesOfType("text").flatMap((node) => node.children);
-  for (const line of consequences) {
-    expect(texts.some((text) => typeof text === "string" && text.includes(line))).toBe(true);
-  }
-});

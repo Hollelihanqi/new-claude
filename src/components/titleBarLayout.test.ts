@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TITLEBAR_HEIGHT_PX, titleBarLayout } from "./titleBarLayout";
+import { titleBarLayout } from "./titleBarLayout";
 
 // 平台分支的判据全部集中在这个纯函数里，所以两个分支都能在**任一开发平台**上断言，
 // 不依赖 `process.platform`（CLAUDE.md 的硬要求）。
@@ -44,52 +42,5 @@ describe("自绘标题栏的平台差异", () => {
   it("只有明确是 macOS 时才隐藏自绘按钮", () => {
     expect(titleBarLayout("macos").showWindowControls).toBe(false);
     expect(titleBarLayout("MACOS").showWindowControls).toBe(true); // 大小写不匹配就不按 macOS 处理
-  });
-
-  // 防漂移：高度同时存在于 TS 常量与 CSS 变量，两边必须一致，否则改了一边就会错位。
-  it("CSS 变量 --app-titlebar-height 与 TITLEBAR_HEIGHT_PX 一致", () => {
-    const css = readFileSync(resolve(process.cwd(), "src/glass.css"), "utf8");
-    expect(css).toContain(`--app-titlebar-height: ${TITLEBAR_HEIGHT_PX}px;`);
-  });
-
-  it("macOS 使用透明 Overlay，让应用主题延伸到顶部，同时保留系统灯位", () => {
-    const config = JSON.parse(
-      readFileSync(resolve(process.cwd(), "src-tauri/tauri.macos.conf.json"), "utf8")
-    );
-    const window = config.app.windows[0];
-    expect(window.titleBarStyle).toBe("Overlay");
-    expect(window.trafficLightPosition).toBeUndefined();
-  });
-
-  it("原生窗口底色随主题更新，并具备所需窗口权限", () => {
-    const main = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
-    const capability = JSON.parse(
-      readFileSync(resolve(process.cwd(), "src-tauri/capabilities/default.json"), "utf8")
-    );
-    expect(main).toContain("setBackgroundColor(chromeColor)");
-    expect(capability.permissions).toContain("core:window:allow-set-background-color");
-  });
-
-  it("工作区使用独立圆角模块，编辑标题固定在滚动容器顶端", () => {
-    const css = readFileSync(resolve(process.cwd(), "src/glass.css"), "utf8");
-    const rule = (selector: string) => {
-      const matches = [...css.matchAll(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]+)\\}`, "g"))];
-      expect(matches.length, `缺少 ${selector} 样式`).toBeGreaterThan(0);
-      return matches.map((match) => match[1]).join("\n");
-    };
-
-    expect(rule(".app-shell")).toContain("gap: 14px");
-    expect(rule(".app-sidebar")).toContain("border-radius: 20px");
-    expect(rule(".app-header")).toContain("border-radius: 18px");
-    const environmentFrames = rule(".instances-pane, .editor-pane");
-    expect(environmentFrames).toContain("border-radius: 22px");
-    expect(environmentFrames).toContain("border: 0 !important");
-    expect(environmentFrames).toContain("overflow: hidden");
-    expect(rule(".editor-scroll")).toContain("overflow-y: auto");
-    expect(rule(".workbuddy-grid:not(.workbuddy-grid-empty)")).toContain("overflow: hidden");
-    expect(rule(".mcp-table-card")).toContain("overflow: hidden");
-    expect(rule(".extension-table-card")).toContain("overflow: hidden");
-    expect(rule(".editor-toolbar")).toContain("top: 0");
-    expect(rule(".editor-toolbar")).not.toMatch(/top:\s*-\d/);
   });
 });

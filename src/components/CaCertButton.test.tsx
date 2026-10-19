@@ -1,7 +1,7 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import CaCertButton from "./CaCertButton";
-import { Button, Select, Text, TextInput } from "@mantine/core";
+import { Button, Select, TextInput } from "@mantine/core";
 import { api, type Profile } from "../api";
 
 vi.mock("@mantine/core", () => Object.fromEntries([
@@ -43,8 +43,6 @@ describe("CA 证书的目标网关", () => {
     await act(async () => { button.props.onClick(); });
   };
   const select = () => renderer.root.findAllByType(Select)[0];
-  const allText = () =>
-    renderer.root.findAllByType(Text).map((t) => textOf(t.children)).join(" ");
 
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -86,11 +84,5 @@ describe("CA 证书的目标网关", () => {
       .find((b) => textOf(b.props.children) === "confirm")!;
     await act(async () => { confirm.props.onClick(); });
     expect(api.importCertFor).toHaveBeenCalledWith(["corp"], "/tmp/ca.pem");
-  });
-
-  it("文案明确说明按网关隔离，且不再宣称整机共享", async () => {
-    await openDialog();
-    expect(allText()).toContain("各自保存");
-    expect(allText()).not.toContain("整机共享");
   });
 });

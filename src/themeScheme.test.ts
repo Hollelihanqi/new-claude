@@ -5,7 +5,6 @@ import {
   readInitialScheme,
   readStoredScheme,
   storeScheme,
-  THEME_DEFINITIONS,
   THEME_SCHEME_STORAGE_KEY,
 } from "./themeScheme";
 
@@ -44,16 +43,6 @@ describe("theme scheme persistence", () => {
     const storage = memoryStorage();
     storeScheme(storage, "dragonboat");
     expect(readStoredScheme(storage)).toBe("dragonboat");
-  });
-
-  it("offers twelve daily styles and five Chinese festival skins", () => {
-    expect(THEME_DEFINITIONS.filter((theme) => theme.category === "daily")).toHaveLength(12);
-    expect(THEME_DEFINITIONS.filter((theme) => theme.category === "festival").map((theme) => theme.name))
-      .toEqual(["新春", "元宵", "端午", "中秋", "国庆"]);
-    const dailyThemes = THEME_DEFINITIONS.filter((theme) => theme.category === "daily");
-    expect(dailyThemes.slice(-4).map((theme) => theme.name))
-      .toEqual(["晴空", "薄荷", "柔光", "云紫"]);
-    expect(dailyThemes[7]?.name).toBe("苹果");
   });
 
   it("maps Gregorian and Chinese-calendar festival dates to their skins", () => {

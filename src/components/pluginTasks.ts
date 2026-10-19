@@ -66,6 +66,24 @@ const STEP_LABEL: Record<PluginAction, string> = {
   install: "正在安装插件", enable: "正在启用插件", disable: "正在停用插件", update: "正在更新插件", uninstall: "正在卸载插件",
 };
 
+/** Serialize writes without blocking actions for unrelated plugins. */
+export class PluginCommandQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private pending = new Set<string>();
+
+  enqueue(keys: string[], run: () => Promise<void>, changed: (keys: string[]) => void): Promise<void> {
+    if (keys.some((key) => this.pending.has(key))) return Promise.resolve();
+    keys.forEach((key) => this.pending.add(key));
+    changed([...this.pending]);
+    const next = this.tail.then(run).finally(() => {
+      keys.forEach((key) => this.pending.delete(key));
+      changed([...this.pending]);
+    });
+    this.tail = next.catch(() => {});
+    return next;
+  }
+}
+
 /** Each official command addresses one explicit environment. Completed steps survive retries. */
 export async function executePluginTasks(
   previous: PluginTask[], executor: PluginTaskExecutor, onProgress: (tasks: PluginTask[]) => void,
@@ -83,6 +101,14 @@ export async function executePluginTasks(
       task.detail = "source" in step ? "正在安装插件包" : STEP_LABEL[step.action];
       publish();
       try {
+        if (task.completed > 0 && "action" in step && (step.action === "enable" || step.action === "disable")) {
+          const current = (await executor.pluginsOverview()).find((row) => row.name === task.plugin)?.envs.find((entry) => entry.env === task.env);
+          if (current?.installed && current.value === (step.action === "enable")) {
+            task.completed += 1;
+            task.detail = "已处于目标启停状态";
+            continue;
+          }
+        }
         const report = "source" in step
           ? await executor.installPluginPackage(step.source, [task.env], false)
           : await executor.managePlugin(step.action, task.plugin, [task.env], false);
