@@ -176,3 +176,70 @@ Final result: passed for observable states; populated usage-card appearance rema
 - Finding P2, switch: there was no visible in-progress state. The corresponding switch thumb now displays a rotating icon while the real plugin command runs; the other controls cannot accept conflicting operations. Reduced-motion preference leaves the icon static but still visible.
 - Fonts, spacing, assets, and copy: the established card/modal type hierarchy and Tabler icons remain unchanged; only dialog colors, feedback placement, and pending state changed. No raster artwork was introduced. Both themes were inspected in the real app; the plugin was disabled and re-enabled and is left enabled, with all environments selected again.
 - Final result: passed.
++
+## A 方案：按当前环境管理插件 — 2026-10-19
+
+final result: passed
+
+本结论仅覆盖选定 A 方案的前端视觉与隔离数据交互验收。真实 Claude 命令、Windows/macOS 桌面端到端与双平台 CI 尚未验收，不代表发布完成。
+
+### 视觉证据与比较条件
+
+- Source visual truth: 用户选定图片 `C:/Users/hq/AppData/Local/Temp/codex-clipboard-62a5d75d-d572-403f-b22f-e8a1c082043c.png`，留档于 `E:/Dr/new-claude/docs/testing/extension-a-2026-10-19/approved-design.png`。
+- 实现：既有 React/Mantine 扩展页中的实际 PluginManager 组件、既有主题和导航；临时浏览器入口仅替换 API 为内存数据，不连接用户真实 Claude。
+- Implementation screenshot: `E:/Dr/new-claude/docs/testing/extension-a-2026-10-19/desktop.png`。
+- State: 浅色，Plugins，hq，ecc 已启用、superpowers 已停用、rust-analyzer-lsp 可添加，与 A01 相同。A02 对应 `install-drawer.png`。
+- Viewport: 主屏 1440×900 CSS px，截图 1440×900 px，DPR 1。另检查 980×720、640×900，以及深色。
+- 参考为 1672×941 px 四联图；A01 单屏内容为约 822×428 px，A02 同尺寸。它是展示画板，没有可验证的原始 CSS viewport/DPR。比较时裁出对应单屏、以相同宽度归一，不把比例差异当作像素偏差。
+- Full-view comparison evidence: `E:/Dr/new-claude/docs/testing/extension-a-2026-10-19/comparison.png`。已将设计和实现放入同一画布实际打开检查；左侧上方 A01 是比较对象，下方露出的 A03 标题不参与比较。
+- Focused comparison evidence: 同一 comparison.png 下排将作用范围/列表、A02 安装抽屉并排检查；各区域缩放标度不同，仅用于结构、样式和文字清晰度判断，不作逐像素评分。原始 desktop.png 与 install-drawer.png 保留可读尺寸。
+
+### Findings 与迭代记录
+
+1. [P2，已修复] 顶部类型导航独占卡片导致内容区过低。
+   - 初始证据：before-density.png。
+   - 修改：将 Skills/Plugins/Agents 接入现有页头；收紧环境栏、提示条和表格行，保持可点击尺寸。
+   - 复查：desktop.png 和 comparison.png；两条已安装与一条可添加完整可见。沿用应用现有侧栏宽度和中文系统字体，比例差异是既有应用约束。
+
+2. [P2，已修复] 紧凑窗口复制抽屉的确认按钮落在视口之外。
+   - 初始证据：compact-drawer-before.png；980×720 下操作区 bottom=899.5。
+   - 修改：plugin-flow-actions 使用不透明 sticky 底栏；内容独立滚动。
+   - 复查：compact-drawer.png，bottom=696；narrow-drawer.png，640×900 下 bottom=876。页面 scrollWidth 与 viewport 一致，表格仅在局部横向滚动。未隐藏全局操作。
+
+3. [P2，已修复] 更新后恢复原启停状态时，后续命令会覆盖更严格的重启说明。
+   - 修改：任务保留 update 返回的 reloadHint，不用后续启停提示覆盖；增加回归断言。
+   - 复查：update-success.png；显示重启要求且无矛盾的新会话提示。更新前后的启停状态一致。
+
+4. 安装抽屉的产品约束，已明确处理。
+   - A02 画稿展示固定描述及安装版本；现有 API 没有可用版本详情/描述接口，因此显示真实来源、目标环境与“安装完成后读取实际版本”，不伪造待安装版本。
+   - 统一安装面板保留远程/本地 ZIP 两种既有入口，较 A02 更完整；新增表单行属于必要交互内容。
+   - 复制面板明确“安装与启停配置”的一次性复制；已有版本不变，新安装使用官方来源版本，未宣称复制源版本或持续同步。
+
+### 五项保真检查
+
+- Fonts/typography：沿用项目系统无衬线及中文回退，不另引外部字体。插件名 14px/750、正文 13–14px、抽屉标题 19px/750。标题、名称、说明和次级来源保持层级；长来源/路径允许换行。参考是栅格图，无法断言字体逐像素一致；现有字体属接受的应用约束。
+- Spacing/layout：保留 A 的页头类型切换、环境栏、蓝色作用范围提示、已安装/可添加两区、右侧抽屉。表格行 70px，按钮/输入圆角 10px；多选框 5px，与开关形态区分。小窗口保留操作底栏。
+- Colors/tokens：浅色使用既有蓝色主色、淡蓝背景、深色侧栏；启用使用绿色、停用灰色；失败/待核对有语义颜色和文字。深色沿用应用 surface/text/border token。dark.png、compact-dark.png 为额外适配证据，参考未提供深色版。
+- Images/assets：本功能无照片、插画或需生成的位图。复用项目已有 PathMux 品牌标识与 Tabler 图标；插件统一包图标与画稿一致，没有以字形或自制插画代替资源。
+- Copy/content：明确当前环境，移除原“全部环境/继承关系”主操作；安装、更新、卸载均注明目标；复制预览逐环境列变化，失败保留真实原因。正式组件没有“示例环境”等测试文案（该标记仅存在于已删除的验证外壳）。
+
+### 交互与可访问性验证
+
+- 浏览器走通：安装→执行中→成功；安装取消；启用/停用；更新确认→失败→重试成功；详情；复制目标预览→部分失败→仅失败目标重试；卸载确认→可重新安装；搜索空状态；切换环境验证未选择的 jdw 保持原状态。
+- 证据：install-drawer.png、install-success.png、disabled.png、copy-preview.png、copy-partial.png、copy-retry-success.png、update-confirm.png、update-background-running.png、update-success.png、details.png、uninstall-confirm.png、uninstall-success.png、search-empty.png、unselected-environment.png。
+- 更新失败状态经浏览器可访问树核对；截图 update-background-running.png 捕获的是更新执行中，不作为失败状态截图。最初命名为 install-running 的截图实际仍是安装表单，已删除，避免当作进度证据。
+- Escape 可以关闭抽屉；关闭、更多操作、开关、搜索均有可访问名称；焦点样式显式保留。
+- Console：全新浏览器入口加载并进入 Plugins 后 error 日志为空。旧测试页编辑验证外壳时出现过 createRoot 热更新警告；不是正式入口。删除外壳时 Vite 回退到正式入口，普通浏览器因缺少 Tauri 环境出现 TitleBar metadata 错误；桌面入口依赖 Tauri，未将此当作通过的真实桌面证据。
+- 自动回归：pnpm build 通过；36 个前端测试文件、236 项测试通过。新增覆盖单环境写入、取消无写入、只重试未完成步骤、执行成功但状态不一致、本地 Windows/macOS 路径原样传递。cargo test：417 通过、8 忽略；cargo fmt -- --check 与 git diff --check 通过。
+- 未验收：真实远程插件下载、本地原生文件对话框、Windows/macOS 桌面真实 Claude 操作与双平台 CI；不得据此声明跨平台全量完成。
+
+### Implementation checklist / 清理
+
+- [x] 选定参考与实现同画布全局、局部比较。
+- [x] 当前环境为默认操作边界；每次官方命令仅传单个受管理环境且 sharedScope=false。
+- [x] 真实结果核对、部分失败与失败步骤重试，无虚构下载百分比。
+- [x] 明暗主题、紧凑/窄窗口与主要交互验证。
+- [x] 清理本轮 5199 Vite 服务及验证入口 __extension-a-qa.html、src/__extension-a-qa.tsx，删除临时比对 HTML 与两个集成辅助脚本。5199 无监听；保留 PNG 证据。此前设计画廊的 39577 服务不是本轮验证服务，未处理。
+- [ ] 后续真实桌面与双平台 CI 验收。
+
+P3 follow-up：后端若提供插件描述/可用版本接口，可进一步接近 A02 的纯详情安装卡；当前不伪造数据。

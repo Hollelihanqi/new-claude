@@ -28,7 +28,9 @@ import StableRefreshButton from "./StableRefreshButton";
 import { buildUsageProfileOptions } from "./usageProfileOptions";
 import UsageLoading from "./UsageLoading";
 
-function EChart({ option, height = 340 }: { option: EChartsOption; height?: number }) {
+// 高度不写死：由外层 flex 布局分配（两张图表卡等分页面剩余高度），
+// 容器尺寸变化由 ResizeObserver 驱动 echarts.resize()。
+function EChart({ option, className }: { option: EChartsOption; className?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const inst = useRef<echarts.ECharts | null>(null);
   const latestOption = useRef(option);
@@ -36,9 +38,12 @@ function EChart({ option, height = 340 }: { option: EChartsOption; height?: numb
   useEffect(() => {
     if (!ref.current) return;
     const onResize = () => {
-      if (!ref.current?.clientWidth) return;
+      const el = ref.current;
+      // 页面隐藏（PersistentPage 预热）时容器宽高为 0，此时不初始化，
+      // 等可见后 ResizeObserver 再次回调再 init/resize。
+      if (!el?.clientWidth || !el.clientHeight) return;
       if (!inst.current) {
-        inst.current = echarts.init(ref.current);
+        inst.current = echarts.init(el);
         inst.current.setOption(latestOption.current, true);
       } else inst.current.resize();
     };
@@ -47,13 +52,15 @@ function EChart({ option, height = 340 }: { option: EChartsOption; height?: numb
     onResize();
     return () => {
       observer.disconnect();
-      inst.current && inst.current.dispose();
+      inst.current?.dispose();
+      // StrictMode 会先执行一次 cleanup 再重新挂载；不置空会对已销毁实例 resize。
+      inst.current = null;
     };
   }, []);
   useEffect(() => {
     if (inst.current) inst.current.setOption(option, true);
   }, [option]);
-  return <div ref={ref} style={{ width: "100%", height }} />;
+  return <div ref={ref} className={className} style={{ width: "100%" }} />;
 }
 
 const fmt = (n: number) => {
@@ -463,14 +470,14 @@ export default function UsagePanel({
             说明：以上为当前筛选（时间范围 / 模型 / 环境）下的合计；数值取自本机各环境会话记录中模型返回的 usage 用量，同一响应的多行记录已按消息 ID 去重（与 cc-switch 同口径），并已排除失败或未连通的请求（这类请求 token 为 0，不计入）。
           </Text>
 
-          <Card withBorder padding="md" radius="lg" className="usage-layout-card">
+          <Card withBorder padding="md" radius="lg" className="usage-layout-card usage-chart-card">
             <Text fw={600} mb="xs">使用趋势 · {rangeLabel}{byHour ? "（按小时）" : ""}</Text>
-            <EChart option={lineOption} height={360} />
+            <EChart option={lineOption} className="usage-chart" />
           </Card>
 
-          <Card withBorder padding="md" radius="lg" className="usage-layout-card">
+          <Card withBorder padding="md" radius="lg" className="usage-layout-card usage-chart-card">
             <Text fw={600} mb="xs">各模型用量占比</Text>
-            <EChart option={pieOption} height={300} />
+            <EChart option={pieOption} className="usage-chart" />
           </Card>
         </>
       )}

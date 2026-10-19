@@ -1771,6 +1771,20 @@ html[data-mantine-color-scheme="dark"] .extension-empty-icon {
 .insights-scroll > .usage-page,
 .insights-scroll > .usage-loading { flex: 1 0 auto; }
 .usage-page { min-height: 100%; }
+/* 两张图表卡等分页面剩余高度：大屏自动撑满、底部卡片不再被顶出视口；
+   矮窗口退到最小高度后交给外层 view-scroll 整页滚动，避免图表被压扁。
+   两张卡 flex-grow 相同且最小高度相同，因此图表高度始终一致。 */
+.usage-page > .usage-chart-card {
+  flex: 1 1 0;
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+}
+.usage-page > .usage-chart-card > .usage-chart {
+  flex: 1 1 auto;
+  min-height: 280px;
+  width: 100%;
+}
 .usage-empty-state { flex: 1; min-height: 300px; display: grid; place-items: center; }
 .usage-loading {
   display: flex;

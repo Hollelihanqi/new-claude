@@ -176,6 +176,7 @@ export default function App({
   const [env, setEnv] = useState<EnvInfo | null>(null);
   const [err, setErr] = useState("");
   const [view, setView] = useState<ViewId>("environment");
+  const [extensionNavigationHost, setExtensionNavigationHost] = useState<HTMLDivElement | null>(null);
   const [upd, setUpd] = useState<{ obj?: Update }>({});
   const [appVersion, setAppVersion] = useState("");
   const [usageData, setUsageData] = useState<UsageStats | null>(null);
@@ -396,7 +397,7 @@ export default function App({
       </aside>
 
       <main className="app-main">
-        <header className="app-header">
+        <header className={`app-header ${view === "extensions" ? "extensions-app-header" : ""}`}>
           <div>
             <Text className="page-kicker">{view === "chatgpt" ? "CHATGPT PROFILES" : view === "workbuddy" ? "WORKBUDDY GATEWAY" : "CLAUDE ENVIRONMENT"}</Text>
             <Text className="page-title">{VIEW_TITLES[view]}</Text>
@@ -404,6 +405,7 @@ export default function App({
           <div className="app-header-actions">
             <ColorSchemeControl value={colorScheme} onChange={setColorScheme} />
             {view !== "workbuddy" && view !== "chatgpt" && <EnvironmentStatus env={env} />}
+            {view === "extensions" && <div ref={setExtensionNavigationHost} className="extension-header-navigation" />}
           </div>
         </header>
 
@@ -482,7 +484,7 @@ export default function App({
             <PersistentPage active={view === "workbuddy"} warmupDelay={700}><WorkBuddyPanel active={view === "workbuddy"} /></PersistentPage>
             <PersistentPage active={view === "chatgpt"} warmupDelay={900}><ChatGptPanel active={view === "chatgpt"} /></PersistentPage>
             <PersistentPage active={view === "mcp"} warmupDelay={1100}><McpPanel /></PersistentPage>
-            <PersistentPage active={view === "extensions"} warmupDelay={1500}><ExtensionsPanel /></PersistentPage>
+            <PersistentPage active={view === "extensions"} warmupDelay={1500}><ExtensionsPanel navigationHost={extensionNavigationHost} /></PersistentPage>
             <PersistentPage active={view === "insights"} warmupDelay={1900} fallback={<div className="view-scroll insights-scroll"><UsageLoading /></div>}>
               <div className="view-scroll insights-scroll">
                 <UsagePanel

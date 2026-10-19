@@ -1,7 +1,7 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ExtensionsPanel from "./ExtensionsPanel";
-import { Alert, Button, Switch, Tabs, Text } from "@mantine/core";
+import { Button, Switch, Tabs, Text } from "@mantine/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type PluginRow, type ResourceOverview } from "../api";
 
@@ -30,6 +30,7 @@ vi.mock("@mantine/core", () => {
 vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("./PersistentPage", () => ({ usePageActivation: () => {}, usePageActive: () => true }));
+vi.mock("./PluginManager", () => ({ default: () => null }));
 vi.mock("./StableRefreshButton", () => ({ default: () => null }));
 vi.mock("./FeatureHelp", () => ({ default: () => null }));
 vi.mock("../api", () => ({ api: {
@@ -74,7 +75,7 @@ const textOf = (node: unknown): string => {
 
 // 插件管理入口（扩展 → Plugins）：所有改变先调用目标环境的 Claude Code 官方命令；
 // PathMux 只在命令成功后记录共享 / 独立策略；默认 Claude 只展示、不可编辑。
-describe("扩展中心的插件管理", () => {
+describe("扩展中心的导航与资源管理", () => {
   let renderer: ReactTestRenderer;
   const allText = () => [
     ...renderer.root.findAllByType(Text).map((node) => textOf(node.children)),
@@ -83,10 +84,6 @@ describe("扩展中心的插件管理", () => {
     ...renderer.root.findAllByType("button").map((node) => textOf(node.children)),
   ].join(" ");
   const switches = () => renderer.root.findAllByType(Switch);
-  const nativeButtons = () => renderer.root.findAllByType("button");
-  const scopeButton = (label: string) => nativeButtons().find((node) =>
-    node.props.className === "plugin-env-tab" && textOf(node.children) === label
-  )!;
 
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -108,23 +105,6 @@ describe("扩展中心的插件管理", () => {
   });
   afterEach(() => { act(() => renderer.unmount()); vi.unstubAllGlobals(); });
 
-  it("默认查看所有环境，并把环境状态呈现为可操作按钮", async () => {
-    expect(scopeButton("全部环境").props["aria-selected"]).toBe(true);
-    expect(scopeButton("corp")).toBeTruthy();
-    const enabled = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    expect(enabled.props.checked).toBe(true);
-    expect(enabled.props.color).toBe("#00a675");
-  });
-
-  it("把环境筛选、卡片状态和两种安装来源分成清晰层级", () => {
-    expect(allText()).toContain("全部环境");
-    expect(allText()).toContain("安装插件");
-    expect(allText()).toContain("远程地址");
-    expect(allText()).toContain("本地插件包");
-    expect(allText()).not.toContain("点击切换状态");
-    expect(allText()).not.toContain("环境状态");
-  });
-
   it("自动导入可以关闭，并保留手动导入入口", async () => {
     const autoImport = switches().find((node) => node.props["aria-label"] === "自动发现新增 Skill")!;
     await act(async () => { await autoImport.props.onChange({ currentTarget: { checked: false } }); });
@@ -139,38 +119,6 @@ describe("扩展中心的插件管理", () => {
     const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "添加到所有环境")!;
     await act(async () => { await install.props.onClick(); });
     expect(api.installResourceFromPath).toHaveBeenCalledWith("skills", "C:/local/reviewer", undefined);
-  });
-
-  it("默认 Claude 的插件只提供身份，安装仍发往选中的环境", async () => {
-    const openInstaller = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装插件")!;
-    await act(async () => { openInstaller.props.onClick(); });
-    const allEnvs = nativeButtons().find((button) => textOf(button.children) === "全部环境" && "aria-pressed" in button.props)!;
-    const corp = nativeButtons().find((button) => textOf(button.children) === "corp" && "aria-pressed" in button.props)!;
-    expect(allEnvs.props["aria-pressed"]).toBe(true);
-    expect(corp.props["aria-pressed"]).toBe(true);
-    expect(corp.props.className).toBe("included");
-    const suggestion = nativeButtons().find((button) => textOf(button.children) === "shared@m")!;
-    await act(async () => { suggestion.props.onClick(); });
-    const install = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "开始安装")!;
-    await act(async () => { await install.props.onClick(); });
-    expect(api.managePlugin).toHaveBeenCalledWith("install", "shared@m", ["corp"], true);
-  });
-
-  it("安装面板在全部环境与单环境之间使用互斥选择模式", async () => {
-    const openInstaller = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "安装插件")!;
-    await act(async () => { openInstaller.props.onClick(); });
-    const drawerButton = (label: string) => nativeButtons().find((button) =>
-      textOf(button.children) === label && "aria-pressed" in button.props
-    )!;
-
-    await act(async () => { drawerButton("corp").props.onClick(); });
-    expect(drawerButton("全部环境").props["aria-pressed"]).toBe(false);
-    expect(drawerButton("corp").props["aria-pressed"]).toBe(true);
-
-    await act(async () => { drawerButton("全部环境").props.onClick(); });
-    expect(drawerButton("全部环境").props["aria-pressed"]).toBe(true);
-    expect(drawerButton("corp").props["aria-pressed"]).toBe(true);
-    expect(drawerButton("corp").props.className).toBe("included");
   });
 
   it("只保留 Skills、Plugins 与 Agents，不再展示 Commands", () => {
@@ -216,102 +164,5 @@ describe("扩展中心的插件管理", () => {
 
     await act(async () => { await status.props.onChange(); });
     expect(api.setResourceExcluded).toHaveBeenCalledWith("skills", "corp", "reviewer", true);
-  });
-
-  it("点击绿色环境按钮会通过官方插件命令停用对应环境", async () => {
-    const disable = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { await disable.props.onChange(); });
-    expect(api.managePlugin).toHaveBeenCalledWith("disable", "shared@m", ["corp"], false);
-    expect(allText()).not.toContain("插件操作结果");
-  });
-
-  it("环境启停执行期间在对应开关圆点显示转动反馈", async () => {
-    let complete!: (report: Awaited<ReturnType<typeof api.managePlugin>>) => void;
-    vi.mocked(api.managePlugin).mockReturnValueOnce(new Promise((resolve) => { complete = resolve; }));
-    const disable = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    act(() => { disable.props.onChange(); });
-    const pending = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    expect(pending.props["aria-busy"]).toBe(true);
-    expect(pending.props.thumbIcon.props.className).toBe("plugin-switch-spinner");
-    await act(async () => {
-      complete({ action: "disable", plugin: "shared@m", reloadHint: "请重新加载", results: [{ env: "corp", ok: true, detail: "完成" }] });
-    });
-    expect(switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")?.props["aria-busy"]).toBe(false);
-  });
-
-  it("更新一个插件时只显示当前按钮加载，不让全部卡片进入褪色禁用态", async () => {
-    let complete!: (report: Awaited<ReturnType<typeof api.managePlugin>>) => void;
-    vi.mocked(api.managePlugin).mockReturnValueOnce(new Promise((resolve) => { complete = resolve; }));
-    const updates = () => renderer.root.findAllByType(Button).filter((button) => textOf(button.props.children) === "更新");
-    const removes = () => renderer.root.findAllByType(Button).filter((button) => textOf(button.props.children) === "卸载");
-
-    act(() => { updates()[0].props.onClick(); });
-
-    expect(updates()[0].props.loading).toBe(true);
-    expect(updates()[1].props.disabled).toBe(false);
-    expect(removes()[1].props.disabled).toBe(false);
-    const pluginSwitches = switches().filter((control) => control.props.className === "plugin-env-switch");
-    expect(pluginSwitches.every((control) => control.props.disabled !== true)).toBe(true);
-    expect(pluginSwitches.every((control) => control.props["aria-disabled"] === true)).toBe(true);
-
-    await act(async () => {
-      complete({ action: "update", plugin: "shared@m", reloadHint: "请重新加载", results: [{ env: "corp", ok: true, detail: "完成" }] });
-    });
-  });
-
-  it("移除成功横幅后仍保留失败环境的具体错误", async () => {
-    vi.mocked(api.managePlugin).mockResolvedValueOnce({
-      action: "disable", plugin: "shared@m", reloadHint: "请重新加载",
-      results: [{ env: "corp", ok: false, detail: "命令失败" }],
-    });
-    const disable = switches().find((control) => control.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { disable.props.onChange(); });
-    expect(renderer.root.findAllByType(Alert).map(textOf).join(" ")).toContain("corp：命令失败");
-    expect(allText()).not.toContain("插件操作结果");
-  });
-
-  it("切到某个环境后显示覆盖标记，并用官方命令启停插件", async () => {
-    await act(async () => { scopeButton("corp").props.onClick(); });
-    // 与批量设置不同的状态要显式标出来，并给出恢复入口。
-    expect(allText()).toContain("当前状态与批量设置不同");
-    const restore = renderer.root
-      .findAllByType(Button)
-      .find((b) => textOf(b.props.children).includes("恢复为批量设置"));
-    expect(restore).toBeTruthy();
-    const pluginSwitch = switches().find((node) => node.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { pluginSwitch.props.onChange(); });
-    expect(api.managePlugin).toHaveBeenCalledWith("disable", "shared@m", ["corp"], false);
-  });
-
-  it("「恢复继承」调用对应的命令", async () => {
-    await act(async () => { scopeButton("corp").props.onClick(); });
-    const restore = renderer.root
-      .findAllByType(Button)
-      .find((b) => textOf(b.props.children).includes("恢复为批量设置"))!;
-    await act(async () => { await restore.props.onClick(); });
-    expect(api.restorePluginInheritance).toHaveBeenCalledWith("corp", "overridden@m");
-  });
-
-  it("插件排除与停用是两个独立操作", async () => {
-    await act(async () => { scopeButton("corp").props.onClick(); });
-    const exclude = renderer.root.findAllByType(Button).find((button) => textOf(button.props.children) === "改为单独管理")!;
-    await act(async () => { await exclude.props.onClick(); });
-    expect(api.setPluginExcluded).toHaveBeenCalledWith("corp", "shared@m", true);
-    expect(api.managePlugin).not.toHaveBeenCalledWith("disable", "shared@m", ["corp"], false);
-  });
-
-  it("当前环境被删除后自动回到所有环境，避免向失效目标发命令", async () => {
-    await act(async () => { scopeButton("corp").props.onClick(); });
-    vi.mocked(api.pluginTargets).mockResolvedValueOnce([]);
-    const pluginSwitch = switches().find((node) => node.props["aria-label"] === "shared@m 在环境 corp 停用")!;
-    await act(async () => { await pluginSwitch.props.onChange(); });
-    expect(scopeButton("全部环境").props["aria-selected"]).toBe(true);
-  });
-
-  it("默认 Claude 只读，不能对它执行插件命令", async () => {
-    expect(allText()).toContain("默认 Claude");
-    expect(scopeButton("全部环境")).toBeTruthy();
-    expect(nativeButtons().some((button) => button.props.className === "plugin-env-tab" && textOf(button.children) === "__main__")).toBe(false);
-    expect(switches().length).toBeLessThanOrEqual(rows().length * 2);
   });
 });

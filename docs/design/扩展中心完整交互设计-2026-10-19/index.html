@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PathMux · 扩展中心完整交互设计</title>
+<style>
+:root{font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;color:#142c46;background:#edf3f8;font-synthesis:none}*{box-sizing:border-box}body{margin:0}button,a{font:inherit}button{cursor:pointer}a{color:#0674d5}header{background:#0b2945;color:#fff;padding:28px max(24px,calc((100vw - 1440px)/2)) 0}header small{color:#9bc7ee;letter-spacing:.12em}h1{font-size:28px;margin:9px 0}header p{color:#c7d8e8;line-height:1.8;margin:8px 0 24px}.tabs{display:flex;gap:10px;flex-wrap:wrap}.tabs button{padding:15px 23px;border:0;border-radius:10px 10px 0 0;background:#173c5c;color:#ceddec}.tabs button[aria-selected=true]{color:#0875d3;background:#edf3f8;font-weight:700}main{max-width:1440px;margin:auto;padding:28px 24px 70px}.intro{display:flex;justify-content:space-between;gap:24px;align-items:center;margin-bottom:22px}.intro h2{font-size:24px;margin:0 0 10px}.intro p{margin:0;color:#536b82;line-height:1.8}.model{display:inline-block;margin-top:12px;padding:9px 13px;background:#e0edfb;border-radius:6px;color:#0d63ac}.guide{background:#fff;border-left:3px solid #1385df;padding:12px 16px;line-height:1.8;margin:20px 0 28px;color:#506780}.board{margin:0 0 34px;padding:20px;background:#fff;border:1px solid #d7e3ee;border-radius:12px;overflow:hidden}.boardhead{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:16px}.board h3{margin:0;font-size:20px}.boardhead a{font-size:13px;white-space:nowrap}.boardimage{display:block;width:100%;height:auto;border-radius:7px;background:#263d52;cursor:zoom-in}.frames{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px}.state{background:#f5f9fd;border:1px solid #deE9f2;border-radius:8px;padding:13px;text-align:left;color:#1d3650;transition:.15s}.state:hover{border-color:#2994e9;transform:translateY(-2px)}.state strong{display:block;font-size:14px;line-height:1.6}.state span{display:block;margin-top:6px;font-size:12px;color:#5c7287;line-height:1.8}.state .number{color:#0876d1;font-size:11px;font-weight:700;letter-spacing:.05em;margin:0 0 4px}.footer{font-size:13px;color:#5d7389;line-height:1.9;margin-top:28px}dialog{width:min(1580px,96vw);max-height:96vh;border:0;border-radius:12px;padding:0;color:#17314b;box-shadow:0 20px 90px #001b3c55}dialog::backdrop{background:#061b32ba}.dialoghead{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid #dbe6ee}.dialoghead strong{font-size:17px}.close{border:0;background:#eaf1f7;border-radius:6px;padding:8px 15px}.frameview{width:100%;aspect-ratio:1672 / 941;background-repeat:no-repeat;background-color:#29425a}.frameview.single{background-size:200% 200%}.frameview.full{background-size:contain;background-position:center}.dialogbody{padding:18px 22px}.dialogbody p{line-height:1.9;margin:0 0 13px;color:#526b82}.actions{display:flex;gap:9px;flex-wrap:wrap}.actions button{padding:9px 13px;border:1px solid #c9deee;background:#eaf5ff;color:#075f9e;border-radius:6px}.dialogfoot{display:flex;justify-content:space-between;align-items:center;padding-top:15px;margin-top:15px;border-top:1px solid #e3ebf2}.dialogfoot a{font-size:13px}.nav{display:flex;gap:8px}.nav button{border:1px solid #d8e4ef;background:white;padding:8px 12px;border-radius:6px}.nav button:disabled{opacity:.4;cursor:default}@media(max-width:900px){.frames{grid-template-columns:repeat(2,1fr)}.intro{display:block}.tabs button{padding:12px 14px}.board{padding:12px}header{padding-top:20px}h1{font-size:23px}.board h3{font-size:17px}}@media print{header,.guide,.frames,.footer,.boardhead a{display:none}main{padding:0;max-width:none}.board{break-after:page;margin:0;border:0;padding:12px}.boardimage{max-height:90vh;object-fit:contain}body{background:white}}
+</style>
+</head>
+<body>
+<header><small>PATHMUX · INTERACTION DESIGN</small><h1>扩展中心 · 三套完整交互设计</h1><p>3 套方案 · 12 张连续画板 · 48 个关键界面与状态<br>每套覆盖主流程、操作反馈、失败恢复，以及必要的空状态。</p><nav class="tabs" role="tablist" aria-label="设计方案"></nav></header>
+<main id="content"></main>
+<dialog id="viewer"><div class="dialoghead"><strong id="viewtitle"></strong><button class="close" id="close">关闭 ×</button></div><div class="frameview" id="frameview" role="img"></div><div class="dialogbody"><p id="detail"></p><div class="actions" id="actions"></div><div class="dialogfoot"><a id="original" target="_blank" rel="noopener">打开完整画板原图 ↗</a><div class="nav"><button id="prev">上一个状态</button><button id="next">下一个状态</button></div></div></div></dialog>
+<script src="interaction-data.js"></script>
+<script>
+const data=window.DESIGN_DATA;
+const stateMap=new Map(data.states.map(s=>[s.id,s]));
+const boardMap=new Map;data.sets.forEach(set=>set.boards.forEach(board=>board.ids.forEach((id,index)=>boardMap.set(id,{...board,index,set}))));
+let currentSet="A",currentId=null;
+const content=document.querySelector("#content"),tabs=document.querySelector(".tabs"),viewer=document.querySelector("#viewer"),frameview=document.querySelector("#frameview");
+const el=(tag,cls,text)=>{const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node};
+function imageUrl(board){return "images/"+board.file}
+function renderSet(key){
+currentSet=key;
+tabs.replaceChildren(...data.sets.map(set=>{const b=el("button","",set.key+" · "+set.name);b.setAttribute("role","tab");b.setAttribute("aria-selected",String(set.key===key));b.onclick=()=>renderSet(set.key);return b}));
+const set=data.sets.find(x=>x.key===key);
+content.replaceChildren();
+const intro=el("section","intro"),introText=el("div");
+introText.append(el("h2","",set.key+" · "+set.name),el("p","",set.description),el("div","model",set.model));intro.append(introText);content.append(intro);
+content.append(el("div","guide","阅读方式：按画板左上 → 右上 → 左下 → 右下阅读。点击状态卡可放大单帧；下方按钮可沿操作分支查看下一状态。相同画面在流程中复用时，继承当次选择的插件、目标环境和实际状态。"));
+set.boards.forEach((board,i)=>{
+const section=el("section","board");section.id=board.key;
+const head=el("div","boardhead");head.append(el("h3","",String(i+1).padStart(2,"0")+" / "+board.title));
+const link=el("a","","打开原图 ↗");link.href=imageUrl(board);link.target="_blank";link.rel="noopener";head.append(link);section.append(head);
+const img=el("img","boardimage");img.src=imageUrl(board);img.alt=set.name+"："+board.ids.join("—")+" "+board.title;img.loading=i===0?"eager":"lazy";img.onclick=()=>openBoard(board);section.append(img);
+const frames=el("div","frames");
+board.ids.forEach(id=>{const state=stateMap.get(id),button=el("button","state");button.append(el("span","number",id),el("strong","",state.title),el("span","",state.detail));button.onclick=()=>openState(id);frames.append(button)});
+section.append(frames);content.append(section);
+});
+const footer=el("div","footer");footer.append(el("p","","这是 Plugins 功能的交互设计稿。版本号与异常结果为设计示例；Skills、Agents 保留在导航中。本套方案的设计规则、取消行为、重试原则和实现前提见《交互说明.md》。"));
+const a=el("a","","阅读完整交互说明");a.href="交互说明.md";a.target="_blank";footer.append(a);content.append(footer);
+}
+function showDialog(){if(!viewer.open)viewer.showModal();viewer.scrollTop=0}
+function openBoard(board){
+currentId=null;document.querySelector("#viewtitle").textContent=board.title+" · "+board.ids.join(" / ");
+frameview.className="frameview full";frameview.style.backgroundImage='url("'+imageUrl(board)+'")';frameview.style.backgroundPosition="center";frameview.setAttribute("aria-label",board.title+"完整画板");
+document.querySelector("#detail").textContent="按左上、右上、左下、右下阅读。选择状态可查看逐帧说明和后续分支。";
+const actions=document.querySelector("#actions");actions.replaceChildren(...board.ids.map(id=>{const b=el("button","",id+" "+stateMap.get(id).title);b.onclick=()=>openState(id);return b}));
+document.querySelector("#original").href=imageUrl(board);document.querySelector("#prev").disabled=true;document.querySelector("#next").disabled=true;showDialog();
+}
+function openState(id){
+const state=stateMap.get(id),board=boardMap.get(id);if(!state||!board)return;
+currentId=id;
+document.querySelector("#viewtitle").textContent=id+" · "+state.title+" / "+board.set.name;
+frameview.className="frameview single";frameview.style.backgroundImage='url("'+imageUrl(board)+'")';frameview.style.backgroundPosition=(board.index%2?"100%":"0%")+" "+(board.index>=2?"100%":"0%");frameview.setAttribute("aria-label",id+" "+state.title);
+document.querySelector("#detail").textContent=state.detail;
+document.querySelector("#actions").replaceChildren(...state.actions.map(action=>{const b=el("button","",action.label+" → "+action.to);b.onclick=()=>openState(action.to);return b}));
+document.querySelector("#original").href=imageUrl(board);
+const index=data.states.findIndex(s=>s.id===id),same=data.states.filter(s=>s.id[0]===id[0]),local=same.findIndex(s=>s.id===id);
+document.querySelector("#prev").disabled=local===0;document.querySelector("#next").disabled=local===same.length-1;
+document.querySelector("#prev").onclick=()=>openState(same[local-1].id);document.querySelector("#next").onclick=()=>openState(same[local+1].id);
+showDialog();
+}
+document.querySelector("#close").onclick=()=>viewer.close();
+viewer.addEventListener("click",e=>{if(e.target===viewer){const rect=viewer.getBoundingClientRect();if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)viewer.close()}});
+document.addEventListener("keydown",e=>{if(!viewer.open||!currentId)return;if(e.key==="ArrowRight"&&!document.querySelector("#next").disabled)document.querySelector("#next").click();if(e.key==="ArrowLeft"&&!document.querySelector("#prev").disabled)document.querySelector("#prev").click()});
+renderSet("A");
+</script>
+</body></html>

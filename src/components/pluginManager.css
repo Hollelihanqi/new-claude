@@ -1,0 +1,81 @@
+.plugin-environment-manager { min-width: 0; }
+.plugin-environment-manager .mantine-Button-root, .plugin-flow-drawer .mantine-Button-root { border-radius: 10px; }
+.plugin-environment-manager .mantine-Input-input, .plugin-flow-drawer .mantine-Input-input { border-radius: 10px; }
+.plugin-flow-drawer .mantine-Checkbox-input { border-radius: 5px; }
+.plugin-flow-drawer .mantine-Checkbox-input:not(:checked) { background: var(--app-input-bg); border-color: var(--app-border); }
+.plugin-remove-modal-header .mantine-Modal-title { font-weight: 750; }
+.plugin-remove-modal-content .mantine-Button-root { border-radius: 10px; }
+.extensions-app-header .app-header-actions { flex-wrap: wrap; max-width: 620px; gap: 10px 14px; }
+.extension-header-navigation { flex: 0 0 auto; }
+.extension-header-navigation .extensions-tab-list { min-height: 38px; padding: 3px; }
+.plugin-environment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 16px; border: 1px solid var(--app-border); border-radius: 16px; background: var(--app-surface-subtle); }
+.plugin-environment-toolbar .plugin-env-tabs { flex-basis: 540px; max-width: 620px; }
+.plugin-environment-toolbar .plugin-env-tabs { min-height: 44px; }
+.plugin-environment-toolbar .plugin-env-tab { min-height: 32px; }
+.plugin-scope-banner { display: flex; align-items: center; gap: 18px; padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--theme-base) 30%, var(--app-border)); border-radius: 14px; color: var(--app-strong-text); background: color-mix(in srgb, var(--theme-base) 7%, var(--app-surface)); }
+.plugin-scope-divider { height: 26px; border-left: 1px solid color-mix(in srgb, var(--theme-base) 50%, var(--app-border)); }
+.plugin-environment-content { min-width: 0; padding: 22px; border-radius: 18px; border: 1px solid var(--app-border); background: var(--app-surface-subtle); }
+.plugin-environment-heading { display: flex; gap: 20px; align-items: center; margin-bottom: 18px; }
+.plugin-search { width: min(370px, 42%); margin-right: auto; }
+.plugin-section-title { margin: 18px 0 12px; }
+.plugin-environment-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--app-border); border-radius: 13px; }
+.plugin-environment-table { min-width: 980px; table-layout: auto; }
+.plugin-environment-table thead th { font-size: 13px; font-weight: 500; color: var(--app-secondary-text); background: var(--app-surface-soft); white-space: nowrap; }
+.plugin-environment-table tbody td { height: 70px; padding-block: 12px; background: var(--app-surface); border-color: var(--app-subtle-border); }
+.plugin-environment-table th:first-child { width: 23%; }
+.plugin-environment-table th:nth-child(2) { width: 86px; }
+.plugin-environment-table th:nth-child(5) { width: 142px; }
+.plugin-environment-table th:last-child { width: 172px; }
+.plugin-name-button { padding: 0; color: var(--app-strong-text); background: transparent; border: 0; font: inherit; font-size: 14px; font-weight: 750; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.plugin-name-button:hover:not(:disabled) { color: var(--mantine-primary-color-6); }
+.plugin-name-button:disabled { cursor: default; }
+.plugin-source-name { max-width: 190px; overflow-wrap: anywhere; }
+.plugin-status-control { min-width: 124px; }
+.plugin-installed-empty { min-height: 80px; padding: 18px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 12px; background: var(--app-surface-soft); }
+.plugin-environment-footnote { margin-top: 20px; color: var(--app-secondary-text); }
+.plugin-task-strip { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--app-border); background: var(--app-surface-soft); }
+.plugin-task-strip .mantine-Button-root { margin-left: auto; }
+.plugin-flow-drawer { display: flex; flex-direction: column; color: var(--app-text); background: var(--app-surface) !important; border-left: 1px solid var(--app-border); }
+.plugin-flow-drawer-header { padding: 22px 24px; color: var(--app-strong-text); background: var(--app-surface) !important; border-bottom: 1px solid var(--app-subtle-border); }
+.plugin-flow-drawer-header .mantine-Drawer-title { font-weight: 750; font-size: 19px; }
+.plugin-flow-drawer-body { flex: 1; min-height: 0; padding: 24px !important; overflow-y: auto; }
+.plugin-flow-layout { min-height: calc(100dvh - 130px); }
+.plugin-flow-actions { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: auto; padding-block: 16px; border-top: 1px solid var(--app-subtle-border); background: var(--app-surface); box-shadow: 0 24px 0 var(--app-surface); }
+.plugin-flow-actions .mantine-Button-root { flex: 1 1 auto; }
+.plugin-flow-identity { display: flex; align-items: center; gap: 14px; padding: 18px 0; min-width: 0; }
+.plugin-flow-identity > div:last-child { min-width: 0; overflow-wrap: anywhere; }
+.plugin-detail-line { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.plugin-known-sources { margin-top: 16px; }
+.plugin-known-sources .mantine-Group-root { margin-top: 7px; }
+.plugin-known-sources .mantine-Button-root { max-width: 100%; }
+.plugin-known-sources .mantine-Button-label { overflow: hidden; text-overflow: ellipsis; }
+.plugin-package-path, .plugin-task-detail { overflow-wrap: anywhere; white-space: pre-wrap; }
+.plugin-copy-target { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; background: var(--app-surface-soft); border-radius: 8px; }
+.plugin-copy-preview { padding: 17px; border: 1px solid var(--app-border); border-radius: 12px; background: color-mix(in srgb, var(--theme-base) 6%, var(--app-surface)); }
+.plugin-copy-preview-row { display: flex; justify-content: space-between; gap: 18px; padding-block: 6px; }
+.plugin-operation-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding-block: 10px 16px; }
+.plugin-task-result { padding: 16px; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-surface-soft); }
+.plugin-task-result.failed { border-color: color-mix(in srgb, var(--semantic-danger) 35%, var(--app-border)); }
+.plugin-task-result.unverified { border-color: color-mix(in srgb, var(--semantic-reminder) 40%, var(--app-border)); }
+.plugin-environment-manager button:focus-visible, .plugin-flow-drawer button:focus-visible { outline: 2px solid var(--mantine-primary-color-6); outline-offset: 3px; }
+@media (max-width: 1280px) {
+  .plugin-environment-table { min-width: 720px; }
+  .plugin-description-column { display: none; }
+  .plugin-environment-content { padding: 18px; }
+}
+@media (max-width: 800px) {
+  .plugin-environment-toolbar { padding: 12px; align-items: stretch; flex-direction: column; gap: 12px; }
+  .plugin-environment-toolbar .plugin-env-tabs { flex-basis: auto; width: 100%; max-width: none; overflow-x: auto; }
+  .plugin-environment-toolbar .plugin-env-tab { flex: 1 0 85px; min-width: 85px; padding-inline: 12px; }
+  .plugin-scope-banner { padding: 14px; gap: 12px; flex-wrap: wrap; }
+  .plugin-scope-divider { display: none; }
+  .plugin-scope-banner > p:last-child { flex-basis: 100%; }
+  .plugin-environment-heading { flex-wrap: wrap; gap: 12px; }
+  .plugin-environment-heading > p { margin-right: auto; }
+  .plugin-search { order: 4; width: 100%; }
+  .plugin-environment-content { padding: 14px; }
+}
+@media (max-width: 480px) {
+  .plugin-flow-drawer-body { padding: 18px !important; }
+  .plugin-flow-drawer-header { padding: 18px; }
+}
