@@ -1841,8 +1841,9 @@ mod tests {
     #[test]
     fn batch_preview_matches_single_preview_and_keeps_revision_checks() {
         let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().canonicalize().unwrap();
         for layout in ["windows/PathMux", "macos/PathMux"] {
-            let root = temp.path().join(layout);
+            let root = project.join(layout);
             let mut registry = Registry::default();
             let source = storage::create(&root, &mut registry, "source").unwrap();
             let target = storage::create(&root, &mut registry, "target").unwrap();
@@ -1850,7 +1851,6 @@ mod tests {
                 .unwrap()
                 .join("codex");
             fs::create_dir_all(home.join("sessions")).unwrap();
-            let project = temp.path().canonicalize().unwrap();
             let mut requests = vec![];
             for index in 0..2 {
                 let id = uuid::Uuid::new_v4().to_string();
