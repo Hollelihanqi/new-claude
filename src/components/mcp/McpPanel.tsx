@@ -95,6 +95,7 @@ const EFFECTIVE_COLOR: Record<string, string> = {
 
 let cachedMcpState: McpState | null = null;
 let cachedConnectionReport: McpConnectionReport | null = null;
+let cachedConnectionAt = 0;
 let cachedUpdateReport: McpUpdateReport | null = null;
 
 function rememberMcpState(nextState: McpState) {
@@ -139,6 +140,7 @@ export default function McpPanel() {
 
   const loadQueue = useRef<Promise<void>>(Promise.resolve());
   const connectionQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingConnectionChecks = useRef(0);
   const updateQueue = useRef<Promise<unknown>>(Promise.resolve());
   const load = useCallback((quiet = false) => {
     // 刷新必须串行排队，不能在已有请求进行时静默丢弃。尤其是清理完成后的刷新：
@@ -160,6 +162,7 @@ export default function McpPanel() {
   }, []);
 
   const probeConnections = useCallback(() => {
+    pendingConnectionChecks.current += 1;
     const task = connectionQueue.current.catch(() => undefined).then(async () => {
       setConnectionBusy(true);
       try {
@@ -171,6 +174,8 @@ export default function McpPanel() {
         cachedConnectionReport = report;
         setConnectionReport(report);
       } finally {
+        cachedConnectionAt = Date.now();
+        pendingConnectionChecks.current -= 1;
         setConnectionBusy(false);
       }
     });
@@ -282,6 +287,14 @@ export default function McpPanel() {
     void load(true);
     void loadUpdateInfo();
   });
+  useEffect(() => {
+    // 后台预热只读配置；首次进入和超过 30 秒后再次进入时自动检测连接。
+    // 请求开始前登记，避免快速切页或 StrictMode 重放重复排队。
+    if (pageActive && pendingConnectionChecks.current === 0 &&
+      (!cachedConnectionReport || Date.now() - cachedConnectionAt >= 30_000)) {
+      void probeConnections();
+    }
+  }, [pageActive, probeConnections]);
 
   async function setUpdateCheck(service: McpService, enabled: boolean) {
     const key = locatorKey(service.locator);
