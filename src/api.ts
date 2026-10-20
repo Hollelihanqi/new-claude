@@ -8,7 +8,7 @@ export interface ChatGptProfile {
   status: "running" | "background" | "stopped" | "closing" | "error";
   pid: number | null;
   issue: string | null;
-  account?: { status: "chatgpt"; email: string } | { status: "apiKey" | "signedOut" | "unavailable" };
+  account?: { status: "chatgpt"; email: string; name?: string } | { status: "apiKey" | "signedOut" | "unavailable" };
   api?: { baseUrl: string; model: string; models?: { id: string; name: string }[]; hasKey: boolean; active: boolean; compatibilityEnabled?: boolean } | null;
 }
 

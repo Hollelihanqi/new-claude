@@ -7,7 +7,13 @@ use serde_json::Value;
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum Account {
-    Chatgpt { email: String },
+    Chatgpt {
+        email: String,
+        /// Display name from the same token. Optional because older tokens and
+        /// accounts that never set a name do not carry it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     ApiKey,
     SignedOut,
     Unavailable,
@@ -64,9 +70,18 @@ fn identity(auth: &Value) -> Account {
                 && email.contains('@')
                 && !email.chars().any(|c| c.is_control() || c.is_whitespace())
         });
+    let name = claims
+        .as_ref()
+        .and_then(|claims| claims["name"].as_str())
+        .map(str::trim)
+        .filter(|name| {
+            !name.is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control)
+        })
+        .map(str::to_owned);
     match email {
         Some(email) => Account::Chatgpt {
             email: email.into(),
+            name,
         },
         None => Account::Unavailable,
     }
@@ -78,7 +93,11 @@ mod tests {
     use serde_json::json;
 
     fn auth(email: &str) -> Value {
-        let payload = general_purpose::URL_SAFE_NO_PAD.encode(json!({"email": email}).to_string());
+        auth_claims(json!({"email": email}))
+    }
+
+    fn auth_claims(claims: Value) -> Value {
+        let payload = general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
         json!({"auth_mode":"chatgpt", "tokens":{
             "id_token":format!("header.{payload}.signature"),
             "access_token":"private-access-token", "refresh_token":"private-refresh-token"
@@ -103,13 +122,15 @@ mod tests {
             assert_eq!(
                 read(&a),
                 Account::Chatgpt {
-                    email: "a@example.com".into()
+                    email: "a@example.com".into(),
+                    name: None
                 }
             );
             assert_eq!(
                 read(&b),
                 Account::Chatgpt {
-                    email: "b@example.com".into()
+                    email: "b@example.com".into(),
+                    name: None
                 }
             );
             let serialized = serde_json::to_string(&read(&a)).unwrap();
@@ -125,7 +146,8 @@ mod tests {
             assert_eq!(
                 read(&a),
                 Account::Chatgpt {
-                    email: "new@example.com".into()
+                    email: "new@example.com".into(),
+                    name: None
                 }
             );
             fs::remove_file(a.join("codex/auth.json")).unwrap();
@@ -133,10 +155,59 @@ mod tests {
             assert_eq!(
                 read(&b),
                 Account::Chatgpt {
-                    email: "b@example.com".into()
+                    email: "b@example.com".into(),
+                    name: None
                 }
             );
         }
+    }
+
+    #[test]
+    fn shows_the_optional_account_name_without_using_it_as_identity() {
+        let named = identity(&auth_claims(json!({
+            "email": "cola@example.com",
+            "name": "  kele  "
+        })));
+        assert_eq!(
+            named,
+            Account::Chatgpt {
+                email: "cola@example.com".into(),
+                name: Some("kele".into())
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&named).unwrap(),
+            r#"{"status":"chatgpt","email":"cola@example.com","name":"kele"}"#
+        );
+        assert_eq!(
+            identity(&auth_claims(
+                json!({"email":"huang@example.com","name":"小黄"})
+            )),
+            Account::Chatgpt {
+                email: "huang@example.com".into(),
+                name: Some("小黄".into())
+            }
+        );
+        for name in [
+            json!(""),
+            json!("   "),
+            json!("bad\nname"),
+            json!(7),
+            json!("x".repeat(81)),
+        ] {
+            assert_eq!(
+                identity(&auth_claims(
+                    json!({"email":"cola@example.com","name":name})
+                )),
+                Account::Chatgpt {
+                    email: "cola@example.com".into(),
+                    name: None
+                }
+            );
+        }
+        let mut value = auth_claims(json!({"email":"old@example.com","name":"old"}));
+        value["auth_mode"] = json!("apikey");
+        assert_eq!(identity(&value), Account::ApiKey);
     }
 
     #[test]
@@ -189,7 +260,8 @@ mod tests {
         assert_eq!(
             read(&alias.canonicalize().unwrap()),
             Account::Chatgpt {
-                email: "actual@example.com".into()
+                email: "actual@example.com".into(),
+                name: None
             }
         );
         assert_eq!(fs::read_to_string(auth_path).unwrap(), bytes);

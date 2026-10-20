@@ -101,16 +101,26 @@ it.each(["E:/项目/接续", "/Users/dev/项目/接续"])("keeps optional projec
 
 it.each(["exe", "app"])("shows each account beside its instance name on the %s client", async extension => {
   vi.mocked(api.chatGptState).mockResolvedValue({ ...state, pickerExtensions: [extension], profiles: [
-    { ...state.profiles[0], name: "可乐", account: { status: "chatgpt", email: "cola@example.com" } },
-    { ...state.profiles[1], name: "小黄", status: "running", account: { status: "chatgpt", email: "yellow@example.com" } },
+    { ...state.profiles[0], name: "可乐", account: { status: "chatgpt", email: "cola@example.com", name: "kele" } },
+    { ...state.profiles[1], name: "小黄", status: "running", account: { status: "chatgpt", email: "yellow@example.com", name: "dreamtrain" } },
   ] });
   await act(async () => { renderer = create(<ChatGptPanel />); });
   const headings = renderer.root.findAllByProps({ className: "chatgpt-profile-heading" });
   expect(headings[0].findByProps({ className: "chatgpt-profile-name" }).props.children).toBe("可乐");
-  expect(headings[0].findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("cola@example.com");
-  expect(headings[1].findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("yellow@example.com");
+  expect(headings[0].findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("kele · cola@example.com");
+  expect(headings[1].findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("dreamtrain · yellow@example.com");
   expect(headings[1].findByProps({ className: "chatgpt-profile-account" }).props.title).toContain("授权是否有效以官方客户端为准");
   expect(renderer.root.findByProps({ className: "chatgpt-login-hint" }).props.children).toContain("官方窗口");
+});
+
+it.each([
+  [{ status: "chatgpt", email: "cola@example.com", name: "kele" }, "kele · cola@example.com"],
+  [{ status: "chatgpt", email: "cola@example.com" }, "cola@example.com"],
+  [{ status: "chatgpt", email: "cola@example.com", name: "   " }, "cola@example.com"],
+] as const)("shows the saved account name and falls back to the email when it is missing", async (account, label) => {
+  vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...state.profiles[0], account }] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe(label);
 });
 
 it.each([
@@ -125,23 +135,24 @@ it.each([
 });
 
 it("hides saved account emails during API mode and restores them only in account mode", async () => {
-  const profile = { ...state.profiles[0], account: { status: "chatgpt" as const, email: "saved@example.com" },
+  const profile = { ...state.profiles[0], account: { status: "chatgpt" as const, email: "saved@example.com", name: "saved-name" },
     api: { baseUrl: "https://api.example.com/v1", model: "m", hasKey: true, active: true } };
   vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [profile] });
   await act(async () => { renderer = create(<ChatGptPanel />); });
   expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("API 模式");
   vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...profile, api: { ...profile.api, active: false } }] });
   await act(async () => { button("刷新").props.onClick(); });
-  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("saved@example.com");
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("saved-name · saved@example.com");
 });
 
-it("refreshes the email after switching accounts and removes it after logout", async () => {
-  const next = (email: string): ChatGptState => ({ ...state, profiles: [{ ...state.profiles[0], status: "running", account: { status: "chatgpt", email } }] });
-  vi.mocked(api.chatGptState).mockResolvedValue(next("first@example.com"));
+it("refreshes the account name and email after switching accounts and removes them after logout", async () => {
+  const next = (email: string, name?: string): ChatGptState => ({ ...state, profiles: [{ ...state.profiles[0], status: "running", account: { status: "chatgpt", email, name } }] });
+  vi.mocked(api.chatGptState).mockResolvedValue(next("first@example.com", "first"));
   await act(async () => { renderer = create(<ChatGptPanel />); });
-  vi.mocked(api.chatGptState).mockResolvedValue(next("second@example.com"));
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("first · first@example.com");
+  vi.mocked(api.chatGptState).mockResolvedValue(next("second@example.com", "second"));
   await act(async () => { vi.advanceTimersByTime(15000); });
-  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("second@example.com");
+  expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("second · second@example.com");
   vi.mocked(api.chatGptState).mockResolvedValue({ ...state, profiles: [{ ...state.profiles[0], account: { status: "signedOut" } }] });
   await act(async () => { button("刷新").props.onClick(); });
   expect(renderer.root.findByProps({ className: "chatgpt-profile-account" }).props.children).toBe("未登录");

@@ -16,10 +16,15 @@ const STATUS = {
 };
 
 function accountLabel(profile: ChatGptProfile): { label: string; detail: string } {
-  if (profile.api?.active) return { label: "API 模式", detail: "使用此实例的 API 配置，无法通过 API Key 识别账号邮箱。" };
+  if (profile.api?.active) return { label: "API 模式", detail: "使用此实例的 API 配置，无法通过 API Key 识别账号名与邮箱。" };
   switch (profile.account?.status) {
-    case "chatgpt": return { label: profile.account.email, detail: `本地保存的账号：${profile.account.email}。授权是否有效以官方客户端为准。` };
-    case "apiKey": return { label: "API Key 登录", detail: "官方客户端保存了 API Key，无法据此识别账号邮箱。" };
+    case "chatgpt": {
+      const name = profile.account.name?.trim();
+      return name
+        ? { label: `${name} · ${profile.account.email}`, detail: `本地保存的账号：${name}（${profile.account.email}）。授权是否有效以官方客户端为准。` }
+        : { label: profile.account.email, detail: `本地保存的账号：${profile.account.email}。授权是否有效以官方客户端为准。` };
+    }
+    case "apiKey": return { label: "API Key 登录", detail: "官方客户端保存了 API Key，无法据此识别账号名与邮箱。" };
     case "signedOut": return { label: "未登录", detail: "点击「启动」，在官方窗口完成账号登录后刷新。" };
     default: return { label: "账号暂不可读取", detail: "请在官方窗口确认账号，再点击「刷新」。" };
   }
@@ -264,7 +269,7 @@ export default function ChatGptPanel({ active = true }: { active?: boolean }) {
 
     {state && profiles.length > 0 && <section className="chatgpt-profile-section" aria-label="独立实例">
       <Title order={4}>独立实例</Title>
-      <Text size="xs" c="dimmed" className="chatgpt-login-hint">账号登录：启动实例，在官方窗口选择账号登录；完成后点击「刷新」查看邮箱。API 模式需先关闭实例，在「API 配置」中切回账号登录。</Text>
+      <Text size="xs" c="dimmed" className="chatgpt-login-hint">账号登录：启动实例，在官方窗口选择账号登录；完成后点击「刷新」查看账号名与邮箱。API 模式需先关闭实例，在「API 配置」中切回账号登录。</Text>
       <div className="chatgpt-profile-list">
       {profiles.map((p) => { const diagnostic = diagnostics[p.id]; const tone = p.status === "stopped" ? !diagnostic || diagnostic.pending ? "checking" : diagnostic.healthy ? "healthy" : "warning" : p.status; return <div key={p.id} className="chatgpt-profile" data-profile-tone={tone}>
         <div className="chatgpt-profile-top">
