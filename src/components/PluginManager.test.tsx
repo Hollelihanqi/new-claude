@@ -34,6 +34,10 @@ it("更新直接执行，不打开弹窗或抽屉，也不改变其他按钮状�
   expect(renderer.root.findByType(Modal).props.opened).toBe(false);
   expect(renderer.root.findByType(Drawer).props.opened).toBe(false);
   expect(update().props.disabled).toBe(true);
+  expect(update().props.children).toBe("更新");
+  expect(update().props.loading).toBeUndefined();
+  expect(update().props["aria-busy"]).toBe(true);
+  expect(update().props.leftSection.props.className).toBe("plugin-refresh-spinner");
   expect(renderer.root.findByType(Switch).props.disabled).toBe(false);
   expect(more().props.disabled).toBe(false);
 });

@@ -226,7 +226,7 @@ export default function PluginManager() {
               onChange={() => toggle(row)} />
           </Group> : <Text size="sm" c="dimmed">未安装到 {target}</Text>}</Table.Td>
           <Table.Td><Group gap={8} wrap="nowrap">
-            {isInstalled ? <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!canChange || updating} loading={updating}
+            {isInstalled ? <Button size="sm" variant="default" leftSection={<IconRefresh size={15} className={updating ? "plugin-refresh-spinner" : undefined} />} disabled={!canChange || updating} aria-busy={updating}
               aria-label={`更新 ${row.name}`} onClick={() => update(row)}>更新</Button>
               : <Button size="sm" variant="light" disabled={!canChange || pending} onClick={() => openInstaller(row)}>安装到 {target}</Button>}
             <Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon size={34} variant="subtle" color="gray" disabled={!canChange} aria-label={`${identity.name} 更多操作`}><IconDots size={19} /></ActionIcon></Menu.Target>
@@ -341,7 +341,7 @@ export default function PluginManager() {
         {detail.envs.some((entry) => entry.env === target && entry.installed) ? <>
           <Group justify="space-between"><Text size="sm">在 {target} 中启用</Text><Switch aria-label={`${detail.name} 详情中启用`} color="#00a675" withThumbIndicator={false} checked={detail.envs.find((item) => item.env === target)?.value === true} disabled={!canChange} onChange={() => toggle(detail)} /></Group>
           <Alert icon={<IconInfoCircle size={18} />}>新会话使用当前配置。已有会话可重新加载插件，具体提示在执行结果中显示。</Alert>
-          <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => update(detail)} disabled={!canChange || actionPending(detail, ["update"])} loading={actionPending(detail, ["update"])}>检查并更新</Button>
+          <Button variant="default" leftSection={<IconRefresh size={16} className={actionPending(detail, ["update"]) ? "plugin-refresh-spinner" : undefined} />} onClick={() => update(detail)} disabled={!canChange || actionPending(detail, ["update"])} aria-busy={actionPending(detail, ["update"])}>检查并更新</Button>
           <Button variant="default" leftSection={<IconArrowsExchange size={16} />} onClick={() => showCopy(detail)} disabled={!canChange || envs.length < 2}>复制配置到其他环境</Button>
           <div className="plugin-flow-actions"><Button color="red" variant="subtle" leftSection={<IconTrash size={16} />} onClick={() => { setPanel(null); setConfirmation({ action: "uninstall", row: detail, env: target }); }} disabled={!canChange}>从 {target} 卸载</Button></div>
         </> : <Button onClick={() => openInstaller(detail)} disabled={!canChange}>安装到 {target}</Button>}
