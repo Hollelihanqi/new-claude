@@ -178,6 +178,17 @@ export default function PluginManager() {
       `在 ${target} ${enabled ? "停用" : "启用"} ${pluginIdentity(row.name).name}`, "inline");
   };
 
+  const actionPending = (row: PluginRow, actions: string[]) => records.some((record) => record.tasks.some((task) =>
+    task.env === target && task.plugin === row.name && (task.status === "waiting" || task.status === "running")
+    && task.steps[0] && "action" in task.steps[0] && actions.includes(task.steps[0].action)));
+
+  const update = (row: PluginRow) => {
+    if (!canChange) return;
+    const enabled = row.envs.find((entry) => entry.env === target)?.value === true;
+    void begin([createPluginTask(target, row.name, [{ action: "update" }, { action: enabled ? "enable" : "disable" }],
+      { installed: true, enabled })], `在 ${target} 更新 ${pluginIdentity(row.name).name}`, "inline");
+  };
+
   const confirm = () => {
     if (!confirmation || !canChange) return;
     const { row, env, action } = confirmation;
@@ -198,6 +209,8 @@ export default function PluginManager() {
         const identity = pluginIdentity(row.name);
         const state = row.envs.find((entry) => entry.env === target);
         const pending = pendingKeys.includes(`${target}:${row.name}`);
+        const toggling = actionPending(row, ["enable", "disable"]);
+        const updating = actionPending(row, ["update"]);
         return <Table.Tr key={row.name} aria-busy={!!pending}>
           <Table.Td><Group gap={12} wrap="nowrap"><ThemeIcon variant="light" radius="md" size={40}><IconPackage size={22} /></ThemeIcon>
             <button className="plugin-name-button" onClick={() => { setDetailName(row.name); setPanel("details"); }}>{identity.name}</button>
@@ -207,16 +220,16 @@ export default function PluginManager() {
           <Table.Td className="plugin-description-column"><Text size="sm" c="dimmed">{row.defaultInstalled ? "默认 Claude 中已发现" : "已在本机发现的 Claude Code 插件"}</Text></Table.Td>
           <Table.Td>{isInstalled ? <Group gap={10} wrap="nowrap" className="plugin-status-control">
             <Text size="sm" c={state?.value ? "teal.6" : "dimmed"} fw={600}>{state?.value ? "已启用" : "已停用"}</Text>
-            <Switch size="md" color="#00a675" withThumbIndicator={false} checked={state?.value === true} disabled={!canChange || pending}
-              aria-label={`${row.name} 在环境 ${target} ${state?.value ? "停用" : "启用"}`} aria-busy={!!pending}
-              thumbIcon={pending ? <IconLoader2 size={13} className="plugin-switch-spinner" /> : undefined}
+            <Switch size="md" color="#00a675" withThumbIndicator={false} checked={state?.value === true} disabled={!canChange || toggling}
+              aria-label={`${row.name} 在环境 ${target} ${state?.value ? "停用" : "启用"}`} aria-busy={toggling}
+              thumbIcon={toggling ? <IconLoader2 size={13} className="plugin-switch-spinner" /> : undefined}
               onChange={() => toggle(row)} />
           </Group> : <Text size="sm" c="dimmed">未安装到 {target}</Text>}</Table.Td>
           <Table.Td><Group gap={8} wrap="nowrap">
-            {isInstalled ? <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!canChange || pending}
-              aria-label={`更新 ${row.name}`} onClick={() => setConfirmation({ action: "update", row, env: target })}>更新</Button>
+            {isInstalled ? <Button size="sm" variant="default" leftSection={<IconRefresh size={15} />} disabled={!canChange || updating} loading={updating}
+              aria-label={`更新 ${row.name}`} onClick={() => update(row)}>更新</Button>
               : <Button size="sm" variant="light" disabled={!canChange || pending} onClick={() => openInstaller(row)}>安装到 {target}</Button>}
-            <Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon size={34} variant="subtle" color="gray" disabled={!canChange || pending} aria-label={`${identity.name} 更多操作`}><IconDots size={19} /></ActionIcon></Menu.Target>
+            <Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon size={34} variant="subtle" color="gray" disabled={!canChange} aria-label={`${identity.name} 更多操作`}><IconDots size={19} /></ActionIcon></Menu.Target>
               <Menu.Dropdown>
                 <Menu.Item leftSection={<IconInfoCircle size={15} />} onClick={() => { setDetailName(row.name); setPanel("details"); }}>插件详情</Menu.Item>
                 {isInstalled && <Menu.Item leftSection={<IconArrowsExchange size={15} />} onClick={() => showCopy(row)}>复制配置到其他环境</Menu.Item>}
@@ -260,7 +273,8 @@ export default function PluginManager() {
   };
   const centerOperation = records.find((entry) => entry.id === centerId);
   const viewedOperation = records.find((entry) => entry.id === viewedId) ?? operation;
-  const failures = records.filter((entry) => entry.tasks.some((task) => task.status === "failed" || task.status === "unverified"));
+  const failures = records.filter((entry) => !entry.tasks.some((task) => task.status === "waiting" || task.status === "running")
+    && entry.tasks.some((task) => task.status === "failed" || task.status === "unverified" || task.warnings.length > 0));
 
   return <Stack gap="md" className="extension-manager plugin-environment-manager">
     <div className="plugin-environment-toolbar">
@@ -272,12 +286,14 @@ export default function PluginManager() {
       <Button variant="default" leftSection={<IconArrowsExchange size={17} />} disabled={!canChange || envs.length < 2} onClick={() => showCopy()}>跨环境管理</Button>
     </div>
     <div className="plugin-scope-banner"><ThemeIcon size={40} radius="md" variant="light"><IconPackage size={22} /></ThemeIcon>
-      <Text fw={750}>当前管理：{target || "未选择环境"}</Text><span className="plugin-scope-divider" />
-      <div className="plugin-scope-feedback" role="status" aria-live="polite">
-        <span className="plugin-feedback-icon">{running || loading ? <Loader size={16} /> : readError || failures.length ? <IconAlertTriangle size={18} /> : operation ? <IconCircleCheckFilled size={18} /> : null}</span>
-        <Text size="sm" truncate title={readError || operation?.title}>{readError ? "读取失败，请重新刷新" : running ? operation?.title : loading ? "正在刷新…" : failures.length ? `${failures.length} 项操作需要处理` : operation ? `${operation.title} · 已完成` : target ? `安装、启停和更新仅影响 ${target}` : "请先创建环境"}</Text>
-        <Button className="plugin-result-entry" variant="subtle" size="compact-sm" style={{ visibility: records.length ? "visible" : "hidden" }} onClick={() => { setViewedId((failures[failures.length - 1] ?? operation)?.id ?? null); setPanel("operation"); }}>{running ? "查看进度" : "查看结果"}</Button>
-      </div>
+      <Text fw={750}>当前管理：{target || "未选择环境"}</Text>
+      {(readError || failures.length > 0) && <><span className="plugin-scope-divider" />
+        <div className="plugin-scope-feedback" role="status" aria-live="polite">
+          <span className="plugin-feedback-icon"><IconAlertTriangle size={18} /></span>
+          <Text size="sm" truncate title={readError || undefined}>{readError ? "读取失败，请重新刷新" : `${failures.length} 项操作需要处理`}</Text>
+          {(failures.length > 0 || operation) && <Button className="plugin-result-entry" variant="subtle" size="compact-sm" onClick={() => { setViewedId((failures[failures.length - 1] ?? operation)?.id ?? null); setPanel("operation"); }}>查看结果</Button>}
+        </div>
+      </>}
     </div>
     <section className="plugin-environment-content" aria-label="当前环境插件">
       <div className="plugin-environment-heading">
@@ -325,7 +341,7 @@ export default function PluginManager() {
         {detail.envs.some((entry) => entry.env === target && entry.installed) ? <>
           <Group justify="space-between"><Text size="sm">在 {target} 中启用</Text><Switch aria-label={`${detail.name} 详情中启用`} color="#00a675" withThumbIndicator={false} checked={detail.envs.find((item) => item.env === target)?.value === true} disabled={!canChange} onChange={() => toggle(detail)} /></Group>
           <Alert icon={<IconInfoCircle size={18} />}>新会话使用当前配置。已有会话可重新加载插件，具体提示在执行结果中显示。</Alert>
-          <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => { setPanel(null); setConfirmation({ action: "update", row: detail, env: target }); }} disabled={!canChange}>检查并更新</Button>
+          <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => update(detail)} disabled={!canChange || actionPending(detail, ["update"])} loading={actionPending(detail, ["update"])}>检查并更新</Button>
           <Button variant="default" leftSection={<IconArrowsExchange size={16} />} onClick={() => showCopy(detail)} disabled={!canChange || envs.length < 2}>复制配置到其他环境</Button>
           <div className="plugin-flow-actions"><Button color="red" variant="subtle" leftSection={<IconTrash size={16} />} onClick={() => { setPanel(null); setConfirmation({ action: "uninstall", row: detail, env: target }); }} disabled={!canChange}>从 {target} 卸载</Button></div>
         </> : <Button onClick={() => openInstaller(detail)} disabled={!canChange}>安装到 {target}</Button>}
