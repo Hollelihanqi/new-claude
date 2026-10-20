@@ -301,7 +301,7 @@ fn is_sensitive_key(k: &str) -> bool {
     if SENSITIVE_KEYS.contains(&lower.as_str()) {
         return true;
     }
-    let upper = k.to_uppercase();
+    let upper = k.to_uppercase().replace('-', "_");
     SENSITIVE_SUBSTRINGS.iter().any(|s| upper.contains(s))
 }
 
@@ -590,7 +590,7 @@ mod tests {
         let cfg = json!({
             "command": "node",
             "env": { "API_TOKEN": "abc", "HARMLESS": "x" },
-            "headers": { "Authorization": "Bearer s3cr3t", "X-Public": "p" },
+            "headers": { "Authorization": "Bearer s3cr3t", "X-API-Key": "header-secret", "X-Public": "p" },
             "url": "https://example.com"
         });
         let paths = sensitive_paths(&cfg);
@@ -602,6 +602,7 @@ mod tests {
         let redacted = redact(&cfg, &paths);
         assert_eq!(redacted["env"]["API_TOKEN"], REDACTED);
         assert_eq!(redacted["headers"]["Authorization"], REDACTED);
+        assert_eq!(redacted["headers"]["X-API-Key"], REDACTED);
         assert_eq!(redacted["env"]["HARMLESS"], "x");
         assert_eq!(redacted["url"], "https://example.com");
         // 原对象未被修改

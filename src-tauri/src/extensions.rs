@@ -173,6 +173,15 @@ fn read_state() -> Result<ResourceState, String> {
 
 fn save_state(state: &ResourceState) -> Result<(), String> {
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    if fs::read(state_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .as_ref()
+        == Some(&value)
+    {
+        crate::sync::restrict_credential_permissions(&state_path()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     crate::sync::write_json_atomic(&state_path(), &value)
         .map_err(|e| format!("保存扩展分发记录失败：{e}"))
 }
@@ -1810,54 +1819,67 @@ fn plugin_destination_is_private(ip: std::net::IpAddr) -> bool {
     }
 }
 
-fn validate_plugin_package_destination(value: &str) -> Result<url::Url, String> {
+fn plugin_package_addresses(parsed: &url::Url) -> Result<Vec<std::net::SocketAddr>, String> {
     use std::net::ToSocketAddrs;
-
-    let parsed = validate_plugin_package_url(value)?;
-    let url::Host::Domain(host) = parsed.host().ok_or("插件地址缺少主机名")? else {
-        return Ok(parsed);
-    };
+    let host = parsed.host_str().ok_or("插件地址缺少主机名")?;
     let port = parsed
         .port_or_known_default()
         .ok_or("插件地址缺少有效端口")?;
-    let addresses = (host, port)
-        .to_socket_addrs()
-        .map_err(|error| format!("无法解析插件地址：{error}"))?
-        .collect::<Vec<_>>();
-    if addresses.is_empty() {
-        return Err("插件地址没有可用的网络地址".into());
-    }
-    if addresses
-        .iter()
-        .any(|address| plugin_destination_is_private(address.ip()))
+    let addresses = match parsed.host().ok_or("插件地址缺少主机名")? {
+        url::Host::Ipv4(ip) => vec![std::net::SocketAddr::new(ip.into(), port)],
+        url::Host::Ipv6(ip) => vec![std::net::SocketAddr::new(ip.into(), port)],
+        url::Host::Domain(_) => (host, port)
+            .to_socket_addrs()
+            .map_err(|error| format!("无法解析插件地址：{error}"))?
+            .collect(),
+    };
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|address| plugin_destination_is_private(address.ip()))
     {
         return Err("插件地址解析到了本机、私有或保留网络，已拒绝访问".into());
     }
-    Ok(parsed)
+    Ok(addresses)
 }
 
 fn download_plugin_package(url: &str, temp: &PluginPackageTemp) -> Result<PathBuf, String> {
-    let requested = validate_plugin_package_destination(url)?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 5 {
-                return attempt.error(std::io::Error::other("插件下载重定向次数超过限制"));
+    let mut requested = validate_plugin_package_url(url)?;
+    let mut redirects = 0;
+    let mut response = loop {
+        let addresses = plugin_package_addresses(&requested)?;
+        let host = requested.host_str().ok_or("插件地址缺少主机名")?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .no_proxy()
+            .resolve_to_addrs(host, &addresses)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| format!("创建插件下载请求失败：{error}"))?;
+        let response = client
+            .get(requested.clone())
+            .send()
+            .map_err(|error| format!("下载插件包失败：{error}"))?;
+        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            if redirects >= 5 {
+                return Err("插件下载重定向次数超过限制".into());
             }
-            match validate_plugin_package_destination(attempt.url().as_str()) {
-                Ok(_) => attempt.follow(),
-                Err(error) => attempt.error(std::io::Error::other(error)),
-            }
-        }))
-        .build()
-        .map_err(|e| format!("创建插件下载请求失败：{e}"))?;
-    let mut response = client
-        .get(requested)
-        .send()
-        .map_err(|e| format!("下载插件包失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("下载插件包失败：{e}"))?;
-    validate_plugin_package_destination(response.url().as_str())?;
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or("插件下载重定向地址无效")?;
+            let next = requested
+                .join(location)
+                .map_err(|_| "插件下载重定向地址无效")?;
+            requested = validate_plugin_package_url(next.as_str())?;
+            redirects += 1;
+            continue;
+        }
+        break response
+            .error_for_status()
+            .map_err(|error| format!("下载插件包失败：{error}"))?;
+    };
     if response
         .content_length()
         .is_some_and(|size| size > MAX_PLUGIN_PACKAGE_BYTES)
@@ -1879,6 +1901,14 @@ fn download_plugin_package(url: &str, temp: &PluginPackageTemp) -> Result<PathBu
 }
 
 fn extract_plugin_package(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    extract_plugin_package_with_limit(archive_path, destination, MAX_PLUGIN_PACKAGE_BYTES)
+}
+
+fn extract_plugin_package_with_limit(
+    archive_path: &Path,
+    destination: &Path,
+    limit: u64,
+) -> Result<(), String> {
     let file = fs::File::open(archive_path).map_err(|e| format!("读取插件包失败：{e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("插件包不是有效的 ZIP：{e}"))?;
@@ -1900,8 +1930,7 @@ fn extract_plugin_package(archive_path: &Path, destination: &Path) -> Result<(),
         {
             return Err("插件包不能包含符号链接".into());
         }
-        total = total.saturating_add(entry.size());
-        if total > MAX_PLUGIN_PACKAGE_BYTES {
+        if entry.size() > limit.saturating_sub(total) {
             return Err("插件包解压后超过 256 MiB，已停止处理".into());
         }
         let output = destination.join(relative);
@@ -1913,7 +1942,15 @@ fn extract_plugin_package(archive_path: &Path, destination: &Path) -> Result<(),
             fs::create_dir_all(parent).map_err(|e| format!("创建插件目录失败：{e}"))?;
         }
         let mut target = fs::File::create(&output).map_err(|e| format!("创建插件文件失败：{e}"))?;
-        std::io::copy(&mut entry, &mut target).map_err(|e| format!("解压插件文件失败：{e}"))?;
+        let copied = std::io::copy(
+            &mut entry.by_ref().take(limit.saturating_sub(total) + 1),
+            &mut target,
+        )
+        .map_err(|e| format!("解压插件文件失败：{e}"))?;
+        total = total.saturating_add(copied);
+        if total > limit {
+            return Err("插件包解压后超过 256 MiB，已停止处理".into());
+        }
     }
     Ok(())
 }
@@ -2384,6 +2421,30 @@ mod tests {
     }
 
     #[test]
+    fn plugin_zip_limit_counts_actual_output_instead_of_declared_size() {
+        let temp = Temp::new("zip-false-size");
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        archive
+            .start_file(
+                "payload.txt",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        archive.write_all(&[b'x'; 4096]).unwrap();
+        let mut bytes = archive.finish().unwrap().into_inner();
+        let local = bytes.windows(4).position(|v| v == b"PK\x03\x04").unwrap();
+        let central = bytes.windows(4).position(|v| v == b"PK\x01\x02").unwrap();
+        bytes[local + 22..local + 26].copy_from_slice(&1u32.to_le_bytes());
+        bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
+        let source = temp.0.join("fake.zip");
+        fs::write(&source, bytes).unwrap();
+        let destination = temp.0.join("out");
+        fs::create_dir_all(&destination).unwrap();
+        assert!(extract_plugin_package_with_limit(&source, &destination, 1024).is_err());
+        assert!(fs::metadata(destination.join("payload.txt")).unwrap().len() <= 1025);
+    }
+
+    #[test]
     fn plugin_package_finds_a_single_wrapped_manifest() {
         let temp = Temp::new("plugin-zip-valid");
         let archive = temp.0.join("plugin.zip");
@@ -2628,7 +2689,12 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(
-            fs::read_to_string(config.join("plugins/installed_plugins.json")).unwrap(),
+            fs::read_to_string(
+                resolve_without_traversal(&config.join("plugins"))
+                    .unwrap()
+                    .join("installed_plugins.json")
+            )
+            .unwrap(),
             "not json"
         );
     }

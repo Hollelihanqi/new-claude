@@ -37,10 +37,23 @@ describe("独立环境插件任务", () => {
     const pending = new Promise<void>((resolve) => { release = resolve; });
     const first = queue.enqueue(["hq:ecc"], async () => { events.push("ecc"); await pending; }, () => {});
     const second = queue.enqueue(["hq:rust"], async () => { events.push("rust"); }, () => {});
-    await queue.enqueue(["hq:ecc"], async () => { events.push("duplicate"); }, () => {});
+    await expect(queue.enqueue(["hq:ecc"], async () => { events.push("duplicate"); }, () => {})).rejects.toThrow("尚未提交");
     expect(events).toEqual(["ecc"]);
     release(); await Promise.all([first, second]);
     expect(events).toEqual(["ecc", "rust"]);
+  });
+
+  it("reports a partially busy multi-target submission without silently accepting it", async () => {
+    const queue = new PluginCommandQueue();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const first = queue.enqueue(["a:plugin"], () => hold, () => {});
+    const run = vi.fn(async () => {});
+    await expect(queue.enqueue(["a:plugin", "b:plugin"], run, () => {})).rejects.toThrow("尚未提交");
+    expect(run).not.toHaveBeenCalled();
+    release(); await first;
+    await queue.enqueue(["a:plugin", "b:plugin"], run, () => {});
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("一个插件失败后继续处理下一项，并释放重复提交锁", async () => {

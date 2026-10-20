@@ -117,11 +117,11 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
   async function inspect(keys: string[]) {
     await run("检查复制范围", async () => {
       if (!source || !target || source === target || keys.length === 0) return;
-      const results = [];
-      for (let index = 0; index < keys.length; index++) {
+      const results: ChatGptPreview[] = [];
+      for (let index = 0; index < keys.length; index += 100) {
         if (stop.current || !alive.current) return;
         setBusy(`正在检查 ${index + 1}/${keys.length}`);
-        results.push(await api.chatGptPreview(request(keys[index])));
+        results.push(...await api.chatGptPreviewMany(keys.slice(index, index + 100).map((key) => request(key))));
       }
       if (alive.current && !stop.current) { setSelected(keys); setPreviews(results); }
     });

@@ -229,6 +229,21 @@ jobs:
         env:
           TAG: ${{ needs.channel.outputs.tag }}
 
+      - name: 读取本版本发布说明
+        id: release-notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.channel.outputs.tag }}
+        run: |
+          notes="docs/releases/$RELEASE_TAG.md"
+          if [ -f "$notes" ]; then
+            cp "$notes" "$RUNNER_TEMP/pathmux-release-notes.md"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f "tag_name=$RELEASE_TAG" --jq .body > "$RUNNER_TEMP/pathmux-release-notes.md"
+          fi
+          node -e "const fs=require('fs'),crypto=require('crypto');const delimiter='notes-'+crypto.randomUUID();const body=fs.readFileSync(process.env.RUNNER_TEMP+'/pathmux-release-notes.md','utf8');fs.appendFileSync(process.env.GITHUB_OUTPUT,'body<<'+delimiter+'\n'+body+'\n'+delimiter+'\n')"
+
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
         env:
@@ -238,22 +253,7 @@ jobs:
         with:
           tagName: ${{ needs.channel.outputs.tag }}
           releaseName: "PathMux ${{ needs.channel.outputs.tag }}（${{ needs.channel.outputs.name }}）"
-          releaseBody: |
-            修复插件更新后的误报失败：安装或更新后的启停配置先核对实际状态，已经启用或停用时不重复执行命令，避免把 already enabled / disabled 当作更新失败。继续保留实际版本和重启会话提示。
-
-            操作插件时只锁定当前插件，其他行保持原色并可继续提交；写入按顺序执行，同一插件重复提交不会重复执行。
-
-            更新确认、执行进度、结果和失败重试统一在同一个中间弹框完成。主动点击「查看结果」时才打开右侧结果抽屉，并可选择历史执行记录。
-
-            刷新保留当前列表与固定尺寸按钮，减少右侧闪动；执行、刷新、错误和完成提示整合进「当前管理」栏，不再插入独立提示行。删除列表左上「插件」标题、搜索、空的「可添加」区域及冗余说明。
-
-            验证边界：本地业务回归与隔离数据浏览器检查已执行；只有 Windows/macOS 自动测试、安装包构建、更新签名与国内镜像核验全部通过后才公开本版本。这些检查不代表真实 Claude 插件更新及双平台桌面实机端到端验收已完成。
-
-            已知限制：当前接口不提供待安装的最新版本与插件描述，安装后读取实际版本；执行进度以真实命令阶段与返回结果展示。
-
-            下载对应系统的安装包：macOS 用 .dmg，Windows 用 .msi 或 .exe。保留腾讯云 COS 国内更新源及 GitHub 备用地址。安装说明见仓库 README。
-          # **一律先建成 draft**：先完成的平台立刻公开的话，第二个平台失败时
-          # 用户会看到一个缺一半安装包的公开版本。是否公开交给下面的 publish job 统一决定。
+          releaseBody: ${{ steps.release-notes.outputs.body }}
           releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}
@@ -302,8 +302,8 @@ jobs:
           if ! echo "$assets" | grep -qE '\.dmg$'; then
             echo "::error::缺少 macOS 安装包（.dmg）"; fail=1
           fi
-          if ! echo "$assets" | grep -qE '\.(msi|exe)$'; then
-            echo "::error::缺少 Windows 安装包（.msi / .exe）"; fail=1
+          if ! echo "$assets" | grep -qE '\.msi$'; then
+            echo "::error::缺少稳定通道所需的 Windows 安装包（.msi）"; fail=1
           fi
           if ! echo "$assets" | grep -q '^latest\.json$'; then
             echo "::error::缺少 updater 清单 latest.json"; fail=1

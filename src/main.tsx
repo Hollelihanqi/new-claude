@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { browserStorage } from "./safeStorage";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import type { MantineColorsTuple } from "@mantine/core";
@@ -65,20 +66,20 @@ function localDateKey(date: Date): string {
 }
 
 function Root() {
-  const [scheme, setSchemeState] = useState<Scheme>(() => readInitialScheme(window.localStorage));
+  const [scheme, setSchemeState] = useState<Scheme>(() => readInitialScheme(browserStorage));
   const manualOverrideDate = useRef<string | null>(null);
   const observedDate = useRef(localDateKey(new Date()));
   const [systemColorScheme, setSystemColorScheme] = useState<SystemColorScheme>(() =>
     colorSchemeFromMedia(window.matchMedia(SYSTEM_DARK_MODE_QUERY))
   );
   const [colorSchemePreference, setColorSchemePreference] = useState<ColorSchemePreference>(() =>
-    readColorSchemePreference(window.localStorage)
+    readColorSchemePreference(browserStorage)
   );
   const colorScheme = resolveColorScheme(colorSchemePreference, systemColorScheme);
   const setScheme = useCallback((value: Scheme) => {
     manualOverrideDate.current = localDateKey(new Date());
     setSchemeState(value);
-    storeScheme(window.localStorage, value);
+    storeScheme(browserStorage, value);
   }, []);
 
   useEffect(() => {
@@ -89,13 +90,13 @@ function Root() {
 
   const setManualColorScheme = useCallback((value: SystemColorScheme) => {
     setColorSchemePreference(value);
-    storeColorSchemePreference(window.localStorage, value);
+    storeColorSchemePreference(browserStorage, value);
   }, []);
 
   const setFollowSystemColorScheme = useCallback((follow: boolean) => {
     const next = preferenceForSystemFollowing(follow);
     setColorSchemePreference(next);
-    storeColorSchemePreference(window.localStorage, next);
+    storeColorSchemePreference(browserStorage, next);
   }, []);
 
   useEffect(() => {
@@ -118,7 +119,7 @@ function Root() {
       if (observedDate.current !== today) {
         observedDate.current = today;
         manualOverrideDate.current = null;
-        setSchemeState(festivalSchemeForDate(now) ?? readStoredScheme(window.localStorage));
+        setSchemeState(festivalSchemeForDate(now) ?? readStoredScheme(browserStorage));
         return;
       }
       if (manualOverrideDate.current !== today) {

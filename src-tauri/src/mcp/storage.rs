@@ -152,7 +152,10 @@ pub(crate) fn repair_backup_permissions(paths: &McpPaths) -> Result<usize, Strin
         return Err("MCP 备份路径不是受信任的普通目录，已停止权限修复".into());
     }
 
+    #[cfg(unix)]
     let mut repaired = 0usize;
+    #[cfg(not(unix))]
+    let repaired = 0usize;
     let mut pending = vec![root];
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(&dir).map_err(|e| format!("读取 MCP 备份目录失败：{e}"))?
@@ -372,10 +375,36 @@ fn norm_path(s: &str) -> String {
 
 // ---------------- 文档读取 ----------------
 
+#[derive(Clone)]
 enum DocRead {
     Value(Value),
     Missing,
     Failed(String),
+}
+
+#[derive(Default)]
+struct ReadSnapshot {
+    documents: BTreeMap<PathBuf, (DocRead, String)>,
+}
+impl ReadSnapshot {
+    fn read(&mut self, path: &Path) -> (DocRead, String) {
+        self.documents
+            .entry(path.to_path_buf())
+            .or_insert_with(|| read_doc_with_revision(path))
+            .clone()
+    }
+    fn doc(&mut self, path: &Path) -> DocRead {
+        self.read(path).0
+    }
+    fn revision(&mut self, path: &Path) -> String {
+        self.read(path).1
+    }
+    fn value(&mut self, path: &Path) -> Option<Value> {
+        match self.doc(path) {
+            DocRead::Value(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 fn read_doc(path: &Path) -> DocRead {
@@ -876,6 +905,8 @@ fn write_json_transactional_inner(
     value: &Value,
     expected_revision: Option<&str>,
 ) -> Result<ConditionalWrite, String> {
+    static FILE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _write_guard = FILE_WRITE_LOCK.lock().map_err(|_| "MCP 文件写入锁异常")?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
     }
@@ -1795,7 +1826,8 @@ fn locator_presence(
     let project_disabled = if locator.scope == McpScope::Project {
         let project = locator.project_path.as_deref().ok_or("缺少项目路径")?;
         let settings_path = paths.project_local_settings(project)?;
-        let (names, issue) = read_disabled_project_names(&settings_path, project);
+        let (names, issue) =
+            read_disabled_project_names(read_doc(&settings_path), &settings_path, project);
         if let Some(issue) = issue {
             return Err(issue.detail);
         }
@@ -2426,6 +2458,14 @@ pub(crate) struct DeadScan {
 /// 共享库 —— 正常无 projects；有死键同样枚举，与展示口径一致）。
 /// 文档读取失败/格式异常不产死条目（由 issues 报告，不可清理）。
 pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> DeadScan {
+    scan_dead_entries_with_snapshot(paths, profile_names, &mut ReadSnapshot::default())
+}
+
+fn scan_dead_entries_with_snapshot(
+    paths: &McpPaths,
+    profile_names: &[String],
+    snapshot: &mut ReadSnapshot,
+) -> DeadScan {
     let mut dead = Vec::new();
     let mut blocked = Vec::new();
     let mut file_revisions: BTreeMap<String, String> = BTreeMap::new();
@@ -2434,7 +2474,7 @@ pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> D
     if reg_issue.is_none() {
         file_revisions.insert(
             paths.project_registry().display().to_string(),
-            revision(&paths.project_registry()),
+            snapshot.revision(&paths.project_registry()),
         );
         for p in &reg.projects {
             match probe_project_dir(p, &paths.home) {
@@ -2451,10 +2491,10 @@ pub(crate) fn scan_dead_entries(paths: &McpPaths, profile_names: &[String]) -> D
         let Ok(path) = user_source_path(paths, inst) else {
             continue; // 路径解析失败由 collect_state 的 issue 报告
         };
-        let DocRead::Value(doc) = read_doc(&path) else {
+        let DocRead::Value(doc) = snapshot.doc(&path) else {
             continue; // 缺失/读取失败/解析失败同样只走 issue
         };
-        file_revisions.insert(path.display().to_string(), revision(&path));
+        file_revisions.insert(path.display().to_string(), snapshot.revision(&path));
         let Some(projs) = doc.get("projects").and_then(|v| v.as_object()) else {
             continue;
         };
@@ -2753,6 +2793,7 @@ fn cleanup_dead_entries_scanned(paths: &McpPaths, scan: DeadScan) -> Result<Clea
 // ---------------- list / collect_state ----------------
 
 pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpState {
+    let mut snapshot = ReadSnapshot::default();
     let instances = all_instances(profile_names);
     let mut issues: Vec<McpSourceIssue> = Vec::new();
     let mut revisions: BTreeMap<String, String> = BTreeMap::new();
@@ -2761,7 +2802,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
     let (reg, reg_issue) = read_registry(paths);
     revisions.insert(
         source_id::PROJECTS.to_string(),
-        revision(&paths.project_registry()),
+        snapshot.revision(&paths.project_registry()),
     );
     if let Some(i) = reg_issue {
         issues.push(i);
@@ -2811,7 +2852,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                 continue;
             }
         };
-        let (document, source_revision) = read_doc_with_revision(&path);
+        let (document, source_revision) = snapshot.read(&path);
         revisions.insert(source_id::user(inst), source_revision.clone());
         match document {
             DocRead::Value(doc) if doc.is_object() => {
@@ -2965,13 +3006,17 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                 continue;
             }
         };
-        let (project_document, project_revision) = read_doc_with_revision(&mcp_json);
+        let (project_document, project_revision) = snapshot.read(&mcp_json);
         revisions.insert(source_id::project(proj), project_revision);
         let settings_path = paths
             .project_local_settings(proj)
             .unwrap_or_else(|_| PathBuf::from(proj));
-        revisions.insert(source_id::project_settings(proj), revision(&settings_path));
-        let (disabled_names, settings_issue) = read_disabled_project_names(&settings_path, proj);
+        revisions.insert(
+            source_id::project_settings(proj),
+            snapshot.revision(&settings_path),
+        );
+        let (disabled_names, settings_issue) =
+            read_disabled_project_names(snapshot.doc(&settings_path), &settings_path, proj);
         if let Some(i) = settings_issue {
             issues.push(i);
         }
@@ -3037,7 +3082,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
                 continue;
             }
         };
-        let rev = storage::revision(&p);
+        let rev = snapshot.revision(&p);
         for proj in &project_set {
             revisions
                 .entry(source_id::local(inst, proj))
@@ -3048,7 +3093,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
     let (disabled, disabled_issue) = read_disabled(paths);
     revisions.insert(
         source_id::DISABLED.to_string(),
-        revision(&paths.disabled_store()),
+        snapshot.revision(&paths.disabled_store()),
     );
     if let Some(i) = disabled_issue {
         issues.push(i);
@@ -3355,7 +3400,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         projects: project_refs,
         revisions,
         issues,
-        dead_entries: scan_dead_entries(paths, profile_names)
+        dead_entries: scan_dead_entries_with_snapshot(paths, profile_names, &mut snapshot)
             .dead
             .iter()
             .map(|e| dead_entry_view(e, paths))
@@ -3364,7 +3409,7 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
         operation_warnings: Vec::new(),
         sync_targets: Vec::new(),
         sync_target_revisions: BTreeMap::new(),
-        shared_overrides: shared_overrides(paths, &instances),
+        shared_overrides: shared_overrides_with_snapshot(paths, &instances, &mut snapshot),
     }
 }
 
@@ -3376,14 +3421,22 @@ pub(crate) fn collect_state(paths: &McpPaths, profile_names: &[String]) -> McpSt
 /// 判定完全复用分发引擎的纯函数 `shared_config::plan_env`，
 /// **不另写一套比较逻辑** —— 两套判据必然漂移，而漂移的后果是
 /// "界面说你没覆盖、分发却按覆盖处理"。
+#[cfg(test)]
 pub(crate) fn shared_overrides(
     paths: &McpPaths,
     instances: &[String],
 ) -> Vec<crate::mcp::SharedOverride> {
+    shared_overrides_with_snapshot(paths, instances, &mut ReadSnapshot::default())
+}
+
+fn shared_overrides_with_snapshot(
+    paths: &McpPaths,
+    instances: &[String],
+    snapshot: &mut ReadSnapshot,
+) -> Vec<crate::mcp::SharedOverride> {
     let shared_dir = paths.manager_dir.join("shared");
-    let shared: Map<String, Value> = fs::read_to_string(shared_dir.join("mcp.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    let shared: Map<String, Value> = snapshot
+        .value(&shared_dir.join("mcp.json"))
         .and_then(|v| v.get("mcpServers").and_then(|f| f.as_object()).cloned())
         .unwrap_or_default();
     let ledger: crate::shared_config::Ledger =
@@ -3401,9 +3454,8 @@ pub(crate) fn shared_overrides(
         let Ok(env_path) = paths.instance_claude_json(inst) else {
             continue;
         };
-        let env_entries = fs::read_to_string(&env_path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        let env_entries = snapshot
+            .value(&env_path)
             .and_then(|v| v.get("mcpServers").and_then(|f| f.as_object()).cloned())
             .unwrap_or_default();
         let before = ledger.entries(crate::shared_config::FIELD_MCP, inst);
@@ -3412,8 +3464,12 @@ pub(crate) fn shared_overrides(
                 env: inst.clone(),
                 name: info.name,
                 reason: info.reason.label().to_string(),
-                shared_value: info.shared_value,
-                env_value: info.env_value,
+                shared_value: info
+                    .shared_value
+                    .map(|value| validation::redact(&value, &validation::sensitive_paths(&value))),
+                env_value: info
+                    .env_value
+                    .map(|value| validation::redact(&value, &validation::sensitive_paths(&value))),
             });
         }
     }
@@ -3484,10 +3540,11 @@ fn label_of(path: &str) -> String {
 
 /// 返回 (disabled 列表, 解析问题)。sourceId 必须用 canonical 项目路径，不能拼 settings 文件路径。
 fn read_disabled_project_names(
+    document: DocRead,
     settings_path: &Path,
     project_canon: &str,
 ) -> (Vec<String>, Option<McpSourceIssue>) {
-    match read_doc(settings_path) {
+    match document {
         DocRead::Value(v) => {
             let mut names = Vec::new();
             let mut issue = None;
@@ -3534,6 +3591,19 @@ fn read_disabled_project_names(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn read_snapshot_is_consistent_and_does_not_survive_the_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        fs::write(&path, r#"{"value":1}"#).unwrap();
+        let mut snapshot = ReadSnapshot::default();
+        let first_revision = snapshot.revision(&path);
+        fs::write(&path, r#"{"value":2}"#).unwrap();
+        assert_eq!(snapshot.value(&path).unwrap()["value"], 1);
+        assert_eq!(snapshot.revision(&path), first_revision);
+        assert_eq!(ReadSnapshot::default().value(&path).unwrap()["value"], 2);
+    }
 
     fn setup() -> (McpPaths, Temp) {
         // CI 会并行创建大量测试目录，单靠系统时钟可能在同一时钟刻度内重名。
@@ -3634,6 +3704,37 @@ mod tests {
         assert!(!found.iter().any(|o| o.name == "B"), "{found:?}");
         // 共享源自己（__main__）不该被当成某个环境
         assert!(shared_overrides(&paths, &[MAIN_INSTANCE.to_string()]).is_empty());
+    }
+
+    #[test]
+    fn shared_override_values_never_serialize_credentials() {
+        let (paths, _t) = setup();
+        let shared = paths.manager_dir.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(
+            shared.join("mcp.json"),
+            r#"{"mcpServers":{"secret":{"command":"server","env":{"TOKEN":"shared-secret"}}}}"#,
+        )
+        .unwrap();
+        let corp = paths.instance_claude_json("corp").unwrap();
+        fs::create_dir_all(corp.parent().unwrap()).unwrap();
+        fs::write(&corp, r#"{"mcpServers":{"secret":{"command":"server","headers":{"Authorization":"environment-secret"}}}}"#).unwrap();
+        let result = shared_overrides(&paths, &["corp".into()]);
+        assert_eq!(result.len(), 1);
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains("shared-secret"));
+        assert!(!serialized.contains("environment-secret"));
+        assert!(serialized.contains("server"));
+        let state = collect_state(&paths, &["corp".into()]);
+        assert!(state
+            .services
+            .iter()
+            .any(|service| serde_json::to_string(&service.config)
+                .unwrap()
+                .contains("shared-secret")));
+        let serialized_state = serde_json::to_string(&state).unwrap();
+        assert!(!serialized_state.contains("shared-secret"));
+        assert!(!serialized_state.contains("environment-secret"));
     }
 
     #[test]

@@ -504,6 +504,7 @@ pub(crate) fn attach_sync_state(paths: &McpPaths, mut state: McpState) -> McpSta
     let registry = registry.unwrap_or_default();
     let mut infos = Vec::with_capacity(state.services.len());
 
+    let mut target_files = BTreeMap::new();
     for service in &state.services {
         let path = match target_path(paths, &service.locator) {
             Ok(path) => path,
@@ -522,8 +523,13 @@ pub(crate) fn attach_sync_state(paths: &McpPaths, mut state: McpState) -> McpSta
             }
         };
         let entry = registry_entry(&registry, &service.locator);
-        let target =
-            read_target(&path).and_then(|doc| normalized_target(&doc, &service.locator.name));
+        let (document, target_revision) = target_files
+            .entry(path.clone())
+            .or_insert_with(|| (read_target(&path), revision(&path)));
+        let target = document
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|doc| normalized_target(doc, &service.locator.name));
         let connected = entry.map(|entry| entry.selected).unwrap_or(false);
         if let Err(error) = convert(service) {
             infos.push(McpSyncTargetInfo {
@@ -533,7 +539,7 @@ pub(crate) fn attach_sync_state(paths: &McpPaths, mut state: McpState) -> McpSta
                 status: McpSyncStatus::Incompatible,
                 connected,
                 target_path: path.display().to_string(),
-                target_revision: revision(&path),
+                target_revision: target_revision.clone(),
                 detail: error,
             });
             continue;
@@ -561,7 +567,7 @@ pub(crate) fn attach_sync_state(paths: &McpPaths, mut state: McpState) -> McpSta
             status,
             connected,
             target_path: path.display().to_string(),
-            target_revision: revision(&path),
+            target_revision: target_revision.clone(),
             detail,
         });
     }
@@ -1004,10 +1010,114 @@ pub(crate) fn auto_sync_all(paths: &McpPaths, state: &McpState) -> Result<bool, 
     auto_sync_all_locked(paths, state)
 }
 
+pub(crate) struct EnvironmentTargetCleanup {
+    pub paths: Vec<PathBuf>,
+    pub warnings: Vec<String>,
+    updates: Vec<(PathBuf, String, String)>,
+}
+
+impl EnvironmentTargetCleanup {
+    /// The caller holds the target write guard and snapshots these paths for rollback.
+    pub fn apply(&self) -> Result<(), String> {
+        for (path, expected, text) in &self.updates {
+            if revision(path) != *expected {
+                return Err("Codex MCP 在删除期间已变化，请刷新后重试".into());
+            }
+            write_text_atomic(path, text)?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn plan_environment_target_cleanup(
+    paths: &McpPaths,
+    environment: &str,
+) -> Result<EnvironmentTargetCleanup, String> {
+    let registry = read_registry(paths)?;
+    let mut result = EnvironmentTargetCleanup {
+        paths: vec![],
+        warnings: vec![],
+        updates: vec![],
+    };
+    let mut documents = BTreeMap::new();
+    for entry in registry
+        .entries
+        .iter()
+        .filter(|entry| entry.source.instance_id.as_deref() == Some(environment))
+    {
+        let path = match target_path(paths, &entry.source) {
+            Ok(path) => path,
+            Err(_) => {
+                result.warnings.push(format!(
+                    "项目路径不可确认，保留 Codex 配置：{}",
+                    entry.target_path
+                ));
+                continue;
+            }
+        };
+        if registry.entries.iter().any(|other| {
+            other.source != entry.source
+                && other.source.name == entry.source.name
+                && target_path(paths, &other.source).ok().as_ref() == Some(&path)
+        }) {
+            result.warnings.push(format!(
+                "Codex 服务仍有其他来源，已保留：{}",
+                entry.source.name
+            ));
+            continue;
+        }
+        if !documents.contains_key(&path) {
+            match read_target(&path) {
+                Ok(document) => {
+                    documents.insert(path.clone(), (document, revision(&path)));
+                }
+                Err(error) => {
+                    result.warnings.push(error);
+                    continue;
+                }
+            }
+        }
+        let (document, _) = documents.get_mut(&path).unwrap();
+        let current = normalized_target(document, &entry.source.name)?;
+        let Some(current) = current else {
+            continue;
+        };
+        let has_custom_fields = server_table(document, &entry.source.name)
+            .is_some_and(|table| table.iter().any(|(key, _)| !MANAGED_FIELDS.contains(&key)));
+        if has_custom_fields || stable_hash(&current) != entry.last_target_hash {
+            result.warnings.push(format!(
+                "Codex 服务已有本地修改，已保留：{}（{}）",
+                entry.source.name,
+                path.display()
+            ));
+            continue;
+        }
+        document["mcp_servers"]
+            .as_table_mut()
+            .ok_or("Codex MCP 表格式无效")?
+            .remove(&entry.source.name);
+    }
+    for (path, (document, expected)) in documents {
+        let text = document.to_string();
+        if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            result.paths.push(path.clone());
+            result.updates.push((path, expected, text));
+        }
+    }
+    Ok(result)
+}
+
 pub(crate) fn start_monitor(app: tauri::AppHandle) {
     std::thread::spawn(move || loop {
         let paths = McpPaths::system();
         let instances = super::current_instances();
+        if read_registry(&paths)
+            .map(|registry| !registry.entries.iter().any(|entry| entry.selected))
+            .unwrap_or(false)
+        {
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
+        }
         let state = super::storage::collect_state(&paths, &instances);
         match auto_sync_all(&paths, &state) {
             Ok(true) => {
@@ -1025,6 +1135,50 @@ mod tests {
     use super::*;
     use crate::mcp::McpEffectiveState;
     use serde_json::json;
+
+    #[test]
+    fn environment_cleanup_only_removes_unchanged_owned_project_servers() {
+        for modification in ["none", "managed", "custom", "other-owner"] {
+            let modified = modification != "none";
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let paths = McpPaths::for_test(root.clone());
+            let mut source = service(&root, json!({"command":"node"}));
+            source.locator.scope = McpScope::Local;
+            source.locator.instance_id = Some("corp".into());
+            source.locator.project_path = Some(root.display().to_string());
+            let path = target_path(&paths, &source.locator).unwrap();
+            let mut document = DocumentMut::new();
+            apply_normalized(&mut document, "demo", &convert(&source).unwrap().normalized).unwrap();
+            let hash = stable_hash(&normalized_target(&document, "demo").unwrap().unwrap());
+            let mut registry = SyncRegistry::default();
+            upsert_entry(&mut registry, &source.locator, &path, "source".into(), hash);
+            if modification == "managed" {
+                document["mcp_servers"]["demo"]["command"] = toml_edit::value("user-command");
+            }
+            if modification == "custom" {
+                document["mcp_servers"]["demo"]["enabled_tools"] = toml_edit::value("user-policy");
+            }
+            if modification == "other-owner" {
+                let mut other = registry.entries[0].clone();
+                other.source.instance_id = Some("other".into());
+                registry.entries.push(other);
+            }
+            write_text_atomic(&path, &document.to_string()).unwrap();
+            fs::write(
+                paths.openai_sync_registry(),
+                serde_json::to_vec(&registry).unwrap(),
+            )
+            .unwrap();
+            let cleanup = plan_environment_target_cleanup(&paths, "corp").unwrap();
+            cleanup.apply().unwrap();
+            assert_eq!(
+                server_table(&read_target(&path).unwrap(), "demo").is_some(),
+                modified
+            );
+            assert_eq!(!cleanup.warnings.is_empty(), modified);
+        }
+    }
 
     fn service(root: &Path, config: JsonValue) -> McpService {
         McpService {

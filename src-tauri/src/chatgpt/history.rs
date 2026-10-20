@@ -543,7 +543,8 @@ pub fn transfer(
     let home = source_home(root, r, &request.source_id)?;
     let completed_only = source_running(root, r, &request.source_id)?;
     let mut source = None;
-    for p in paths(&home)?.0 {
+    let candidates = paths(&home)?.0;
+    for p in &candidates {
         if path_key(&home, &p)? != request.key {
             continue;
         }
@@ -561,7 +562,6 @@ pub fn transfer(
     if item.revision != request.revision && !completed_only {
         return Err("来源记录已变化，请刷新后重新选择".into());
     }
-    let candidates = paths(&home)?.0;
     let raw = snapshot::materialize(&path, &candidates, completed_only)?;
     let (prepared, _, _) = prepare(raw, &home, request.workspace.as_deref())?;
     let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
@@ -641,38 +641,58 @@ pub struct Preview {
 }
 
 pub fn preview(root: &Path, r: &Registry, request: &TransferRequest) -> Result<Preview, String> {
-    selected(r, &request.target_id)?;
-    let target = storage::profile_dir(root, &request.target_id)?;
-    let home = source_home(root, r, &request.source_id)?;
-    let completed_only = source_running(root, r, &request.source_id)?;
-    let candidates = paths(&home)?.0;
-    let (path, item) = candidates
-        .iter()
-        .filter(|p| path_key(&home, p).ok().as_deref() == Some(&request.key))
-        .find_map(|p| {
-            inspect(&home, p)
-                .ok()
-                .filter(|i| i.key == request.key)
-                .map(|i| (p, i))
+    preview_many(root, r, std::slice::from_ref(request)).map(|mut items| items.remove(0))
+}
+
+pub fn preview_many(
+    root: &Path,
+    r: &Registry,
+    requests: &[TransferRequest],
+) -> Result<Vec<Preview>, String> {
+    let first = requests.first().ok_or("请选择需要预览的记录")?;
+    if requests.len() > 100
+        || requests.iter().any(|request| {
+            request.source_id != first.source_id || request.target_id != first.target_id
         })
-        .ok_or("记录不存在，请刷新")?;
-    if item.revision != request.revision && !completed_only {
-        return Err("记录已变化，请刷新".into());
+    {
+        return Err("每次预览限 1–100 条，且必须使用同一来源和目标".into());
     }
-    let (prepared, images, workspace) = prepare(
-        snapshot::materialize(path, &candidates, completed_only)?,
-        &home,
-        request.workspace.as_deref(),
-    )?;
-    let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
-    Ok(Preview {
-        key: item.key,
-        title: item.title,
-        bytes: bytes.len(),
-        images: images.max(assets.len()),
-        workspace,
-        fingerprint: hex::encode(Sha256::digest(bytes)),
-    })
+    selected(r, &first.target_id)?;
+    let target = storage::profile_dir(root, &first.target_id)?;
+    let home = source_home(root, r, &first.source_id)?;
+    let completed_only = source_running(root, r, &first.source_id)?;
+    let candidates = paths(&home)?.0;
+    let index = candidates
+        .iter()
+        .filter_map(|path| path_key(&home, path).ok().map(|key| (key, path)))
+        .collect::<std::collections::HashMap<_, _>>();
+    requests
+        .iter()
+        .map(|request| {
+            let path = index.get(&request.key).ok_or("记录不存在，请刷新")?;
+            let item = inspect(&home, path)?;
+            if item.key != request.key {
+                return Err("记录不存在，请刷新".into());
+            }
+            if item.revision != request.revision && !completed_only {
+                return Err("记录已变化，请刷新".into());
+            }
+            let (prepared, images, workspace) = prepare(
+                snapshot::materialize(path, &candidates, completed_only)?,
+                &home,
+                request.workspace.as_deref(),
+            )?;
+            let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
+            Ok(Preview {
+                key: item.key,
+                title: item.title,
+                bytes: bytes.len(),
+                images: images.max(assets.len()),
+                workspace,
+                fingerprint: hex::encode(Sha256::digest(bytes)),
+            })
+        })
+        .collect()
 }
 
 fn prepare(
@@ -1816,6 +1836,50 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn batch_preview_matches_single_preview_and_keeps_revision_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        for layout in ["windows/PathMux", "macos/PathMux"] {
+            let root = temp.path().join(layout);
+            let mut registry = Registry::default();
+            let source = storage::create(&root, &mut registry, "source").unwrap();
+            let target = storage::create(&root, &mut registry, "target").unwrap();
+            let home = storage::profile_dir(&root, &source.id)
+                .unwrap()
+                .join("codex");
+            fs::create_dir_all(home.join("sessions")).unwrap();
+            let project = temp.path().canonicalize().unwrap();
+            let mut requests = vec![];
+            for index in 0..2 {
+                let id = uuid::Uuid::new_v4().to_string();
+                let path = home.join("sessions").join(format!("rollout-{id}.jsonl"));
+                fs::write(
+                    &path,
+                    fixture(&id, &project, "legacy", &format!("message {index}")),
+                )
+                .unwrap();
+                let item = inspect(&home, &path).unwrap();
+                requests.push(TransferRequest {
+                    source_id: source.id.clone(),
+                    target_id: target.id.clone(),
+                    key: item.key,
+                    revision: item.revision,
+                    workspace: None,
+                    fingerprint: None,
+                });
+            }
+            let results = preview_many(&root, &registry, &requests).unwrap();
+            assert_eq!(results.len(), 2);
+            assert_eq!(
+                results[0].fingerprint,
+                preview(&root, &registry, &requests[0]).unwrap().fingerprint
+            );
+            requests[0].revision = "stale".into();
+            assert!(preview_many(&root, &registry, &requests).is_err());
+            assert!(preview_many(&root, &registry, &[]).is_err());
+        }
     }
 
     fn fixture(id: &str, cwd: &Path, mode: &str, text: &str) -> String {

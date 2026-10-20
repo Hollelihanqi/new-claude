@@ -22,7 +22,21 @@ pub struct McpUpdateInfo {
     pub reason: String,
     /// 已把包版本替换为 latest_version 的完整配置。前端仍必须走现有 preview/apply，
     /// 不能直接写文件。
+    #[serde(serialize_with = "serialize_next_config")]
     pub next_config: Option<Map<String, Value>>,
+}
+
+fn serialize_next_config<S: serde::Serializer>(
+    config: &Option<Map<String, Value>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    config
+        .as_ref()
+        .map(|config| {
+            let value = Value::Object(config.clone());
+            super::validation::redact(&value, &super::validation::sensitive_paths(&value))
+        })
+        .serialize(serializer)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -613,6 +627,23 @@ mod tests {
         let next = config_with_version(&service, &source, "1.4.0").unwrap();
         assert_eq!(next["args"][1], "@scope/server@1.4.0");
         assert_eq!(next["args"][3], "secret");
+    }
+
+    #[test]
+    fn update_reports_redact_the_config_but_keep_internal_values() {
+        let mut service = service("npx", &["server@1.0.0"]);
+        service
+            .config
+            .insert("env".into(), serde_json::json!({"TOKEN":"update-secret"}));
+        let (mut info, source) = base_info(&service, &UpdatePreferences::default());
+        info.next_config = config_with_version(&service, &source.unwrap(), "2.0.0");
+        assert_eq!(
+            info.next_config.as_ref().unwrap()["env"]["TOKEN"],
+            "update-secret"
+        );
+        assert!(!serde_json::to_string(&info)
+            .unwrap()
+            .contains("update-secret"));
     }
 
     #[test]

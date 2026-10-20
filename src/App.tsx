@@ -1,4 +1,5 @@
 import { lazy, useCallback, useEffect, useRef, useState } from "react";
+import { browserStorage } from "./safeStorage";
 import {
   Box,
   Text,
@@ -347,12 +348,12 @@ export default function App({
   }, []);
   // 自动刷新间隔（秒），0 表示关闭；在用量页可改，选择记进 localStorage。
   const [usageAuto, setUsageAuto] = useState(() => {
-    const v = parseInt(localStorage.getItem(USAGE_AUTO_KEY) || "", 10);
+    const v = parseInt(browserStorage.getItem(USAGE_AUTO_KEY) || "", 10);
     return USAGE_AUTO_CHOICES.includes(v) ? v : 30;
   });
   const changeUsageAuto = useCallback((sec: number) => {
     setUsageAuto(sec);
-    localStorage.setItem(USAGE_AUTO_KEY, String(sec));
+    browserStorage.setItem(USAGE_AUTO_KEY, String(sec));
   }, []);
   // 后端按文件 mtime/size 缓存解析结果，只有首次是全量扫描，之后仅重读有变动的
   // 活跃会话文件。因此启动即后台预扫一次（首次进用量页立刻有数据），

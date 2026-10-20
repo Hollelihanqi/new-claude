@@ -329,9 +329,9 @@ fn file_sddl(path: &Path) -> Result<String, String> {
         "(Get-Acl -LiteralPath {}).Sddl",
         crate::ps_q(&path.display().to_string())
     );
-    let out = crate::ps_command()
-        .args(["-NoProfile", "-Command", &script])
-        .output()
+    let mut command = crate::ps_command();
+    command.args(["-NoProfile", "-Command", &script]);
+    let out = crate::claude_cli::run_with_timeout(command, std::time::Duration::from_secs(10))
         .map_err(|e| format!("调用 PowerShell 读取权限失败：{e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
@@ -370,7 +370,7 @@ fn unauthorized_readers(_path: &Path) -> Result<Vec<String>, String> {
 
 /// 需要核对权限的凭证文件。
 /// 只列**真的含密钥材料或凭据密文**的文件，避免把无关文件报成问题。
-fn credential_files() -> Vec<PathBuf> {
+fn credential_files() -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = vec![];
     #[cfg(target_os = "windows")]
     {
@@ -378,7 +378,7 @@ fn credential_files() -> Vec<PathBuf> {
         // （config.backup / .previous / .next / .corrupt*）。按前缀枚举才能整族收进来 ——
         // 只查 config.json 会漏掉备份，而那些文件的权限可能更松。
         // （macOS 的 key 在钥匙串里，这些文件不含密钥材料，故不检查。）
-        files.extend(crate::config_artifact_paths_in(&crate::cfg_dir()).unwrap_or_default());
+        files.extend(crate::config_artifact_paths_in(&crate::cfg_dir())?);
         // 集成脚本里嵌了同一段 DPAPI 密文
         files.push(crate::ps_path());
     }
@@ -386,12 +386,50 @@ fn credential_files() -> Vec<PathBuf> {
     files.extend(crate::sync::credential_file_paths());
     // WorkBuddy 的明文密钥文件（含 write_document 派生出的备份/临时产物）
     files.extend(crate::workbuddy::credential_file_paths());
-    files.retain(|path| path.is_file());
-    files
+    collect_credential_backups(&crate::mcp::McpPaths::system().backup_dir(), &mut files)?;
+    let mut existing = vec![];
+    for path in files {
+        match fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => existing.push(path),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法检查 {}：{error}", path.display())),
+        }
+    }
+    existing.sort();
+    existing.dedup();
+    Ok(existing)
+}
+
+fn collect_credential_backups(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let meta = match fs::symlink_metadata(root) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("无法检查 {}：{error}", root.display())),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "备份目录包含链接，无法确认权限：{}",
+            root.display()
+        ));
+    }
+    if meta.is_file() {
+        files.push(root.to_path_buf());
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(root).map_err(|error| format!("无法枚举备份 {}：{error}", root.display()))?
+    {
+        collect_credential_backups(&entry.map_err(|error| error.to_string())?.path(), files)?;
+    }
+    Ok(())
 }
 
 fn credential_permission_item() -> Option<HealthItem> {
-    let files = credential_files();
+    let files = match credential_files() {
+        Ok(files) => files,
+        Err(error) => return Some(item("credperms", "凭证文件权限", "fail", error)),
+    };
     if files.is_empty() {
         return None;
     }
@@ -968,7 +1006,9 @@ fn build_report(app_version: &str, items: &[HealthItem]) -> String {
     }
 
     r += "\n--- 同步日志（最近 200 行） ---\n";
-    let log = fs::read_to_string(crate::cfg_dir().join("sync.log")).unwrap_or_default();
+    let log = crate::sync::log_tail(&crate::cfg_dir().join("sync.log"), 200)
+        .unwrap_or_default()
+        .join("\n");
     if log.is_empty() {
         r += "（日志为空）\n";
     } else {
@@ -1004,33 +1044,48 @@ fn reveal_file(path: &Path) {
 }
 
 #[tauri::command]
-pub fn export_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
-    let version = app.package_info().version.to_string();
-    let items = run_health_checks();
-    let report = build_report(&version, &items);
+pub async fn export_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
+    crate::background(move || {
+        let version = app.package_info().version.to_string();
+        let items = run_health_checks();
+        let report = build_report(&version, &items);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (y, m, d) = civil_from_days((now / 86400) as i64);
-    let rem = now % 86400;
-    let name = format!(
-        "cc-manager-诊断-{y:04}{m:02}{d:02}-{:02}{:02}{:02}.txt",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    );
-    let dir = crate::export_directory();
-    let path = dir.join(name);
-    fs::write(&path, report).map_err(|e| format!("写入诊断文件失败：{e}"))?;
-    reveal_file(&path);
-    Ok(path.display().to_string())
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (y, m, d) = civil_from_days((now / 86400) as i64);
+        let rem = now % 86400;
+        let name = format!(
+            "cc-manager-诊断-{y:04}{m:02}{d:02}-{:02}{:02}{:02}.txt",
+            rem / 3600,
+            (rem % 3600) / 60,
+            rem % 60
+        );
+        let dir = crate::export_directory();
+        let path = dir.join(name);
+        fs::write(&path, report).map_err(|e| format!("写入诊断文件失败：{e}"))?;
+        reveal_file(&path);
+        Ok(path.display().to_string())
+    })
+    .await?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_backup_inventory_includes_nested_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("mcp-backups");
+        fs::create_dir_all(root.join("source")).unwrap();
+        fs::write(root.join("source/backup.json"), "secret").unwrap();
+        let mut files = vec![];
+        collect_credential_backups(&root, &mut files).unwrap();
+        assert_eq!(files, vec![root.join("source/backup.json")]);
+        collect_credential_backups(&temp.path().join("missing"), &mut files).unwrap();
+    }
 
     #[test]
     fn gateway_fail_names_collects_failed_gateways_only() {

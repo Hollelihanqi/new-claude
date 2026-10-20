@@ -342,14 +342,21 @@ fn command_for_executable(executable: &Path, args: &[&str]) -> Command {
     command
 }
 
-fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
+pub(crate) fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| format!("无法启动：{error}"))?;
+    wait_with_timeout(child, timeout)
+}
+
+pub(crate) fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<Output, String> {
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -366,7 +373,11 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, S
                 let _ = child.wait();
                 return Err(format!("执行超过 {} 秒", timeout.as_secs()));
             }
-            Err(error) => return Err(format!("等待执行结果失败：{error}")),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("等待执行结果失败：{error}"));
+            }
         }
     }
 }
@@ -848,11 +859,13 @@ pub(crate) fn run_mcp_health_list(
     config_dir: &Path,
     runtime_path: Option<&OsStr>,
 ) -> Result<String, String> {
+    if !config_dir.is_dir() {
+        return Err("环境尚未初始化，请先启动该环境后再检测 MCP 连接".into());
+    }
     let detection = detect_claude();
     let executable = detection
         .path
         .ok_or_else(|| format!("未找到可用的 Claude Code：{}", detection.detail))?;
-    fs::create_dir_all(config_dir).map_err(|e| format!("创建环境配置目录失败：{e}"))?;
     let mut command = command_for_executable(&executable, &["mcp", "list"]);
     for name in [
         "ANTHROPIC_BASE_URL",

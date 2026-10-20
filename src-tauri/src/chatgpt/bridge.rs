@@ -567,10 +567,10 @@ fn responses(
     };
     if !upstream.status().is_success() {
         let code = upstream.status().as_u16();
-        let body = upstream
-            .text()
-            .unwrap_or_default()
-            .replace(key, "[REDACTED]");
+        let body = crate::redact_gateway_text(&upstream.text().unwrap_or_default(), Some(key))
+            .chars()
+            .take(4096)
+            .collect::<String>();
         return response(stream, code, &body).map_err(|e| e.to_string());
     }
     if converted.body["stream"] == false {

@@ -16,6 +16,14 @@ mod sync;
 mod window_layout;
 mod workbuddy;
 
+pub(crate) async fn background<T: Send + 'static>(
+    task: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("后台任务异常：{error}"))
+}
+
 const MARK: &str = "# cc-manager-integration";
 const KEYCHAIN_PREFIX: &str = "cc-manager";
 
@@ -108,7 +116,13 @@ fn newest_modified(dir: &std::path::Path) -> Option<std::time::SystemTime> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            let modified = if path.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            let modified = if kind.is_dir() {
                 newest_modified(&path)
             } else {
                 fs::metadata(&path).and_then(|m| m.modified()).ok()
@@ -920,6 +934,8 @@ fn collides_with_claude_subcommand(n: &str) -> bool {
 
 fn valid_name(n: &str) -> bool {
     if n.is_empty()
+        || n.starts_with('-')
+        || n.eq_ignore_ascii_case("esac")
         || n.len() > 40
         || !n
             .chars()
@@ -988,7 +1004,12 @@ fn script_safe_name(n: &str) -> bool {
 /// 把用户的配置、Key 与会话历史一起锁死 —— 那是比劫持更糟的缺陷。
 /// "入口能不能用"与"数据能不能删"是两件事，必须分开。
 fn can_have_terminal_entry(n: &str) -> bool {
-    script_safe_name(n) && !collides_with_claude_subcommand(n)
+    script_safe_name(n)
+        && !n.starts_with('-')
+        && !n.starts_with("__")
+        && !matches!(n, "." | "..")
+        && !n.eq_ignore_ascii_case("esac")
+        && !collides_with_claude_subcommand(n)
 }
 
 fn profile_names(list: &[Profile]) -> Vec<String> {
@@ -1073,9 +1094,8 @@ fn powershell_profile_path(host: &str) -> Result<PathBuf, String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let out = command
-        .args(["-NoProfile", "-Command", "$PROFILE"])
-        .output()
+    command.args(["-NoProfile", "-Command", "$PROFILE"]);
+    let out = claude_cli::run_with_timeout(command, std::time::Duration::from_secs(10))
         .map_err(|e| format!("未检测到 {host}（{e}）"))?;
     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if path.is_empty() {
@@ -1127,13 +1147,15 @@ fn install_integration(list: &[Profile]) -> Result<String, String> {
     let unsafe_names: Vec<&str> = list
         .iter()
         .map(|p| p.name.as_str())
-        .filter(|n| !n.is_empty() && !script_safe_name(n))
+        .filter(|n| {
+            !n.is_empty() && !can_have_terminal_entry(n) && !collides_with_claude_subcommand(n)
+        })
         .collect();
     if !unsafe_names.is_empty() {
         // 不再写"请删除后用合规名称重建"：删除会连 `.claude/projects`（会话历史）一起清掉，
         // 而改名迁移尚未提供。只如实说明现状 + 留存指引。
         link_warns.push(format!(
-            "环境 {} 的名称含不安全字符，无法生成终端入口（`claude <名字>` 用不了）；\
+            "环境 {} 的名称无法安全用于终端入口（`claude <名字>` 用不了）；\
              配置、Key 与历史数据均已保留，仍可查看、编辑和删除。改名迁移功能待提供。{}",
             unsafe_names.join("、"),
             RELOAD_HINT
@@ -1414,8 +1436,15 @@ fn set_bypass_permissions(name: String, enabled: bool) -> Result<InstanceSetting
 // ---------------- token（平台原生） ----------------
 // 在 Windows 上创建 PowerShell 命令时隐藏控制台窗口（CREATE_NO_WINDOW）
 fn ps_command() -> std::process::Command {
+    let shell = ["powershell.exe", "pwsh.exe"].into_iter().find_map(|name| {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(name))
+                .find(|path| path.is_file())
+        })
+    });
     #[allow(unused_mut)]
-    let mut c = std::process::Command::new("powershell");
+    let mut c = std::process::Command::new(shell.unwrap_or_else(|| PathBuf::from("powershell")));
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1447,62 +1476,77 @@ fn list_profiles() -> Vec<Profile> {
 }
 
 #[tauri::command]
-fn save_profile(profile: Profile, token: Option<String>) -> Result<String, String> {
-    // 全程持配置锁：这是"读 → 改 → 写"的复合操作，中途若被 `claude --sync` 插入，
-    // 我们的 save(&list) 会用**加载时的陈旧 list** 覆盖对方的改动（丢更新）。
-    let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
-    let list = load();
-    let mut p = profile;
-    // 先归一化再校验：校验和存储必须是同一个字符串
-    p.name = p.name.trim().to_string();
-    p.base_url = normalize_base_url(&p.base_url);
-    // 只校验新建；已存在的名字（旧规则时代创建）放行，否则老用户连换 key 都保存不了
-    let is_update = list.iter().any(|x| x.name == p.name);
-    if !is_update && !valid_name(&p.name) {
-        return Err(
-            "环境名称只能包含英文字母、数字、下划线、短横线（1~40 个字符），且不能以 __ 开头、不能使用 Windows 保留名，也不能与 Claude 的官方子命令同名（如 mcp、doctor、update —— 否则 claude mcp ... 会被当成使用该环境启动）。".into(),
-        );
-    }
-    if p.type_ == "router" {
-        if let Some(reason) = base_url_rejection(&p.base_url) {
-            return Err(reason.message().into());
+async fn save_profile(profile: Profile, token: Option<String>) -> Result<String, String> {
+    crate::background(move || {
+        // 全程持配置锁：这是"读 → 改 → 写"的复合操作，中途若被 `claude --sync` 插入，
+        // 我们的 save(&list) 会用**加载时的陈旧 list** 覆盖对方的改动（丢更新）。
+        let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试")?;
+        let list = load();
+        let mut p = profile;
+        // 先归一化再校验：校验和存储必须是同一个字符串
+        p.name = p.name.trim().to_string();
+        p.base_url = normalize_base_url(&p.base_url);
+        // 只校验新建；已存在的名字（旧规则时代创建）放行，否则老用户连换 key 都保存不了
+        let is_update = list.iter().any(|x| x.name == p.name);
+        if !is_update && !valid_name(&p.name) {
+            return Err(
+                "环境名称只能包含英文字母、数字、下划线、短横线（1~40 个字符），且不能以 - 或 __ 开头、不能使用 esac 或 Windows 保留名，也不能与 Claude 的官方子命令同名（如 mcp、doctor、update —— 否则 claude mcp ... 会被当成使用该环境启动）。".into(),
+            );
         }
-        match token.as_ref().filter(|s| !s.is_empty()) {
-            Some(t) => match store_token(&p.name, t) {
-                Ok(enc) => {
-                    p.token_enc = enc;
-                    p.has_token = true;
-                }
-                Err(e) => return Err(format!("保存 token 失败：{e}")),
-            },
-            None => {
-                if let Some(old) = list.iter().find(|x| x.name == p.name) {
-                    p.token_enc = old.token_enc.clone();
-                    p.has_token = old.has_token;
+        if p.type_ == "router" {
+            if let Some(reason) = base_url_rejection(&p.base_url) {
+                return Err(reason.message().into());
+            }
+            match token.as_ref().filter(|s| !s.is_empty()) {
+                Some(t) => match store_token(&p.name, t) {
+                    Ok(enc) => {
+                        p.token_enc = enc;
+                        p.has_token = true;
+                    }
+                    Err(e) => return Err(format!("保存 token 失败：{e}")),
+                },
+                None => {
+                    if let Some(old) = list.iter().find(|x| x.name == p.name) {
+                        p.token_enc = old.token_enc.clone();
+                        p.has_token = old.has_token;
+                    }
                 }
             }
+        } else {
+            p.base_url = String::new();
+            p.token_enc = None;
+            p.has_token = false;
+            p.opus_model = String::new();
+            p.sonnet_model = String::new();
+            p.haiku_model = String::new();
         }
-    } else {
-        p.base_url = String::new();
-        p.token_enc = None;
-        p.opus_model = String::new();
-        p.sonnet_model = String::new();
-        p.haiku_model = String::new();
-    }
 
-    let mut list = list;
-    if let Some(idx) = list.iter().position(|x| x.name == p.name) {
-        list[idx] = p;
-    } else {
-        list.push(p);
-    }
-    save(&list).map_err(|e| e.to_string())?;
-    let integration = install_integration(&list)?;
-    // 新环境保存成功后就应当拥有共享 MCP，不能等用户再点一次“同步并修复”
-    // 或重启应用。这里已经持有配置锁，因此调用非重入的内部入口。
-    let names = profile_names(&list);
-    let outcome = sync::sync_configs_locked(&names)?;
-    Ok(compose_sync_report(&integration, &outcome, &names))
+        let account_name = (p.type_ == "account").then(|| p.name.clone());
+        let mut list = list;
+        if let Some(idx) = list.iter().position(|x| x.name == p.name) {
+            list[idx] = p;
+        } else {
+            list.push(p);
+        }
+        if let Some(name) = &account_name {
+            let mut artifacts = config_artifact_paths_in(&cfg_dir())?;
+            artifacts.extend([cfg_path(), cfg_backup_path(), ps_path(), sh_path()]);
+            shared_config::with_file_rollback(&artifacts, || {
+                save(&list).map_err(|e| e.to_string())?;
+                scrub_profile_from_config_artifacts(name, &list)?;
+                refresh_existing_integration_scripts(&list)?;
+                clear_token(name)
+            })?;
+        } else {
+            save(&list).map_err(|e| e.to_string())?;
+        }
+        let integration = install_integration(&list)?;
+        // 新环境保存成功后就应当拥有共享 MCP，不能等用户再点一次“同步并修复”
+        // 或重启应用。这里已经持有配置锁，因此调用非重入的内部入口。
+        let names = profile_names(&list);
+        let outcome = sync::sync_configs_locked(&names)?;
+        Ok(compose_sync_report(&integration, &outcome, &names))
+    }).await?
 }
 
 #[derive(Clone)]
@@ -1557,8 +1601,12 @@ fn deletion_artifact_paths() -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
-fn capture_deletion_files() -> Result<Vec<DeletionFileSnapshot>, String> {
-    deletion_artifact_paths()?
+fn capture_deletion_files(extra: &[PathBuf]) -> Result<Vec<DeletionFileSnapshot>, String> {
+    let mut artifacts = deletion_artifact_paths()?;
+    artifacts.extend_from_slice(extra);
+    artifacts.sort();
+    artifacts.dedup();
+    artifacts
         .into_iter()
         .map(|path| {
             let bytes = match fs::read(&path) {
@@ -1778,147 +1826,160 @@ fn deletion_credential_backup(_profile: &Profile) -> Result<Option<String>, Stri
     Ok(None)
 }
 
-#[tauri::command]
-fn delete_profile(name: String) -> Result<String, String> {
-    // **全程**持配置锁，含失败回滚：删除是多步复合事务，
-    // 中途被别人插入会留下"删了一半"的状态，回滚也可能覆盖对方的新结果。
-    // 锁不可重入，所以下面用 sync::forget_profile_locked 而不是 forget_profile。
-    let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试删除")?;
-    let _target_guard = mcp::target_write_guard()?;
-    let list = load();
-    let profile = list
-        .iter()
-        .find(|profile| profile.name == name)
-        .cloned()
-        .ok_or("未找到要删除的环境。")?;
-    if name == "." || name == ".." || !script_safe_name(&name) {
-        return Err("环境名称不安全，拒绝删除。请手动检查配置。".into());
+fn clear_deleted_profile_token(profile: &Profile) -> Result<bool, String> {
+    // Account profiles saved by older versions can still have an orphaned keychain item.
+    if profile.has_token || profile.type_ == "account" {
+        clear_token(&profile.name)?;
+        Ok(true)
+    } else {
+        Ok(false)
     }
-    let credential_backup = deletion_credential_backup(&profile)?;
-    let snapshots = capture_deletion_files()?;
-    let mcp_cleanup = mcp::environment_cleanup_files(&mcp::McpPaths::system(), &name)?;
-    let staged = stage_instance_data(&name)?;
-    let mut next = list.clone();
-    next.retain(|item| item.name != name);
-    let mut credential_cleared = false;
-    let mut purge_started = false;
+}
 
-    let deletion = (|| -> Result<(), String> {
-        save(&next).map_err(|e| e.to_string())?;
-        install_integration(&next)?;
-        refresh_existing_integration_scripts(&next)?;
-        // 共享配置的分发台账里也要抹掉这个环境：否则将来重建同名环境时，
-        // 那条"我们分发过 X"的记录会让 X 被判成"用户改过/删过"，再也收敛不到共享值。
-        shared_config::forget_env(&name)?;
-        extensions::forget_target_locked(&name)?;
-        for (path, remove) in &mcp_cleanup {
-            if !path.try_exists().map_err(|e| e.to_string())? {
-                continue;
-            }
-            if *remove {
-                fs::remove_file(path).map_err(|e| e.to_string())?;
-            } else {
-                let mut doc: serde_json::Value =
-                    serde_json::from_str(&read_optional_text(path)?).map_err(|e| e.to_string())?;
-                mcp::forget_environment_records(&mut doc, &name)?;
-                sync::write_json_atomic(path, &doc).map_err(|e| e.to_string())?;
-            }
+#[tauri::command]
+async fn delete_profile(name: String) -> Result<String, String> {
+    crate::background(move || {
+        // **全程**持配置锁，含失败回滚：删除是多步复合事务，
+        // 中途被别人插入会留下"删了一半"的状态，回滚也可能覆盖对方的新结果。
+        // 锁不可重入，所以下面用 sync::forget_profile_locked 而不是 forget_profile。
+        let _guard = sync::acquire_config_lock().ok_or("配置正在同步，请稍后重试删除")?;
+        let _target_guard = mcp::target_write_guard()?;
+        let list = load();
+        let profile = list
+            .iter()
+            .find(|profile| profile.name == name)
+            .cloned()
+            .ok_or("未找到要删除的环境。")?;
+        if name == "." || name == ".." || !script_safe_name(&name) {
+            return Err("环境名称不安全，拒绝删除。请手动检查配置。".into());
         }
-        // 旧版快照已退役，但存量文件里的环境标识也需清理。
-        let legacy_snapshot = cfg_dir().join("sync-snapshot.json");
-        if legacy_snapshot.is_file() {
-            let mut doc: serde_json::Value =
-                serde_json::from_str(&read_optional_text(&legacy_snapshot)?)
-                    .map_err(|e| format!("旧同步记录损坏，无法核验残留：{e}"))?;
-            if let Some(domains) = doc.get_mut("domains").and_then(|v| v.as_object_mut()) {
-                for domain in domains.values_mut() {
-                    if let Some(replicas) =
-                        domain.get_mut("replicas").and_then(|v| v.as_array_mut())
-                    {
-                        replicas.retain(|v| v.as_str() != Some(name.as_str()));
+        let credential_backup = deletion_credential_backup(&profile)?;
+        let target_cleanup = mcp::plan_environment_target_cleanup(&mcp::McpPaths::system(), &name)?;
+        let snapshots = capture_deletion_files(&target_cleanup.paths)?;
+        let mcp_cleanup = mcp::environment_cleanup_files(&mcp::McpPaths::system(), &name)?;
+        let staged = stage_instance_data(&name)?;
+        let mut next = list.clone();
+        next.retain(|item| item.name != name);
+        let mut credential_cleared = false;
+        let mut purge_started = false;
+
+        let deletion = (|| -> Result<(), String> {
+            save(&next).map_err(|e| e.to_string())?;
+            install_integration(&next)?;
+            refresh_existing_integration_scripts(&next)?;
+            // 共享配置的分发台账里也要抹掉这个环境：否则将来重建同名环境时，
+            // 那条"我们分发过 X"的记录会让 X 被判成"用户改过/删过"，再也收敛不到共享值。
+            shared_config::forget_env(&name)?;
+            extensions::forget_target_locked(&name)?;
+            target_cleanup.apply()?;
+            for (path, remove) in &mcp_cleanup {
+                if !path.try_exists().map_err(|e| e.to_string())? {
+                    continue;
+                }
+                if *remove {
+                    fs::remove_file(path).map_err(|e| e.to_string())?;
+                } else {
+                    let mut doc: serde_json::Value =
+                        serde_json::from_str(&read_optional_text(path)?).map_err(|e| e.to_string())?;
+                    mcp::forget_environment_records(&mut doc, &name)?;
+                    sync::write_json_atomic(path, &doc).map_err(|e| e.to_string())?;
+                }
+            }
+            // 旧版快照已退役，但存量文件里的环境标识也需清理。
+            let legacy_snapshot = cfg_dir().join("sync-snapshot.json");
+            if legacy_snapshot.is_file() {
+                let mut doc: serde_json::Value =
+                    serde_json::from_str(&read_optional_text(&legacy_snapshot)?)
+                        .map_err(|e| format!("旧同步记录损坏，无法核验残留：{e}"))?;
+                if let Some(domains) = doc.get_mut("domains").and_then(|v| v.as_object_mut()) {
+                    for domain in domains.values_mut() {
+                        if let Some(replicas) =
+                            domain.get_mut("replicas").and_then(|v| v.as_array_mut())
+                        {
+                            replicas.retain(|v| v.as_str() != Some(name.as_str()));
+                        }
+                    }
+                }
+                sync::write_json_atomic(&legacy_snapshot, &doc).map_err(|e| e.to_string())?;
+            }
+            if let Some(path) = ca_bundle_path(&name) {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("删除环境 CA 失败：{e}")),
+                }
+            }
+            scrub_profile_from_config_artifacts(&name, &next)?;
+            credential_cleared = clear_deleted_profile_token(&profile)?;
+            let residual_configs = config_artifacts_reference_profile(&name)?;
+            let ledger_residual = shared_config::ledger_references_env(&name)?;
+            let extension_residual = extensions::state_references_target(&name)?;
+            let script_residual = integration_scripts_reference_profile(&name)?;
+            if !residual_configs.is_empty() || ledger_residual || extension_residual || script_residual
+            {
+                return Err(format!(
+                    "删除前核验发现残留：配置 {} 处，终端命令 {}，分发记录 {}",
+                    residual_configs.len(),
+                    if script_residual {
+                        "存在"
+                    } else {
+                        "已清理"
+                    },
+                    if ledger_residual || extension_residual {
+                        "存在"
+                    } else {
+                        "已清理"
+                    }
+                ));
+            }
+
+            if let Some((_, staged_path)) = &staged {
+                purge_started = true;
+                purge_instance_root(staged_path)?;
+            }
+            if staged
+                .as_ref()
+                .map(|(root, staged_path)| root.exists() || staged_path.exists())
+                .unwrap_or(false)
+            {
+                return Err("删除后核验发现环境数据目录仍然存在".into());
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = deletion {
+            let mut rollback_errors = vec![];
+            if let Err(rollback) = restore_deletion_files(&snapshots) {
+                rollback_errors.push(rollback);
+            }
+            if let Err(rollback) = restore_staged_instance(&staged) {
+                rollback_errors.push(rollback);
+            }
+            if credential_cleared {
+                if let Some(token) = credential_backup.as_deref() {
+                    if let Err(rollback) = store_token(&name, token) {
+                        rollback_errors.push(format!("恢复 Key 失败：{rollback}"));
                     }
                 }
             }
-            sync::write_json_atomic(&legacy_snapshot, &doc).map_err(|e| e.to_string())?;
-        }
-        if let Some(path) = ca_bundle_path(&name) {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("删除环境 CA 失败：{e}")),
-            }
-        }
-        scrub_profile_from_config_artifacts(&name, &next)?;
-        if profile.has_token {
-            clear_token(&name)?;
-            credential_cleared = true;
-        }
-        let residual_configs = config_artifacts_reference_profile(&name)?;
-        let ledger_residual = shared_config::ledger_references_env(&name)?;
-        let extension_residual = extensions::state_references_target(&name)?;
-        let script_residual = integration_scripts_reference_profile(&name)?;
-        if !residual_configs.is_empty() || ledger_residual || extension_residual || script_residual
-        {
-            return Err(format!(
-                "删除前核验发现残留：配置 {} 处，终端命令 {}，分发记录 {}",
-                residual_configs.len(),
-                if script_residual {
-                    "存在"
+            return Err(if rollback_errors.is_empty() {
+                if purge_started {
+                    format!("删除数据时失败：{error}。环境配置与剩余文件已恢复，但部分历史数据可能已删除；请检查后重试清理。")
                 } else {
-                    "已清理"
-                },
-                if ledger_residual || extension_residual {
-                    "存在"
-                } else {
-                    "已清理"
+                    format!("彻底删除未完成，原环境已恢复：{error}")
                 }
-            ));
-        }
-
-        if let Some((_, staged_path)) = &staged {
-            purge_started = true;
-            purge_instance_root(staged_path)?;
-        }
-        if staged
-            .as_ref()
-            .map(|(root, staged_path)| root.exists() || staged_path.exists())
-            .unwrap_or(false)
-        {
-            return Err("删除后核验发现环境数据目录仍然存在".into());
-        }
-        Ok(())
-    })();
-
-    if let Err(error) = deletion {
-        let mut rollback_errors = vec![];
-        if let Err(rollback) = restore_deletion_files(&snapshots) {
-            rollback_errors.push(rollback);
-        }
-        if let Err(rollback) = restore_staged_instance(&staged) {
-            rollback_errors.push(rollback);
-        }
-        if credential_cleared {
-            if let Some(token) = credential_backup.as_deref() {
-                if let Err(rollback) = store_token(&name, token) {
-                    rollback_errors.push(format!("恢复 Key 失败：{rollback}"));
-                }
-            }
-        }
-        return Err(if rollback_errors.is_empty() {
-            if purge_started {
-                format!("删除数据时失败：{error}。环境配置与剩余文件已恢复，但部分历史数据可能已删除；请检查后重试清理。")
             } else {
-                format!("彻底删除未完成，原环境已恢复：{error}")
-            }
-        } else {
-            format!(
-                "彻底删除未完成：{error}；回滚异常：{}",
-                rollback_errors.join("；")
-            )
-        });
-    }
+                format!(
+                    "彻底删除未完成：{error}；回滚异常：{}",
+                    rollback_errors.join("；")
+                )
+            });
+        }
 
-    Ok("环境配置、凭证、终端命令、同步记录、登录态、项目记录和历史用量数据均已彻底删除。".into())
+        let mut message = "环境配置、凭证、终端命令、同步记录、登录态、项目记录和历史用量数据均已彻底删除。".to_string();
+        if !target_cleanup.warnings.is_empty() { message.push_str(&format!("注意：{}", target_cleanup.warnings.join("；"))); }
+        Ok(message)
+    }).await?
 }
 
 // GUI 启动时调用：刷新集成脚本（exe 路径可能变化）+ 分发扩展与共享 MCP。
@@ -2004,28 +2065,31 @@ async fn sync_all() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn environment() -> EnvInfo {
-    let platform = if cfg!(target_os = "macos") {
-        "macos"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else {
-        "other"
-    }
-    .to_string();
-    let platform_ui = platform_ui(&platform);
-    let claude_detection = claude_cli::detect_claude();
-    EnvInfo {
-        platform,
-        platform_ui,
-        claude_found: claude_detection.found,
-        claude_detection,
-        integrated: cfg_path().exists(),
-        // 范围说明：这是**全部网关环境合计**的张数（去重），不是某一份共享信任库。
-        // 界面必须把范围写出来，否则又会读成"所有网关共用一份"。
-        cert_imported: count_certs() > 0,
-        cert_count: count_certs(),
-    }
+async fn environment() -> Result<EnvInfo, String> {
+    crate::background(move || {
+        let platform = if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "other"
+        }
+        .to_string();
+        let platform_ui = platform_ui(&platform);
+        let claude_detection = claude_cli::detect_claude();
+        EnvInfo {
+            platform,
+            platform_ui,
+            claude_found: claude_detection.found,
+            claude_detection,
+            integrated: cfg_path().exists(),
+            // 范围说明：这是**全部网关环境合计**的张数（去重），不是某一份共享信任库。
+            // 界面必须把范围写出来，否则又会读成"所有网关共用一份"。
+            cert_imported: count_certs() > 0,
+            cert_count: count_certs(),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2099,16 +2163,7 @@ pub(crate) fn export_directory() -> PathBuf {
 
 #[tauri::command]
 fn recent_sync_log() -> Vec<String> {
-    let text = fs::read_to_string(cfg_dir().join("sync.log")).unwrap_or_default();
-    let lines = text.lines().map(String::from).collect::<Vec<_>>();
-    lines
-        .into_iter()
-        .rev()
-        .take(80)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
+    sync::log_tail(&cfg_dir().join("sync.log"), 80).unwrap_or_default()
 }
 
 /// 把 PEM 文本切成一张张**原文**证书块（按 BEGIN/END 配对）。
@@ -2278,17 +2333,20 @@ fn import_cert_into(envs: &[String], path: &str) -> Result<String, String> {
 // 插件启用状态的总览（「扩展 → Plugins」用）：
 // 共享库有哪些、每个环境是继承还是覆盖、默认 Claude 是什么（只读展示）。
 #[tauri::command]
-fn plugins_overview() -> Result<Vec<shared_config::PluginRow>, String> {
-    let mut rows = shared_config::plugins_overview()?;
-    let exclusions = extensions::plugin_exclusions()?;
-    for row in &mut rows {
-        for env in &mut row.envs {
-            env.excluded = exclusions
-                .get(&env.env)
-                .is_some_and(|plugins| plugins.contains(&row.name));
+async fn plugins_overview() -> Result<Vec<shared_config::PluginRow>, String> {
+    crate::background(move || {
+        let mut rows = shared_config::plugins_overview()?;
+        let exclusions = extensions::plugin_exclusions()?;
+        for row in &mut rows {
+            for env in &mut row.envs {
+                env.excluded = exclusions
+                    .get(&env.env)
+                    .is_some_and(|plugins| plugins.contains(&row.name));
+            }
         }
-    }
-    Ok(rows)
+        Ok(rows)
+    })
+    .await?
 }
 
 // 「恢复继承」：撤销该环境对某个插件的独立设置，改回共享值
@@ -2300,26 +2358,33 @@ async fn restore_plugin_inheritance(env: String, name: String) -> Result<String,
 // 「恢复使用共享配置」：撤销某个环境对被分发条目所做的覆盖。
 // **必须用户显式触发** —— 分发自己不会替用户改回去。
 #[tauri::command]
-fn restore_shared_mcp_entry(env: String, name: String) -> Result<String, String> {
-    let msg = shared_config::restore_entry(shared_config::FIELD_MCP, &env, &name)?;
-    // 恢复后要让脚本/环境立刻反映出来（分发是幂等的，再跑一轮即可）
-    let list = load();
-    if let Err(e) = install_integration(&list) {
-        return Ok(format!("{msg}（注意：刷新终端集成失败：{e}）"));
-    }
-    Ok(msg)
+async fn restore_shared_mcp_entry(env: String, name: String) -> Result<String, String> {
+    crate::background(move || {
+        let msg = shared_config::restore_entry(shared_config::FIELD_MCP, &env, &name)?;
+        // 恢复后要让脚本/环境立刻反映出来（分发是幂等的，再跑一轮即可）
+        let list = load();
+        if let Err(e) = install_integration(&list) {
+            return Ok(format!("{msg}（注意：刷新终端集成失败：{e}）"));
+        }
+        Ok(msg)
+    })
+    .await?
 }
 
 // 导入 CA 到**全部网关环境**（保持旧界面可用；新界面走 import_cert_for 指定目标）
 #[tauri::command]
-fn import_cert(path: String) -> Result<String, String> {
+async fn import_cert(path: String) -> Result<String, String> {
+    crate::background(move || import_cert_blocking(path)).await?
+}
+
+fn import_cert_blocking(path: String) -> Result<String, String> {
     import_cert_into(&router_env_names(), &path)
 }
 
 // 导入 CA 到**指定的**网关环境（界面按需选择目标）
 #[tauri::command]
-fn import_cert_for(envs: Vec<String>, path: String) -> Result<String, String> {
-    import_cert_into(&envs, &path)
+async fn import_cert_for(envs: Vec<String>, path: String) -> Result<String, String> {
+    crate::background(move || import_cert_into(&envs, &path)).await?
 }
 
 /// 全部网关环境的证书张数（去重）。顶栏徽章用。
@@ -2331,14 +2396,14 @@ fn count_certs() -> usize {
 
 // 清空**全部网关环境**的 CA（保持旧界面可用；新界面走 clear_certs_for 指定目标）
 #[tauri::command]
-fn clear_certs() -> Result<String, String> {
-    clear_certs_from(&router_env_names())
+async fn clear_certs() -> Result<String, String> {
+    crate::background(move || clear_certs_from(&router_env_names())).await?
 }
 
 // 清空**指定**网关环境的 CA
 #[tauri::command]
-fn clear_certs_for(envs: Vec<String>) -> Result<String, String> {
-    clear_certs_from(&envs)
+async fn clear_certs_for(envs: Vec<String>) -> Result<String, String> {
+    crate::background(move || clear_certs_from(&envs)).await?
 }
 
 // 清空**这些网关环境**的 CA 证书。
@@ -2384,6 +2449,7 @@ fn clear_certs_from(envs: &[String]) -> Result<String, String> {
     // **顺序要紧：先撤销外部信任，全部成功后才删本地信任库。**
     // 原先反过来（先把清单删了再撤销）—— 撤销一旦失败，用户就**没有任何东西可以重试**，
     // 只能靠记忆重新导入一遍。清单是所有撤销动作的唯一依据，不能在依据用完之前毁掉它。
+    let workbuddy_guard = crate::workbuddy::write_guard();
     let revocations = crate::workbuddy::revoke_managed_ca(&managed);
     if revocations.iter().any(|note| note.contains('❌')) {
         let mut lines =
@@ -2410,7 +2476,8 @@ fn clear_certs_from(envs: &[String]) -> Result<String, String> {
     }
     let _ = union_ca_bundle_path();
     // 清单按已处理的证书缩减（失败不影响本次清理结果，只是留个多余条目）
-    let _ = crate::workbuddy::prune_managed_certs(&managed);
+    let ownership_warning = crate::workbuddy::prune_managed_certs(&managed).err();
+    drop(workbuddy_guard);
 
     // 集成脚本没刷新的话它还写着证书的路径。CA 注入有 `[ -f ... ]` 兜底，
     // 所以文件已删时那条注入自然不生效、也不会去读一个不存在的文件；
@@ -2420,6 +2487,9 @@ fn clear_certs_from(envs: &[String]) -> Result<String, String> {
 
     let mut lines = vec!["已删除本地 CA 信任库并撤销相关信任：".to_string()];
     lines.extend(revocations);
+    if let Some(error) = ownership_warning {
+        lines.push(format!("CA 已撤销，但所有权记录清理失败：{error}"));
+    }
     match &integration {
         Ok(_) => lines.push("终端集成脚本已刷新，请重开终端后生效。".into()),
         Err(e) => {
@@ -3105,7 +3175,13 @@ fn collect_jsonl(dir: &PathBuf, out: &mut Vec<PathBuf>) {
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.is_dir() {
+            let Ok(kind) = e.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 collect_jsonl(&p, out);
             } else if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
                 out.push(p);
@@ -3162,9 +3238,11 @@ fn scan_usage_dir(
     projects: &PathBuf,
     map: &mut std::collections::HashMap<(String, String, String), UsageRow>,
     conv: &mut Vec<ConvRow>,
+    retained: &mut std::collections::HashSet<PathBuf>,
 ) {
     let mut files = vec![];
     collect_jsonl(projects, &mut files);
+    retained.extend(files.iter().cloned());
     let mut cache = usage_cache().lock().unwrap();
     for f in files {
         let meta = match fs::metadata(&f) {
@@ -3382,6 +3460,7 @@ fn collect_usage_stats() -> UsageStats {
     use std::collections::HashMap;
     let mut map: HashMap<(String, String, String), UsageRow> = HashMap::new();
     let mut conv: Vec<ConvRow> = Vec::new();
+    let mut retained = std::collections::HashSet::new();
 
     // 扫哪些副本：默认 Claude + **配置里登记的环境**（偏差 6）。
     let list = load();
@@ -3392,9 +3471,13 @@ fn collect_usage_stats() -> UsageStats {
         } else {
             sync::instance_dir(&profile).join("projects")
         };
-        scan_usage_dir(&profile, &projects, &mut map, &mut conv);
+        scan_usage_dir(&profile, &projects, &mut map, &mut conv, &mut retained);
     }
 
+    usage_cache()
+        .lock()
+        .unwrap()
+        .retain(|path, _| retained.contains(path));
     let mut daily: Vec<UsageRow> = map.into_values().collect();
     daily.sort_by(|a, b| a.datetime.cmp(&b.datetime));
     UsageStats {
@@ -3531,6 +3614,7 @@ fn main() {
             chatgpt::chatgpt_transfer,
             chatgpt::chatgpt_open_thread,
             chatgpt::chatgpt_preview,
+            chatgpt::chatgpt_preview_many,
             chatgpt::chatgpt_batch_create,
             chatgpt::chatgpt_batch_list,
             chatgpt::chatgpt_batch_step,
@@ -3556,6 +3640,7 @@ fn main() {
             extensions::manage_plugin,
             extensions::install_plugin_package,
             mcp::list_mcp_services,
+            mcp::read_mcp_service_config,
             mcp::register_mcp_project,
             mcp::unregister_mcp_project,
             mcp::preview_mcp_change,
@@ -3613,6 +3698,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocking_work_runs_outside_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let worker =
+            tauri::async_runtime::block_on(background(|| std::thread::current().id())).unwrap();
+        assert_ne!(caller, worker);
+    }
+
+    #[test]
+    fn usage_and_activity_scans_do_not_follow_directory_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("projects");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("session.jsonl"), "{}").unwrap();
+        sync::create_directory_link(&root, &root.join("cycle")).unwrap();
+        let mut files = vec![];
+        collect_jsonl(&root, &mut files);
+        assert_eq!(files, vec![root.join("session.jsonl")]);
+        assert!(newest_modified(&root).is_some());
+    }
 
     #[test]
     fn platform_ui_supplies_windows_and_macos_copy_to_frontend() {
@@ -5156,6 +5262,18 @@ mod tests {
         // 不安全字符仍然两边都拦
         assert!(!script_safe_name("bad)name"));
         assert!(!can_have_terminal_entry("bad)name"));
+    }
+
+    #[test]
+    fn terminal_entries_reject_options_reserved_paths_and_esac() {
+        for name in ["-p", "--help", "esac", ".", "..", "__main__"] {
+            assert!(!valid_name(name), "new name: {name}");
+            assert!(!can_have_terminal_entry(name), "legacy entry: {name}");
+            assert!(script_safe_name(name), "legacy data must remain removable");
+            let list = vec![router_profile(name)];
+            assert!(!generate_sh(&list).contains(&format!("    {name})")));
+            assert!(!generate_ps1(&list).contains(&format!("    '{name}' {{")));
+        }
     }
 
     #[test]

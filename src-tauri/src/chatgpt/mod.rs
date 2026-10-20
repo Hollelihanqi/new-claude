@@ -505,6 +505,18 @@ pub async fn chatgpt_preview(
 }
 
 #[tauri::command]
+pub async fn chatgpt_preview_many(
+    requests: Vec<history::TransferRequest>,
+) -> Result<Vec<history::Preview>, String> {
+    blocking(move || {
+        let root = storage::root()?;
+        let registry = storage::registry(&root)?;
+        history::preview_many(&root, &registry, &requests)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn chatgpt_pending(target_id: String) -> Result<Vec<history::PendingTransfer>, String> {
     blocking(move || {
         let root = storage::root()?;

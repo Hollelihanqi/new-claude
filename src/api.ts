@@ -611,6 +611,7 @@ export const api = {
   chatGptBatchCreate: (requests: ChatGptTransferRequest[]): Promise<ChatGptJob> => invoke("chatgpt_batch_create", { requests }),
   chatGptBatchList: (targetId: string): Promise<ChatGptJob[]> => invoke("chatgpt_batch_list", { targetId }),
   chatGptBatchStep: (targetId: string, id: string, cancel = false): Promise<ChatGptJob> => invoke("chatgpt_batch_step", { targetId, id, cancel }),
+  chatGptPreviewMany: (requests: ChatGptTransferRequest[]): Promise<ChatGptPreview[]> => invoke("chatgpt_preview_many", { requests }),
   chatGptPreview: (request: ChatGptTransferRequest): Promise<ChatGptPreview> => invoke("chatgpt_preview", { request }),
   chatGptPending: (targetId: string): Promise<ChatGptPending[]> => invoke("chatgpt_pending", { targetId }),
   chatGptRecover: (targetId: string, key: string, discard: boolean): Promise<ChatGptTransferResult> => invoke("chatgpt_recover", { targetId, key, discard }),
@@ -672,6 +673,8 @@ export const api = {
     invoke("set_plugin_excluded", { env, plugin, excluded }),
   // MCP 服务管理
   listMcpServices: (): Promise<McpState> => invoke("list_mcp_services"),
+  readMcpServiceConfig: (locator: McpLocator, expectedRevision: string): Promise<Record<string, unknown>> =>
+    invoke("read_mcp_service_config", { locator, expectedRevision }),
   registerMcpProject: (path: string): Promise<McpState> =>
     invoke("register_mcp_project", { path }),
   unregisterMcpProject: (path: string): Promise<McpState> =>

@@ -407,6 +407,15 @@ pub(crate) fn load_ledger() -> Result<Ledger, String> {
 pub(crate) fn save_ledger(ledger: &Ledger) -> Result<(), String> {
     fs::create_dir_all(shared_dir()).map_err(|e| format!("创建共享目录失败：{e}"))?;
     let value = serde_json::to_value(ledger).map_err(|e| e.to_string())?;
+    if fs::read(ledger_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .as_ref()
+        == Some(&value)
+    {
+        crate::sync::restrict_credential_permissions(&ledger_path()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     crate::sync::write_json_atomic(&ledger_path(), &value)
         .map_err(|e| format!("写分发台账失败：{e}"))
 }
@@ -485,7 +494,7 @@ pub(crate) fn distribute(field: &str, names: &[String]) -> Result<DistributeRepo
 }
 
 /// 持有配置锁期间，文件写入失败时恢复本轮已改变的文件（包含台账）。
-fn with_file_rollback<T>(
+pub(crate) fn with_file_rollback<T>(
     paths: &[PathBuf],
     action: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {

@@ -205,6 +205,7 @@ export default function ConfigPanel({
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(n))
       return "名称只能包含英文字母、数字、下划线、短横线（1~40 个字符）。";
     if (n.startsWith("__")) return "名称不能以 __ 开头（内部保留前缀）。";
+    if (n.startsWith("-") || n.toLowerCase() === "esac") return "名称不能以短横线开头，也不能使用 esac（会影响终端入口）。";
     if (form.type === "router") {
       const url = form.baseUrl.trim();
       if (!/^https?:\/\/\S+$/i.test(url) || url.length > 2048)

@@ -124,7 +124,12 @@ pub fn summary(dir: &Path) -> Result<Option<Summary>, String> {
 fn validated_base_url(input: &str) -> Result<String, String> {
     let base_url = input.trim().trim_end_matches('/').to_string();
     let url = url::Url::parse(&base_url).map_err(|_| "请输入有效的 API 地址")?;
-    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    let local = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
     if !matches!(url.scheme(), "https" | "http")
         || (url.scheme() == "http" && !local)
         || url.host_str().is_none()
@@ -538,6 +543,17 @@ pub fn use_account(dir: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn api_urls_accept_ipv6_loopback_but_reject_remote_http() {
+        assert_eq!(
+            validated_base_url("http://[::1]:8080/v1").unwrap(),
+            "http://[::1]:8080/v1"
+        );
+        assert!(validated_base_url("http://[2001:db8::1]/v1").is_err());
+        assert!(validated_base_url("http://user@[::1]/v1").is_err());
+        assert!(validated_base_url("http://[::1]/v1?secret=1").is_err());
+    }
 
     #[test]
     fn private_vpn_gateways_bypass_system_proxy() {

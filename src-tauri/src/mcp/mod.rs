@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
+pub(crate) use codex_sync::plan_environment_target_cleanup;
 pub(crate) use codex_sync::write_guard as target_write_guard;
 pub(crate) use storage::{
     environment_cleanup_files, forget_environment_records, repair_backup_permissions, McpPaths,
@@ -124,6 +125,7 @@ pub struct McpService {
     pub locator: McpLocator,
     pub transport: McpTransport,
     pub raw_transport: Option<String>,
+    #[serde(serialize_with = "serialize_public_config")]
     pub config: Map<String, Value>,
     pub enabled: bool,
     pub effective_state: McpEffectiveState,
@@ -133,6 +135,14 @@ pub struct McpService {
     pub revision: String,
     pub sensitive_paths: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+fn serialize_public_config<S: serde::Serializer>(
+    config: &Map<String, Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let value = Value::Object(config.clone());
+    validation::redact(&value, &validation::sensitive_paths(&value)).serialize(serializer)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -374,34 +384,75 @@ use storage::{
 };
 use validation::{config_warnings, redact, sensitive_paths, test_basic, validate_name};
 
+fn command_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    static COMMAND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    COMMAND_LOCK
+        .lock()
+        .map_err(|_| "MCP 操作锁异常，请重启后重试".into())
+}
+
 fn current_instances() -> Vec<String> {
     crate::configured_profile_names()
 }
 
+/// Raw credentials are requested only while an edit/copy drawer is open.
 #[tauri::command]
-pub fn list_mcp_services() -> Result<McpState, String> {
-    let paths = McpPaths::system();
-    let instances = current_instances();
-    let state = collect_state(&paths, &instances);
-    Ok(sync_targets::attach_sync_state(&paths, state))
+pub async fn read_mcp_service_config(
+    locator: McpLocator,
+    expected_revision: String,
+) -> Result<Map<String, Value>, String> {
+    crate::background(move || {
+        let _guard = command_guard()?;
+        let state = collect_state(&McpPaths::system(), &current_instances());
+        let service = state
+            .services
+            .into_iter()
+            .find(|service| service.locator == locator)
+            .ok_or("服务已不存在，请刷新列表")?;
+        if service.revision != expected_revision {
+            return Err("服务配置已变化，请刷新列表后重新编辑".into());
+        }
+        Ok(service.config)
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn register_mcp_project(path: String) -> Result<McpState, String> {
-    let paths = McpPaths::system();
-    register_project(&paths, &path)?;
-    let instances = current_instances();
-    let state = collect_state(&paths, &instances);
-    Ok(sync_targets::attach_sync_state(&paths, state))
+pub async fn list_mcp_services() -> Result<McpState, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        let instances = current_instances();
+        let state = collect_state(&paths, &instances);
+        Ok(sync_targets::attach_sync_state(&paths, state))
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn unregister_mcp_project(path: String) -> Result<McpState, String> {
-    let paths = McpPaths::system();
-    unregister_project(&paths, &path)?;
-    let instances = current_instances();
-    let state = collect_state(&paths, &instances);
-    Ok(sync_targets::attach_sync_state(&paths, state))
+pub async fn register_mcp_project(path: String) -> Result<McpState, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        register_project(&paths, &path)?;
+        let instances = current_instances();
+        let state = collect_state(&paths, &instances);
+        Ok(sync_targets::attach_sync_state(&paths, state))
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn unregister_mcp_project(path: String) -> Result<McpState, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        unregister_project(&paths, &path)?;
+        let instances = current_instances();
+        let state = collect_state(&paths, &instances);
+        Ok(sync_targets::attach_sync_state(&paths, state))
+    })
+    .await?
 }
 
 /// 一键清理的结果。结构化返回（而非单个字符串）：前端需要区分
@@ -427,17 +478,21 @@ pub struct McpCleanupResult {
 /// 1) 各环境用户级源文件 projects 下的死键；2) 登记表 mcp-projects.json 的死条目。
 /// 其他失败原因（权限不足/路径非法/不是目录/位置不确定/文件被并发修改）一律跳过并在消息里说明。
 #[tauri::command]
-pub fn cleanup_dead_project_entries() -> Result<McpCleanupResult, String> {
-    let paths = McpPaths::system();
-    let instances = current_instances();
-    // 写用户级源文件必须与 CLI --sync 串行化（先例 apply_mcp_change）；
-    // 拿不到锁直接报错，不静默跳过。
-    let _guard = match crate::sync::acquire_config_lock() {
-        Some(g) => g,
-        None => return Err("另一个同步正在进行，请稍后重试".into()),
-    };
-    let report = cleanup_dead_entries(&paths, &instances)?;
-    Ok(cleanup_result(&report, &paths))
+pub async fn cleanup_dead_project_entries() -> Result<McpCleanupResult, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        let instances = current_instances();
+        // 写用户级源文件必须与 CLI --sync 串行化（先例 apply_mcp_change）；
+        // 拿不到锁直接报错，不静默跳过。
+        let _guard = match crate::sync::acquire_config_lock() {
+            Some(g) => g,
+            None => return Err("另一个同步正在进行，请稍后重试".into()),
+        };
+        let report = cleanup_dead_entries(&paths, &instances)?;
+        Ok(cleanup_result(&report, &paths))
+    })
+    .await?
 }
 
 /// [CleanupReport] → 前端消费的结构化结果。
@@ -527,95 +582,115 @@ fn format_cleanup_report(report: &CleanupReport, paths: &McpPaths) -> String {
 }
 
 #[tauri::command]
-pub fn preview_mcp_target_sync(
+pub async fn preview_mcp_target_sync(
     target_id: String,
     locator: McpLocator,
 ) -> Result<McpSyncPreview, String> {
-    let paths = McpPaths::system();
-    let state = collect_state(&paths, &current_instances());
-    sync_targets::preview_sync(&target_id, &paths, &state, &locator)
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        let state = collect_state(&paths, &current_instances());
+        sync_targets::preview_sync(&target_id, &paths, &state, &locator)
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn apply_mcp_target_sync(request: McpSyncApplyRequest) -> Result<McpState, String> {
-    let paths = McpPaths::system();
-    let instances = current_instances();
-    let state = collect_state(&paths, &instances);
-    sync_targets::apply_sync(&paths, &state, &request)?;
-    Ok(sync_targets::attach_sync_state(
-        &paths,
-        collect_state(&paths, &instances),
-    ))
+pub async fn apply_mcp_target_sync(request: McpSyncApplyRequest) -> Result<McpState, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        let instances = current_instances();
+        let state = collect_state(&paths, &instances);
+        sync_targets::apply_sync(&paths, &state, &request)?;
+        Ok(sync_targets::attach_sync_state(
+            &paths,
+            collect_state(&paths, &instances),
+        ))
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn disable_mcp_target(request: McpTargetDisableRequest) -> Result<McpState, String> {
-    let paths = McpPaths::system();
-    let instances = current_instances();
-    let state = collect_state(&paths, &instances);
-    sync_targets::disable_target(&paths, &state, &request)?;
-    Ok(sync_targets::attach_sync_state(
-        &paths,
-        collect_state(&paths, &instances),
-    ))
+pub async fn disable_mcp_target(request: McpTargetDisableRequest) -> Result<McpState, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        let instances = current_instances();
+        let state = collect_state(&paths, &instances);
+        sync_targets::disable_target(&paths, &state, &request)?;
+        Ok(sync_targets::attach_sync_state(
+            &paths,
+            collect_state(&paths, &instances),
+        ))
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn preview_mcp_change(request: McpChangeRequest) -> Result<McpChangePreview, String> {
-    let paths = McpPaths::system();
-    build_preview(&paths, &current_instances(), &request)
+pub async fn preview_mcp_change(request: McpChangeRequest) -> Result<McpChangePreview, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        build_preview(&paths, &current_instances(), &request)
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn apply_mcp_change(request: McpChangeRequest) -> Result<McpState, String> {
-    let paths = McpPaths::system();
-    let instances = current_instances();
-    let action = &request.action;
+pub async fn apply_mcp_change(request: McpChangeRequest) -> Result<McpState, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        let paths = McpPaths::system();
+        let instances = current_instances();
+        let action = &request.action;
 
-    // User/Local 写入必须与 CLI --sync 串行化；拿不到锁直接报错，不静默跳过。
-    let _guard = if touches_user_or_local(action) {
-        match crate::sync::acquire_config_lock() {
-            Some(g) => Some(g),
-            None => return Err("另一个同步正在进行，请稍后重试".into()),
+        // User/Local 写入必须与 CLI --sync 串行化；拿不到锁直接报错，不静默跳过。
+        let _guard = if touches_user_or_local(action) {
+            match crate::sync::acquire_config_lock() {
+                Some(g) => Some(g),
+                None => return Err("另一个同步正在进行，请稍后重试".into()),
+            }
+        } else {
+            None
+        };
+
+        // 受影响来源会依赖服务当前位于启用源还是停用仓库，必须在配置锁内重新推导；
+        // 否则状态可能在“计算 affected”和“获取锁”之间变化，造成 revision 集合漏项。
+        let affected = affected_source_ids(&paths, &instances, action)?;
+        // 锁内重新读取 revision 校验，拒绝外部并发改写。
+        check_revisions(&paths, &instances, &affected, &request.expected_revisions)?;
+
+        // 所有作用域统一走 workbench 事务；Project 启停由 disable_locator/enable_locator
+        // 内部分发到 settings.local.json，无需特殊分支（避免空环境数组漏校验次级环境发现的项目）。
+        apply_action_files_checked(&paths, &instances, action, &request.expected_revisions)?;
+
+        // User 变更后跨环境同步：默认 Claude写成功即为目标态，部分环境失败保留并明确返回 warning。
+        let mut operation_warnings = Vec::new();
+        if touches_user(action) {
+            match crate::sync::sync_configs_locked(&current_instances()) {
+                Ok(outcome) => operation_warnings.extend(outcome.warnings),
+                Err(e) => {
+                    let warning = format!("MCP 变更后的跨环境同步失败：{e}");
+                    crate::sync::log_line(&warning);
+                    operation_warnings.push(warning);
+                }
+            }
         }
-    } else {
-        None
-    };
 
-    // 受影响来源会依赖服务当前位于启用源还是停用仓库，必须在配置锁内重新推导；
-    // 否则状态可能在“计算 affected”和“获取锁”之间变化，造成 revision 集合漏项。
-    let affected = affected_source_ids(&paths, &instances, action)?;
-    // 锁内重新读取 revision 校验，拒绝外部并发改写。
-    check_revisions(&paths, &instances, &affected, &request.expected_revisions)?;
-
-    // 所有作用域统一走 workbench 事务；Project 启停由 disable_locator/enable_locator
-    // 内部分发到 settings.local.json，无需特殊分支（避免空环境数组漏校验次级环境发现的项目）。
-    apply_action_files_checked(&paths, &instances, action, &request.expected_revisions)?;
-
-    // User 变更后跨环境同步：默认 Claude写成功即为目标态，部分环境失败保留并明确返回 warning。
-    let mut operation_warnings = Vec::new();
-    if touches_user(action) {
-        match crate::sync::sync_configs_locked(&current_instances()) {
-            Ok(outcome) => operation_warnings.extend(outcome.warnings),
-            Err(e) => {
-                let warning = format!("MCP 变更后的跨环境同步失败：{e}");
+        let mut state = collect_state(&paths, &current_instances());
+        if let McpChangeAction::SetEnabled { target, .. } = action {
+            if let Err(error) = sync_targets::reconcile_source_enabled(&paths, &state, target) {
+                let warning = format!("目标端 MCP 状态联动失败，将在后台继续重试：{error}");
                 crate::sync::log_line(&warning);
                 operation_warnings.push(warning);
             }
         }
-    }
-
-    let mut state = collect_state(&paths, &current_instances());
-    if let McpChangeAction::SetEnabled { target, .. } = action {
-        if let Err(error) = sync_targets::reconcile_source_enabled(&paths, &state, target) {
-            let warning = format!("目标端 MCP 状态联动失败，将在后台继续重试：{error}");
-            crate::sync::log_line(&warning);
-            operation_warnings.push(warning);
-        }
-    }
-    state.summary.warnings += operation_warnings.len();
-    state.operation_warnings = operation_warnings;
-    Ok(sync_targets::attach_sync_state(&paths, state))
+        state.summary.warnings += operation_warnings.len();
+        state.operation_warnings = operation_warnings;
+        Ok(sync_targets::attach_sync_state(&paths, state))
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -633,35 +708,36 @@ pub async fn test_mcp_server(request: McpTestRequest) -> Result<McpTestResult, S
 /// 是否启用会把“进程启动失败 / MCP 握手失败”错误地展示为正常。
 #[tauri::command]
 pub async fn probe_mcp_connections() -> Result<McpConnectionReport, String> {
-    let paths = McpPaths::system();
-    let instances = current_instances();
-    let state = collect_state(&paths, &instances);
-    let names = state
-        .services
-        .iter()
-        .filter(|service| service.locator.scope == McpScope::User && service.enabled)
-        .map(|service| service.locator.name.clone())
-        .collect::<Vec<_>>();
-    let overridden_entries = state
-        .shared_overrides
-        .iter()
-        .map(|item| (item.env.clone(), item.name.clone()))
-        .collect::<std::collections::HashSet<_>>();
-    let stdio_commands = state
-        .services
-        .iter()
-        .filter(|service| {
-            service.locator.scope == McpScope::User
-                && service.enabled
-                && service.transport == McpTransport::Stdio
-        })
-        .filter_map(|service| {
-            let command = service.config.get("command")?.as_str()?;
-            (!command.contains("${")).then(|| (service.locator.name.clone(), command.to_string()))
-        })
-        .collect::<Vec<_>>();
-
     tauri::async_runtime::spawn_blocking(move || {
+        let paths = McpPaths::system();
+        let instances = current_instances();
+        let state = collect_state(&paths, &instances);
+        let names = state
+            .services
+            .iter()
+            .filter(|service| service.locator.scope == McpScope::User && service.enabled)
+            .map(|service| service.locator.name.clone())
+            .collect::<Vec<_>>();
+        let overridden_entries = state
+            .shared_overrides
+            .iter()
+            .map(|item| (item.env.clone(), item.name.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        let stdio_commands = state
+            .services
+            .iter()
+            .filter(|service| {
+                service.locator.scope == McpScope::User
+                    && service.enabled
+                    && service.transport == McpTransport::Stdio
+            })
+            .filter_map(|service| {
+                let command = service.config.get("command")?.as_str()?;
+                (!command.contains("${"))
+                    .then(|| (service.locator.name.clone(), command.to_string()))
+            })
+            .collect::<Vec<_>>();
+
         let runtime_path = crate::claude_cli::refreshed_runtime_path();
         let unresolved = stdio_commands
             .iter()
@@ -704,8 +780,12 @@ pub async fn probe_mcp_connections() -> Result<McpConnectionReport, String> {
 
 /// 只分析本地配置，不访问网络。用于列表首次展示版本来源和更新开关能力。
 #[tauri::command]
-pub fn list_mcp_update_info() -> Result<McpUpdateReport, String> {
-    update::list_update_info(&McpPaths::system(), &current_instances())
+pub async fn list_mcp_update_info() -> Result<McpUpdateReport, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        update::list_update_info(&McpPaths::system(), &current_instances())
+    })
+    .await?
 }
 
 /// 检测可更新 MCP 的最新版本。`target=None` 时只检测已开启更新检测的全部条目；
@@ -721,8 +801,15 @@ pub async fn check_mcp_updates(target: Option<McpLocator>) -> Result<McpUpdateRe
 
 /// 更新检测偏好属于 PathMux 自身，不写入或污染 Claude MCP 配置。
 #[tauri::command]
-pub fn set_mcp_update_check(target: McpLocator, enabled: bool) -> Result<McpUpdateInfo, String> {
-    update::set_update_check(&McpPaths::system(), &current_instances(), &target, enabled)
+pub async fn set_mcp_update_check(
+    target: McpLocator,
+    enabled: bool,
+) -> Result<McpUpdateInfo, String> {
+    crate::background(move || {
+        let _command_guard = command_guard()?;
+        update::set_update_check(&McpPaths::system(), &current_instances(), &target, enabled)
+    })
+    .await?
 }
 
 fn safe_mcp_connection_detail(status: &McpConnectionState, result: &str) -> String {
@@ -770,12 +857,16 @@ fn parse_mcp_health_output(
             });
             let (status, detail) = match line {
                 Some(line) => {
-                    let normalized = line.to_ascii_lowercase();
+                    let result = line
+                        .rsplit_once(" - ")
+                        .map(|(_, result)| result.trim())
+                        .unwrap_or_default();
+                    let normalized = result.to_ascii_lowercase();
                     let status = if normalized.contains("failed")
                         || normalized.contains("error")
                         || normalized.contains("disconnected")
-                        || line.contains('✗')
-                        || line.contains('×')
+                        || result.contains('✗')
+                        || result.contains('×')
                     {
                         McpConnectionState::Failed
                     } else if normalized.contains("pending")
@@ -784,8 +875,8 @@ fn parse_mcp_health_output(
                     {
                         McpConnectionState::Pending
                     } else if normalized.contains("connected")
-                        || line.contains('✓')
-                        || line.contains('✔')
+                        || result.contains('✓')
+                        || result.contains('✔')
                     {
                         McpConnectionState::Connected
                     } else {
@@ -793,10 +884,6 @@ fn parse_mcp_health_output(
                     };
                     // `claude mcp list` 在状态前还会回显完整 command / URL；其中可能
                     // 带令牌或查询参数。界面只需要状态结论，绝不能把整条命令送到前端。
-                    let result = line
-                        .rsplit_once(" - ")
-                        .map(|(_, result)| result.trim())
-                        .unwrap_or_default();
                     let detail = safe_mcp_connection_detail(&status, result);
                     (status, detail)
                 }
@@ -1489,6 +1576,24 @@ mod tests {
         );
         assert_eq!(checks[0].status, McpConnectionState::Failed);
         assert_eq!(checks[1].status, McpConnectionState::Connected);
+    }
+
+    #[test]
+    fn health_parser_ignores_status_words_inside_command_and_name() {
+        for text in [
+            "error: /opt/approval/server.js - ✓ Connected",
+            "error: /opt/failed/server.js - ✓ Connected",
+        ] {
+            assert_eq!(
+                parse_mcp_health_output("corp", &["error".into()], text)[0].status,
+                McpConnectionState::Connected
+            );
+        }
+        assert_eq!(
+            parse_mcp_health_output("corp", &["error".into()], "error: connected-command")[0]
+                .status,
+            McpConnectionState::Unknown
+        );
     }
 
     #[test]

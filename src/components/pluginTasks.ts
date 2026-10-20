@@ -66,13 +66,13 @@ const STEP_LABEL: Record<PluginAction, string> = {
   install: "正在安装插件", enable: "正在启用插件", disable: "正在停用插件", update: "正在更新插件", uninstall: "正在卸载插件",
 };
 
-/** Serialize writes without blocking actions for unrelated plugins. */
+/** Serialize writes while allowing unrelated plugins to be submitted. */
 export class PluginCommandQueue {
   private tail: Promise<void> = Promise.resolve();
   private pending = new Set<string>();
 
   enqueue(keys: string[], run: () => Promise<void>, changed: (keys: string[]) => void): Promise<void> {
-    if (keys.some((key) => this.pending.has(key))) return Promise.resolve();
+    if (keys.some((key) => this.pending.has(key))) return Promise.reject(new Error("部分目标插件正在处理，本次操作尚未提交；请等待完成后重试。"));
     keys.forEach((key) => this.pending.add(key));
     changed([...this.pending]);
     const next = this.tail.then(run).finally(() => {

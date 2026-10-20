@@ -30,6 +30,7 @@ import type {
   McpState,
   McpTestResult,
 } from "../../api";
+import { api } from "../../api";
 import {
   SCOPE_DESCRIPTIONS,
   SCOPE_LABELS,
@@ -108,6 +109,7 @@ export default function McpServiceDrawer({
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [configReady, setConfigReady] = useState(false);
 
   const sensitivePaths = service?.sensitivePaths ?? [];
 
@@ -126,7 +128,10 @@ export default function McpServiceDrawer({
   }
 
   useEffect(() => {
+    clearDrafts();
+    setConfigReady(false);
     if (!opened) return;
+    let cancelled = false;
     setErr("");
     setTestResult(null);
     setTab("form");
@@ -142,26 +147,30 @@ export default function McpServiceDrawer({
       setHeaderRows([]);
       setRawText(JSON.stringify(cfg, null, 2));
       setRawSensitivePaths([]);
+      setConfigReady(true);
       return;
     }
-    const cfg = cloneConfig(service.config);
-    setName(mode === "copy" ? `${service.locator.name}-copy` : service.locator.name);
-    setScope(service.locator.scope);
-    setInstanceId(service.locator.instanceId ?? "");
-    setProjectPath(service.locator.projectPath ?? "");
-    setTransport(inferTransport(cfg) as TransportChoice);
-    setRawConfig(cfg);
-    setEnvRows(toKvRows(cfg.env));
-    setHeaderRows(toKvRows(cfg.headers));
-    const paths = Array.from(
-      new Set([...service.sensitivePaths, ...sensitivePathsForConfig(cfg)])
-    );
-    setRawText(JSON.stringify(redactConfig(cfg, paths), null, 2));
-    setRawSensitivePaths(paths);
+    void api.readMcpServiceConfig(service.locator, service.revision).then((raw) => {
+      if (cancelled) return;
+      const cfg = cloneConfig(raw);
+      setName(mode === "copy" ? `${service.locator.name}-copy` : service.locator.name);
+      setScope(service.locator.scope);
+      setInstanceId(service.locator.instanceId ?? "");
+      setProjectPath(service.locator.projectPath ?? "");
+      setTransport(inferTransport(cfg) as TransportChoice);
+      setRawConfig(cfg);
+      setEnvRows(toKvRows(cfg.env));
+      setHeaderRows(toKvRows(cfg.headers));
+      const paths = Array.from(
+        new Set([...service.sensitivePaths, ...sensitivePathsForConfig(cfg)])
+      );
+      setRawText(JSON.stringify(redactConfig(cfg, paths), null, 2));
+      setRawSensitivePaths(paths);
+      setConfigReady(true);
+    }).catch((error) => { if (!cancelled) setErr(String(error)); });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, mode, service]);
-
-  if (!opened) return null;
 
   function patch(fn: (c: Record<string, unknown>) => void) {
     setTestResult(null);
@@ -256,6 +265,14 @@ export default function McpServiceDrawer({
     const a = rawConfig.args;
     return Array.isArray(a) ? a.map(String).join("\n") : "";
   }, [rawConfig.args]);
+
+  if (!opened) return null;
+  if (!configReady) return (
+    <Drawer opened={opened} onClose={onClose} position="right" size="xl" title="MCP 配置">
+      <Text>{err || "正在读取配置…"}</Text>
+      <Button variant="subtle" onClick={onClose}>取消</Button>
+    </Drawer>
+  );
 
   function setArgsText(t: string) {
     patch((c) => {

@@ -27,11 +27,14 @@ pub fn read(name: &str, _encrypted: Option<&str>) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 pub fn clear(name: &str) -> Result<(), String> {
-    security_framework::passwords::delete_generic_password(
+    match security_framework::passwords::delete_generic_password(
         &format!("{}:{name}", crate::KEYCHAIN_PREFIX),
         &account(),
-    )
-    .map_err(|e| format!("钥匙串清除失败：{e}"))
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(()), // errSecItemNotFound: already absent
+        Err(error) => Err(format!("钥匙串清除失败：{error}")),
+    }
 }
 
 #[cfg(windows)]
@@ -210,9 +213,18 @@ mod tests {
     #[ignore = "需要可用且已解锁的测试钥匙串"]
     fn macos_keychain_roundtrip() {
         let name = format!("credential-test-{}", std::process::id());
+        super::clear(&name).unwrap();
         super::store(&name, "test-only-key").unwrap();
         let result = super::read(&name, None);
+        assert!(crate::clear_deleted_profile_token(&crate::Profile {
+            name: name.clone(),
+            type_: "account".into(),
+            has_token: false,
+            ..Default::default()
+        })
+        .unwrap());
         super::clear(&name).unwrap();
+        assert!(super::read(&name, None).is_err());
         assert_eq!(result.unwrap(), "test-only-key");
     }
 }

@@ -67,7 +67,7 @@ describe("pointer decode (RFC 6901) — 多 / 与 ~ 的 key", () => {
   it("动态识别新输入的 env/header 凭据并正确转义路径", () => {
     const config = {
       env: { "API_TOKEN/x~y": "secret", HARMLESS: "ok" },
-      headers: { Authorization: "Bearer value" },
+      headers: { Authorization: "Bearer value", "X-API-Key": "header-secret" },
     };
     const paths = sensitivePathsForConfig(config);
     expect(paths).toContain("/env/API_TOKEN~1x~0y");
@@ -75,6 +75,7 @@ describe("pointer decode (RFC 6901) — 多 / 与 ~ 的 key", () => {
     const redacted = redactConfig(config, paths);
     expect((redacted.env as Record<string, unknown>)["API_TOKEN/x~y"]).toBe(REDACTED);
     expect((redacted.headers as Record<string, unknown>).Authorization).toBe(REDACTED);
+    expect((redacted.headers as Record<string, unknown>)["X-API-Key"]).toBe(REDACTED);
     expect((redacted.env as Record<string, unknown>).HARMLESS).toBe("ok");
   });
 });

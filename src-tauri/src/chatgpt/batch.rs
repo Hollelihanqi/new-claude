@@ -61,13 +61,14 @@ pub fn create(root: &Path, r: &Registry, requests: Vec<TransferRequest>) -> Resu
 pub fn list(root: &Path, r: &Registry, target: &str) -> Result<Vec<Job>, String> {
     let dir = directory(root, r, target)?;
     let mut jobs = vec![];
-    for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.take(1000) {
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.path().extension().is_some_and(|s| s == "json") {
             jobs.push(storage::read_json::<Job>(&entry.path())?);
         }
     }
     jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
+    jobs.truncate(1000);
     Ok(jobs)
 }
 pub fn step(

@@ -16,7 +16,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-#[cfg(not(test))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -205,7 +204,7 @@ fn copy_tree_merge(
             // 只确认目标当前可访问，不遍历目标内容。悬空或无权访问的链接必须记为
             // 跳过并阻止切换；否则 Unix 可以重建悬空链接，迁移会在不同平台上产生
             // 不同结果，且用户会误以为共享资源已经完整迁移。
-            if let Err(e) = fs::metadata(&from) {
+            if let Err(e) = resolved_link_target(&from).and_then(fs::metadata) {
                 skipped.push(format!("{}（{e}）", from.display()));
                 continue;
             }
@@ -414,7 +413,7 @@ fn recreate_link(from: &Path, to: &Path) -> std::io::Result<()> {
     {
         // Windows：目录链接用 Junction（不需要管理员/开发者模式），
         // 文件链接用 symlink_file；两者都不行就交给调用方记进 skipped。
-        let is_dir = fs::metadata(from).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = fs::metadata(&target)?.is_dir();
         if is_dir {
             let inner = format!(
                 "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path {} -Target {} | Out-Null",
@@ -458,12 +457,14 @@ pub(crate) fn instance_dir(name: &str) -> PathBuf {
 pub(crate) fn credential_file_paths() -> Vec<PathBuf> {
     let mut paths = vec![
         crate::home().join(".claude.json"),
+        crate::home().join(".claude").join("settings.json"),
         crate::shared_config::shared_path(crate::shared_config::FIELD_MCP),
         crate::shared_config::ledger_path(),
         crate::cfg_dir().join("sync-snapshot.json"),
     ];
     for name in crate::profile_names(&crate::load()) {
         paths.push(instance_dir(&name).join(".claude.json"));
+        paths.push(instance_dir(&name).join("settings.json"));
     }
     paths
 }
@@ -478,17 +479,57 @@ fn log_path() -> PathBuf {
 
 #[cfg(not(test))]
 pub fn log_line(msg: &str) {
-    if let Ok(mut f) = fs::OpenOptions::new()
+    static LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_guard) = LOG_LOCK.lock() else {
+        return;
+    };
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let _ = append_log(&log_path(), &format!("[{ts}] {msg}"), 8 * 1024 * 1024);
+}
+
+fn append_log(path: &Path, message: &str, limit: u64) -> std::io::Result<()> {
+    if fs::metadata(path).is_ok_and(|meta| meta.len() >= limit) {
+        let previous = path.with_extension("log.1");
+        match fs::remove_file(&previous) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        fs::rename(path, previous)?;
+    }
+    let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_path())
-    {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(f, "[{ts}] {msg}");
-    }
+        .open(path)?;
+    let bounded = message.chars().take(65536).collect::<String>();
+    writeln!(file, "{bounded}")
+}
+
+pub(crate) fn log_tail(path: &Path, count: usize) -> std::io::Result<Vec<String>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let offset = len.saturating_sub(256 * 1024);
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    file.take(256 * 1024).read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if offset > 0 {
+        text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        &text
+    };
+    let mut lines = text
+        .lines()
+        .rev()
+        .take(count)
+        .map(String::from)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    Ok(lines)
 }
 
 /// 单元测试中的迁移夹具会故意制造失败并调用日志入口。测试进程不能把这些
@@ -974,6 +1015,20 @@ pub fn sync_configs(names: &[String]) -> Result<SyncOutcome, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_rotation_and_bounded_tail_keep_recent_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("sync.log");
+        for index in 0..50 {
+            append_log(&path, &format!("entry {index}"), 128).unwrap();
+        }
+        assert!(path.with_extension("log.1").is_file());
+        assert_eq!(log_tail(&path, 1).unwrap(), vec!["entry 49"]);
+        let huge = format!("{}\nfinal line\n", "x".repeat(512 * 1024));
+        fs::write(&path, huge).unwrap();
+        assert_eq!(log_tail(&path, 200).unwrap(), vec!["final line"]);
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // ---- 共享资源迁移（决策 7.3）----

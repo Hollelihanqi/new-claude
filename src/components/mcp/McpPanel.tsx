@@ -71,6 +71,7 @@ import {
   buildSyncTargetColumns,
   locatorKey,
   redactConfig,
+  restoreRedactedValues,
   serviceContextLabel,
   serviceSearchText,
   syncTargetDisplayLabel,
@@ -94,7 +95,6 @@ const EFFECTIVE_COLOR: Record<string, string> = {
 
 let cachedMcpState: McpState | null = null;
 let cachedConnectionReport: McpConnectionReport | null = null;
-let cachedConnectionAt = 0;
 let cachedUpdateReport: McpUpdateReport | null = null;
 
 function rememberMcpState(nextState: McpState) {
@@ -165,12 +165,10 @@ export default function McpPanel() {
       try {
         const report = await api.probeMcpConnections();
         cachedConnectionReport = report;
-        cachedConnectionAt = Date.now();
         setConnectionReport(report);
       } catch (e) {
         const report = { checks: [], errors: [String(e)] };
         cachedConnectionReport = report;
-        cachedConnectionAt = Date.now();
         setConnectionReport(report);
       } finally {
         setConnectionBusy(false);
@@ -278,12 +276,11 @@ export default function McpPanel() {
   };
 
   useEffect(() => {
-    void Promise.all([load(), probeConnections(), loadUpdateInfo()]);
-  }, [load, probeConnections, loadUpdateInfo]);
+    void Promise.all([load(), loadUpdateInfo()]);
+  }, [load, loadUpdateInfo]);
   usePageActivation(() => {
     void load(true);
     void loadUpdateInfo();
-    if (Date.now() - cachedConnectionAt > 30_000) void probeConnections();
   });
 
   async function setUpdateCheck(service: McpService, enabled: boolean) {
@@ -324,7 +321,7 @@ export default function McpPanel() {
           op: "save",
           original: service.locator,
           target: service.locator,
-          config: entry.nextConfig,
+          config: restoreRedactedValues(entry.nextConfig, await api.readMcpServiceConfig(service.locator, service.revision), service.sensitivePaths),
           overwrite: true,
         });
         return;

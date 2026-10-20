@@ -9,7 +9,7 @@ import { api, type ChatGptState, type ChatGptHistory, type ChatGptJob } from "..
 vi.mock("@mantine/core", () => Object.fromEntries(["Alert", "Badge", "Button", "Card", "Checkbox", "Collapse", "Group", "Modal", "PasswordInput", "Select", "SimpleGrid", "Stack", "Switch", "Text", "TextInput", "Title", "Tooltip"].map(name => [name, name.toLowerCase()])));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("./RiskConfirm", () => ({ default: "risk-confirm" }));
-vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptConversation", "chatGptPreview", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptOpenPrimary", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose", "chatGptSaveApiConfig", "chatGptDiscoverApiModels", "chatGptUseAccountLogin", "chatGptSetApiCompatibility"].map(name => [name, vi.fn()])) }));
+vi.mock("../api", () => ({ api: Object.fromEntries(["chatGptConversation", "chatGptPreview", "chatGptPreviewMany", "chatGptPending", "chatGptBatchList", "chatGptBatchCreate", "chatGptBatchStep", "chatGptRecover", "chatGptOpenThread", "chatGptState", "chatGptOpenPrimary", "chatGptHistory", "chatGptTransfer", "chatGptProfileAction", "chatGptCreateProfile", "chatGptSetInstallation", "chatGptDiagnose", "chatGptSaveApiConfig", "chatGptDiscoverApiModels", "chatGptUseAccountLogin", "chatGptSetApiCompatibility"].map(name => [name, vi.fn()])) }));
 const state: ChatGptState = {
   installation: { path: "test-app", version: "test", compatible: true, detail: "test", cli: "test-cli" }, installationIssue: null,
   profiles: ["a", "b"].map(id => ({ id, name: id, createdAt: 1, directory: id, status: "stopped", pid: null, issue: null })),
@@ -18,7 +18,7 @@ const state: ChatGptState = {
 const history: ChatGptHistory = { warnings: [], complete: true, items: [{ key: "record", threadId: "thread", title: "Current record", workspace: "/project", revision: "v1", bytes: 10, modifiedAt: 1, transferable: true, detail: "Ready" }] };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 let renderer: ReactTestRenderer;
-beforeEach(() => { vi.resetAllMocks(); vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.chatGptState).mockResolvedValue(state); vi.mocked(api.chatGptHistory).mockResolvedValue(history); vi.mocked(api.chatGptConversation).mockResolvedValue({ key: "record", title: "Current record", workspace: "/project", threadId: "thread", modifiedAt: 1, messages: [{ role: "user", text: "Real question", timestamp: null }, { role: "assistant", text: "Real answer", timestamp: null }], truncated: false }); vi.mocked(api.chatGptPending).mockResolvedValue([]); vi.mocked(api.chatGptBatchList).mockResolvedValue([]); vi.mocked(api.chatGptDiagnose).mockResolvedValue({ healthy: true, details: ["目录正常", "服务正常", "已登录"] }); vi.mocked(api.chatGptPreview).mockImplementation(async request => ({ key: request.key, title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" })); });
+beforeEach(() => { vi.resetAllMocks(); vi.mocked(api.chatGptPreviewMany).mockImplementation(requests => Promise.all(requests.map(request => api.chatGptPreview(request)))); vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.mocked(api.chatGptState).mockResolvedValue(state); vi.mocked(api.chatGptHistory).mockResolvedValue(history); vi.mocked(api.chatGptConversation).mockResolvedValue({ key: "record", title: "Current record", workspace: "/project", threadId: "thread", modifiedAt: 1, messages: [{ role: "user", text: "Real question", timestamp: null }, { role: "assistant", text: "Real answer", timestamp: null }], truncated: false }); vi.mocked(api.chatGptPending).mockResolvedValue([]); vi.mocked(api.chatGptBatchList).mockResolvedValue([]); vi.mocked(api.chatGptDiagnose).mockResolvedValue({ healthy: true, details: ["目录正常", "服务正常", "已登录"] }); vi.mocked(api.chatGptPreview).mockImplementation(async request => ({ key: request.key, title: "Current record", bytes: 10, images: 0, workspace: "/project", fingerprint: "hash" })); });
 afterEach(() => { if (renderer) act(() => renderer.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const button = (label: string) => renderer.root.findAllByType(Button).find(b => String(b.props.children).includes(label))!;
 const select = (label: string) => renderer.root.findAllByType(Select).find(s => s.props.label === label)!;
@@ -559,6 +559,7 @@ it("copies all local records through durable 100-item batches", async () => {
   await act(async () => { button("确认复制").props.onClick(); });
   expect(api.chatGptBatchCreate).toHaveBeenCalledTimes(2);
   expect(vi.mocked(api.chatGptBatchCreate).mock.calls.map(call => call[0].length)).toEqual([100, 1]);
+  expect(vi.mocked(api.chatGptPreviewMany).mock.calls.map(call => call[0].length)).toEqual([100, 1]);
   expect(api.chatGptOpenThread).toHaveBeenCalledWith("b", "new-record-0");
 });
 

@@ -202,13 +202,14 @@ export default function WorkBuddyPanel({ active = true }: { active?: boolean }) 
     }
   };
 
+  const loadedOnce = useRef(false);
   useEffect(() => {
-    void load();
-  }, []);
+    if (active && !loadedOnce.current) { loadedOnce.current = true; void load(); }
+  }, [active]);
 
   const backgroundInFlight = useRef(false);
   usePageActivation(() => {
-    if (backgroundInFlight.current || busy || modelsBusy) return;
+    if (!state || backgroundInFlight.current || busy || modelsBusy) return;
     backgroundInFlight.current = true;
     const generation = modelRequest.current;
     void api.workBuddyState().then(async (next) => {

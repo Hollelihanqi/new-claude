@@ -132,6 +132,8 @@ export default function PluginManager() {
         if (feedback === "center") { setCenterId(id); setConfirmation(null); setPanel(null); }
         if (feedback === "drawer") { setViewedId(id); setPanel("operation"); }
       }
+    }).catch((error) => {
+      if (mounted.current) setFormError(error instanceof Error ? error.message : String(error));
     });
   };
 

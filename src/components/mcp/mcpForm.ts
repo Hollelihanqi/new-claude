@@ -135,7 +135,7 @@ function encodePointerToken(value: string): string {
 
 function isSensitiveKey(key: string): boolean {
   if (SENSITIVE_KEYS.has(key.toLowerCase())) return true;
-  const upper = key.toUpperCase();
+  const upper = key.toUpperCase().replace(/-/g, "_");
   return SENSITIVE_SUBSTRINGS.some((part) => upper.includes(part));
 }
 
