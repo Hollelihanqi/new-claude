@@ -747,6 +747,52 @@ pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<(
     result
 }
 
+/// Streaming counterpart of `write_bytes_atomic`: the caller writes through a
+/// temporary file so large histories never need one contiguous buffer.
+pub(crate) fn write_stream_atomic<T>(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> Result<T, String>,
+) -> Result<T, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "ccm-{}-{}-{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp).map_err(|e| e.to_string())?;
+    let written = (|| -> Result<T, String> {
+        let value = write(&mut file)?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        Ok(value)
+    })();
+    drop(file);
+    let value = match written {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(error);
+        }
+    };
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    restrict_credential_permissions(path).map_err(|e| e.to_string())?;
+    Ok(value)
+}
+
 /// Unix 下把文件收紧到 0600（仅本人可读写）。
 ///
 /// Windows 分支不做事：威胁边界只到"同机其他普通用户"，用户目录的继承 ACL 已覆盖；

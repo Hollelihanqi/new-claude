@@ -2313,17 +2313,27 @@ html[data-mantine-color-scheme="dark"] .status-modal-info { --status-modal-accen
 .chatgpt-history-notes summary { cursor: pointer; }
 .chatgpt-history-notes .mantine-Text-root { margin-top: 6px; }
 .chatgpt-record-list { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
-.chatgpt-conversation-row { display: flex; gap: 12px; align-items: flex-start; padding: 16px 12px; border-bottom: 1px solid var(--app-subtle-border); border-left: 3px solid transparent; }
-.chatgpt-conversation-row[data-focused="true"] { background: color-mix(in srgb, var(--theme-base) 8%, var(--app-surface)); border-left-color: var(--mantine-primary-color-6); border-radius: 10px; }
-.chatgpt-conversation-row > .mantine-Checkbox-root { flex: 0 0 auto; padding-top: 3px; }
-.chatgpt-conversation-date { padding: 6px 12px 10px; }
-.chatgpt-conversation-select { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; padding: 0; text-align: left; color: inherit; border: 0; background: transparent; font: inherit; cursor: pointer; }
-.chatgpt-conversation-select:focus-visible { outline: 2px solid var(--mantine-primary-color-6); outline-offset: 4px; border-radius: 4px; }
-.chatgpt-conversation-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 16px; line-height: 1.55; font-weight: 700; color: var(--app-strong-text); }
-.chatgpt-conversation-summary { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; color: var(--app-secondary-text); font-size: 14px; line-height: 1.6; }
-.chatgpt-conversation-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; color: var(--app-secondary-text); font-size: 11px; }
-.chatgpt-conversation-meta > span { max-width: 100%; overflow-wrap: anywhere; }
+.chatgpt-record-group { display: flex; flex-direction: column; }
+.chatgpt-record-group + .chatgpt-record-group { margin-top: 8px; }
+.chatgpt-record-group-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; color: var(--app-secondary-text); background: transparent; border: 0; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 700; text-align: left; cursor: pointer; }
+.chatgpt-record-group-toggle:hover { color: var(--app-strong-text); background: color-mix(in srgb, var(--theme-base) 6%, transparent); }
+.chatgpt-record-group-toggle:focus-visible { outline: 2px solid var(--mantine-primary-color-6); outline-offset: 2px; }
+.chatgpt-record-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chatgpt-record-group-count { margin-left: auto; color: var(--app-muted); font-size: 11px; font-weight: 500; }
+.chatgpt-record-group-chevron { flex: 0 0 auto; transition: transform .15s ease; }
+.chatgpt-record-group-chevron[data-collapsed="true"] { transform: rotate(-90deg); }
+.chatgpt-record-more { align-self: flex-start; margin: 2px 0 6px 34px; padding: 0 6px; }
+.chatgpt-conversation-row { display: flex; gap: 10px; align-items: center; padding: 7px 10px; border-radius: 8px; border-left: 3px solid transparent; }
+.chatgpt-conversation-row:hover { background: color-mix(in srgb, var(--theme-base) 5%, transparent); }
+.chatgpt-conversation-row[data-focused="true"] { background: color-mix(in srgb, var(--theme-base) 8%, var(--app-surface)); border-left-color: var(--mantine-primary-color-6); }
+.chatgpt-conversation-row > .mantine-Checkbox-root { flex: 0 0 auto; }
+.chatgpt-conversation-select { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; padding: 0; text-align: left; color: inherit; border: 0; background: transparent; font: inherit; cursor: pointer; }
+.chatgpt-conversation-select:focus-visible { outline: 2px solid var(--mantine-primary-color-6); outline-offset: 3px; border-radius: 6px; }
+.chatgpt-conversation-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 1.5; font-weight: 600; color: var(--app-strong-text); }
+.chatgpt-conversation-summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--app-secondary-text); font-size: 12px; line-height: 1.45; }
+.chatgpt-conversation-time { flex: 0 0 auto; align-self: flex-start; margin-top: 2px; color: var(--app-muted); font-size: 11px; white-space: nowrap; }
 .chatgpt-conversation-unavailable { color: var(--mantine-color-orange-7); font-size: 12px; }
+.chatgpt-copy-reason { flex-basis: 100%; }
 .chatgpt-conversation-preview { display: flex; flex-direction: column; align-self: stretch; gap: 12px; min-width: 0; min-height: 0; padding: 22px; }
 .chatgpt-preview-title { margin-top: 8px; overflow-wrap: anywhere; font-size: 17px; line-height: 1.55; }
 .chatgpt-conversation-messages { display: flex; flex-direction: column; gap: 18px; flex: 1; min-height: 0; overflow-y: auto; padding: 10px 4px 8px 0; scrollbar-gutter: stable; }

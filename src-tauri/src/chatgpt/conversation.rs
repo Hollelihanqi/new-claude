@@ -39,33 +39,171 @@ fn message_content(value: &Value, role: &str) -> String {
         .join("\n")
 }
 
+/// The desktop client persists its own UI actions as fake user messages, for
+/// example `<external_codex_apps_open_page>{"page_id":null}</external_…>`.
+/// They carry `content_item_kinds` such as `additional_content.codex_apps_open_page`.
+/// The client never renders them as a question, so neither should the list,
+/// the summary or the preview.
+fn synthetic_record(value: &Value) -> bool {
+    let Some(kinds) = value["payload"]["internal_chat_message_metadata_passthrough"]
+        ["content_item_kinds"]
+        .as_array()
+    else {
+        return false;
+    };
+    !kinds.is_empty()
+        && kinds.iter().all(|kind| {
+            kind.as_str().is_some_and(|kind| {
+                [
+                    "additional_content.",
+                    "agents_md.",
+                    "environments.",
+                    "multi_agent.",
+                    "images.",
+                    "permissions.",
+                ]
+                .iter()
+                .any(|prefix| kind.starts_with(prefix))
+            })
+        })
+}
+
+fn leading_tag(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('<')?;
+    let end = rest.find(|c: char| c == '>' || c == '/' || c.is_whitespace())?;
+    Some(&rest[..end])
+}
+
+fn synthetic_tag(tag: &str) -> bool {
+    let tag = tag.to_ascii_lowercase();
+    matches!(
+        tag.as_str(),
+        "environment_context"
+            | "user_instructions"
+            | "permissions"
+            | "recommended_plugins"
+            | "in-app-browser-context"
+            | "image_resize_notice"
+            | "turn_aborted"
+    ) || tag.starts_with("external_")
+        || tag.starts_with("codex_apps_")
+        || tag.starts_with("multi_agent_")
+        || tag.starts_with("subagent_notification")
+}
+
+/// Strips leading synthetic blocks; returns `None` when nothing but synthetic
+/// content was left. An unclosed synthetic block swallows the whole message.
+fn strip_leading_synthetic(text: &str) -> Option<String> {
+    let mut rest = text.trim();
+    loop {
+        let Some(tag) = leading_tag(rest) else {
+            break;
+        };
+        if !synthetic_tag(tag) {
+            break;
+        }
+        let lower = rest.to_ascii_lowercase();
+        let close = format!("</{}>", tag.to_ascii_lowercase());
+        let Some(end) = lower.find(&close) else {
+            return Some(String::new());
+        };
+        rest = rest[end + close.len()..].trim();
+    }
+    Some(rest.into())
+}
+
+/// Removes `<image name=… path=…>…</image>` markup that the client appends to
+/// attachment messages. It is presentation metadata, never user prose.
+fn strip_image_markup(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let open = "<image";
+    let close = "</image>";
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find(open) {
+        let start = cursor + relative;
+        let after = start + open.len();
+        let Some(next) = lower[after..].chars().next() else {
+            break;
+        };
+        if !(next == '>' || next == '/' || next.is_whitespace()) {
+            output.push_str(&text[cursor..after]);
+            cursor = after;
+            continue;
+        }
+        let Some(open_end) = lower[after..].find('>').map(|index| after + index + 1) else {
+            break;
+        };
+        // Only the client's attachment markup carries attributes; a bare
+        // `<image>` discussed in prose stays untouched.
+        let attributes = &lower[after..open_end];
+        if !attributes.contains("path=") && !attributes.contains("name=") {
+            output.push_str(&text[cursor..open_end]);
+            cursor = open_end;
+            continue;
+        }
+        output.push_str(&text[cursor..start]);
+        if lower[after..open_end].trim_end().ends_with('/') {
+            cursor = open_end;
+            continue;
+        }
+        cursor = lower[open_end..]
+            .find(close)
+            .map(|index| open_end + index + close.len())
+            .unwrap_or(text.len());
+    }
+    output.push_str(&text[cursor..]);
+    output
+}
+
+/// Approval transcripts are numbered `[12] tool exec result: …` / `[7] assistant: …`.
+/// They are internal reviewer traffic, not user prose.
+fn internal_transcript_line(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('[') else {
+        return false;
+    };
+    let Some(end) = rest.find(']') else {
+        return false;
+    };
+    if end == 0 || !rest[..end].bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let after = rest[end + 1..].trim_start();
+    after.starts_with("assistant:")
+        || (after.starts_with("tool ") && (after.contains(" call:") || after.contains(" result:")))
+}
+
 pub fn user_text(text: &str) -> Option<String> {
     let mut text = text.trim();
+    // Internal auto-approval payloads persist the reviewed transcript, which can
+    // itself contain a `## My request:` marker. Reject them before extracting
+    // anything, otherwise the extraction would surface the transcript instead.
+    let original = text.to_ascii_lowercase();
+    if original.starts_with("the following is the codex agent history")
+        || original.starts_with(">>> transcript delta")
+        || internal_transcript_line(text)
+    {
+        return None;
+    }
     for marker in ["## My request:", "# My request:"] {
         if let Some((_, request)) = text.split_once(marker) {
             text = request.trim();
             break;
         }
     }
-    for tag in [
-        "environment_context",
-        "user_instructions",
-        "permissions instructions",
-    ] {
-        if text.starts_with(&format!("<{tag}>")) {
-            let (_, rest) = text.split_once(&format!("</{tag}>"))?;
-            text = rest.trim();
-        }
-    }
+    let without_images = strip_image_markup(text);
+    let stripped = strip_leading_synthetic(&without_images)?;
+    let text = stripped.trim();
     let lower = text.to_ascii_lowercase();
     if text.is_empty()
         || lower.starts_with("# agents.md instructions for")
-        || lower.starts_with("<environment_context>")
+        || lower.starts_with("# files mentioned by the user:")
         || lower.starts_with("<instructions>")
         || lower.starts_with("<system")
         || lower.starts_with("<developer")
-        || lower.starts_with("<turn_aborted>")
-        || lower.starts_with("<subagent_notification")
+        // Internal auto-approval turns are persisted as user messages but are
+        // never rendered as questions by the client.
+        || lower.starts_with("the following is the codex agent history")
     {
         return None;
     }
@@ -91,6 +229,9 @@ pub fn messages(bytes: &[u8], limit: usize) -> (Vec<Message>, bool) {
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
+        if synthetic_record(&value) {
+            continue;
+        }
         let payload = &value["payload"];
         let (channel, role, text) = match (value["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("item_completed")) => {
@@ -204,6 +345,69 @@ mod tests {
         let (items, truncated) = messages(&raw, 1);
         assert_eq!(items.len(), 1);
         assert!(truncated);
+    }
+
+    #[test]
+    fn ui_actions_are_not_mistaken_for_questions_or_titles() {
+        let raw = lines(vec![
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>"}]}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"<recommended_plugins>\nHere is a list of plugins.\n</recommended_plugins>"}]}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"<in-app-browser-context source=\"ambient-ui-state\">\nCurrent URL: https://example.com\n</in-app-browser-context>\n\n## My request:\n真实问题"}]}}),
+        ]);
+        assert!(title("The following is the Codex agent history whose request action you are assessing.\n>>> START").is_none());
+        assert!(title("The following is the Codex agent history added since your last approval assessment.\n>>> TRANSCRIPT DELTA START\n## My request:\n这是被审核记录里的旧请求").is_none());
+        assert!(title("[10] tool exec result: Script completed\nWall time 12.1 seconds").is_none());
+        assert!(title("[176] tool js call: {\"code\":\"x\"}").is_none());
+        assert!(title("[215] assistant: Agent message from /root").is_none());
+        // Ordinary numbered prose must survive.
+        assert_eq!(
+            title("[1] 第一步：打开设置").as_deref(),
+            Some("[1] 第一步：打开设置")
+        );
+        let (items, _) = messages(&raw, 100);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["真实问题"]
+        );
+        assert_eq!(title("真实问题").as_deref(), Some("真实问题"));
+    }
+
+    #[test]
+    fn metadata_marked_additional_content_is_ignored() {
+        let raw = lines(vec![
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"客户端动作"}],
+                "internal_chat_message_metadata_passthrough":{"content_item_kinds":["additional_content.codex_apps_open_page"]}}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"真正的提问"}],
+                "internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}),
+        ]);
+        let (items, _) = messages(&raw, 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "真正的提问");
+    }
+
+    #[test]
+    fn attachment_lists_only_count_when_they_carry_a_request() {
+        assert!(title("# Files mentioned by the user:\n\n## shot.png: C:\\tmp\\shot.png\nImage attachment: true").is_none());
+        assert_eq!(
+            title("# Files mentioned by the user:\n\n## shot.png: C:\\tmp\\shot.png\nImage attachment: true\n\n## My request:\n把间距增大 4px").as_deref(),
+            Some("把间距增大 4px")
+        );
+    }
+
+    #[test]
+    fn image_attachment_markup_does_not_leak_into_the_title() {
+        assert_eq!(
+            title("红色区域的文字不需要\n\n<image name=[Image #1] path=\"C:\\tmp\\shot.png\">\n\n</image>").as_deref(),
+            Some("红色区域的文字不需要")
+        );
+        // A bare <image> discussed in prose must survive verbatim.
+        assert_eq!(
+            title("怎么在 HTML 里写 <image> 标签？").as_deref(),
+            Some("怎么在 HTML 里写 <image> 标签？")
+        );
     }
 
     #[test]

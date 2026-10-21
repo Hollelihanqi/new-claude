@@ -1,10 +1,16 @@
 use super::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::io::Read;
+#[cfg(test)]
+use std::io::Cursor;
+use std::io::{BufRead, Read, Write};
 
-const MAX_ROLLOUT: u64 = 32 * 1024 * 1024;
+const MAX_ROLLOUT: u64 = snapshot::LIMIT;
 const MAX_SCAN: usize = 10_000;
+/// The first real question can sit behind injected instructions and tool output.
+/// Scan a bounded prefix, stopping as soon as a question is found.
+const TITLE_SCAN: usize = 8 * 1024 * 1024;
+const TITLE_CHUNK: usize = 256 * 1024;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +25,10 @@ pub struct HistoryItem {
     modified_at: u64,
     transferable: bool,
     detail: String,
+    /// Sub-agent and approval-reviewer threads are internal to their parent
+    /// conversation; the desktop client does not list them either.
+    #[serde(skip)]
+    internal: bool,
 }
 
 #[derive(Serialize)]
@@ -176,12 +186,15 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
             .unwrap_or(0),
         transferable: false,
         detail: "当前格式尚未通过迁移验证".into(),
+        internal: false,
     };
     let line = snapshot::header_file(path)?;
     if line["type"] != "session_meta" {
         return Ok(item);
     }
     let payload = &line["payload"];
+    item.internal =
+        payload["parent_thread_id"].is_string() || payload["source"]["subagent"].is_object();
     item.workspace = payload["cwd"]
         .as_str()
         .map(|cwd| {
@@ -211,17 +224,27 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
         return Ok(item);
     }
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
-    let reader: Box<dyn Read> = if path.to_string_lossy().ends_with(".jsonl.zst") {
+    let mut reader: Box<dyn Read> = if path.to_string_lossy().ends_with(".jsonl.zst") {
         Box::new(zstd::stream::read::Decoder::new(file).map_err(|_| "压缩记录无法解码")?)
     } else {
         Box::new(file)
     };
     let mut prefix = Vec::new();
-    reader
-        .take(256 * 1024)
-        .read_to_end(&mut prefix)
-        .map_err(|_| "会话摘要读取失败")?;
-    let (messages, _) = conversation::messages(&prefix, 100);
+    let mut chunk = vec![0u8; TITLE_CHUNK];
+    let mut messages = Vec::new();
+    loop {
+        let read = reader.read(&mut chunk).map_err(|_| "会话摘要读取失败")?;
+        if read == 0 {
+            break;
+        }
+        prefix.extend_from_slice(&chunk[..read]);
+        let (found, _) = conversation::messages(&prefix, 100);
+        let has_question = found.iter().any(|message| message.role == "user");
+        messages = found;
+        if has_question || prefix.len() >= TITLE_SCAN {
+            break;
+        }
+    }
     if let Some(first) = messages.iter().find(|message| message.role == "user") {
         item.summary = first
             .text
@@ -235,12 +258,8 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
             item.title = conversation::title(&first.text).unwrap_or_else(|| "未命名会话".into());
         }
     }
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "jsonl")
-        && item.bytes > snapshot::LIMIT
-    {
-        item.detail = "记录超过 32 MB，当前版本无法完整复制".into();
+    if item.bytes > snapshot::LIMIT {
+        item.detail = "记录超过 512 MB，当前版本无法完整复制".into();
         return Ok(item);
     }
     item.transferable = true;
@@ -304,6 +323,7 @@ pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, S
     let mut invalid = 0;
     for p in paths {
         match inspect(&home, &p) {
+            Ok(item) if item.internal => {}
             Ok(item) => items.push(item),
             Err(_) => invalid += 1,
         }
@@ -322,6 +342,7 @@ pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, S
     })
 }
 
+#[allow(dead_code)] // kept as the byte-oriented oracle used by the regression tests
 fn validate_snapshot(bytes: &[u8], home: &Path) -> Result<(), String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "会话内容编码不受支持")?;
     if !text.ends_with('\n') {
@@ -381,89 +402,118 @@ fn has_external_attachment(v: &Value) -> bool {
     }
 }
 
-fn verify_copied_context(source: &[u8], target: &[u8]) -> Result<(), String> {
-    fn context(bytes: &[u8]) -> Result<Vec<Value>, String> {
-        let text = std::str::from_utf8(bytes).map_err(|_| "历史编码无法识别")?;
-        let mut result = vec![];
-        for line in text.lines() {
-            let value: Value = serde_json::from_str(line).map_err(|_| "历史内容不完整")?;
-            if matches!(value["type"].as_str(), Some("response_item" | "compacted")) {
-                let mut payload = value["payload"].clone();
-                // The official reader assigns IDs to legacy messages lacking one.
-                // IDs identify items; their text, role and tool references must match.
-                if let Some(object) = payload.as_object_mut() {
-                    object.remove("id");
-                    if object.get("type").and_then(Value::as_str) == Some("reasoning") {
-                        // The official reader materializes an empty `content` field
-                        // for older reasoning items while preserving their summary
-                        // and encrypted payload.
-                        object.remove("content");
-                    }
-                }
-                result.push(payload);
-            }
+fn normalize_context(value: &Value) -> Value {
+    let mut payload = value["payload"].clone();
+    // The official reader assigns IDs to legacy messages lacking one.
+    // IDs identify items; their text, role and tool references must match.
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("id");
+        if object.get("type").and_then(Value::as_str) == Some("reasoning") {
+            // The official reader materializes an empty `content` field
+            // for older reasoning items while preserving their summary
+            // and encrypted payload.
+            object.remove("content");
         }
-        Ok(result)
     }
-    let source = context(source)?;
-    let target = context(target)?;
-    if source.is_empty() {
+    payload
+}
+
+fn next_context(reader: &mut dyn BufRead) -> Result<Option<Value>, String> {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|_| "历史编码无法识别")?;
+        if read == 0 {
+            return Ok(None);
+        }
+        let body = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = std::str::from_utf8(body).map_err(|_| "历史编码无法识别")?;
+        let value: Value = serde_json::from_str(text).map_err(|_| "历史内容不完整")?;
+        if matches!(value["type"].as_str(), Some("response_item" | "compacted")) {
+            return Ok(Some(normalize_context(&value)));
+        }
+    }
+}
+
+fn verify_context(source: &mut dyn BufRead, target: &mut dyn BufRead) -> Result<(), String> {
+    let mut next = 0usize;
+    let mut target_len = 0usize;
+    let mut current = next_context(source)?;
+    if current.is_none() {
         return Err("记录中没有可验证的对话上下文".into());
     }
-    let mut next = 0;
-    for value in &target {
-        if source.get(next) == Some(value) {
+    let mut first_mismatch: Option<Value> = None;
+    while let Some(candidate) = next_context(target)? {
+        target_len += 1;
+        if current.as_ref() == Some(&candidate) {
             next += 1;
+            current = next_context(source)?;
+        } else if first_mismatch.is_none() {
+            first_mismatch = Some(candidate);
         }
     }
-    if next != source.len() {
-        let kind = |value: &Value| {
-            format!(
-                "{}/{}",
-                value["type"].as_str().unwrap_or("?"),
-                value["role"].as_str().unwrap_or("?")
-            )
-        };
-        let changed_fields: Vec<&str> = source
-            .get(next)
-            .and_then(Value::as_object)
-            .into_iter()
-            .flat_map(|a| {
-                a.keys().filter_map(|key| {
-                    (a.get(key)
-                        != target
-                            .get(next)
-                            .and_then(Value::as_object)
-                            .and_then(|b| b.get(key)))
-                    .then_some(key.as_str())
-                })
-            })
-            .collect();
-        let extra_fields: Vec<&str> = target
-            .get(next)
-            .and_then(Value::as_object)
-            .into_iter()
-            .flat_map(|b| {
-                b.keys().filter_map(|key| {
-                    (!source
-                        .get(next)
+    let Some(source_item) = current else {
+        return Ok(());
+    };
+    let source_len = next + 1 + {
+        let mut rest = 0usize;
+        while next_context(source)?.is_some() {
+            rest += 1;
+        }
+        rest
+    };
+    let kind = |value: &Value| {
+        format!(
+            "{}/{}",
+            value["type"].as_str().unwrap_or("?"),
+            value["role"].as_str().unwrap_or("?")
+        )
+    };
+    let changed_fields: Vec<&str> = source_item
+        .as_object()
+        .into_iter()
+        .flat_map(|a| {
+            a.keys().filter_map(|key| {
+                (a.get(key)
+                    != first_mismatch
+                        .as_ref()
                         .and_then(Value::as_object)
-                        .is_some_and(|a| a.contains_key(key)))
-                    .then_some(key.as_str())
-                })
+                        .and_then(|b| b.get(key)))
+                .then_some(key.as_str())
             })
-            .collect();
-        return Err(format!(
-            "目标副本未保留完整的模型上下文（已核对 {next}/{} 条，目标有 {} 条；首个差异：来源 {}，目标 {}，字段 {:?}，目标新增字段 {:?}），已停止迁移",
-            source.len(),
-            target.len(),
-            source.get(next).map(kind).unwrap_or_default(),
-            target.get(next).map(kind).unwrap_or_default(),
-            changed_fields,
-            extra_fields
-        ));
-    }
-    Ok(())
+        })
+        .collect();
+    let extra_fields: Vec<&str> = first_mismatch
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|b| {
+            b.keys().filter_map(|key| {
+                (!source_item.as_object().is_some_and(|a| a.contains_key(key)))
+                    .then_some(key.as_str())
+            })
+        })
+        .collect();
+    Err(format!(
+        "目标副本未保留完整的模型上下文（已核对 {next}/{} 条，目标有 {} 条；首个差异：来源 {}，目标 {}，字段 {:?}，目标新增字段 {:?}），已停止迁移",
+        source_len,
+        target_len,
+        kind(&source_item),
+        first_mismatch.as_ref().map(kind).unwrap_or_default(),
+        changed_fields,
+        extra_fields
+    ))
+}
+
+fn verify_copied_context_files(source: &Path, target: &Path) -> Result<(), String> {
+    verify_context(&mut snapshot::open(source)?, &mut snapshot::open(target)?)
+}
+
+#[cfg(test)]
+fn verify_copied_context(source: &[u8], target: &[u8]) -> Result<(), String> {
+    verify_context(&mut Cursor::new(source), &mut Cursor::new(target))
 }
 
 fn transfer_key(request: &TransferRequest, fingerprint: &str) -> String {
@@ -562,58 +612,70 @@ pub fn transfer(
     if item.revision != request.revision && !completed_only {
         return Err("来源记录已变化，请刷新后重新选择".into());
     }
-    let raw = snapshot::materialize(&path, &candidates, completed_only)?;
-    let (prepared, _, _) = prepare(raw, &home, request.workspace.as_deref())?;
-    let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
+    let plan = snapshot::plan(&path, &candidates, completed_only)?;
+    let transfers = target.join("transfers");
+    storage::private_dir(&transfers)?;
+    let stage_id = uuid::Uuid::new_v4().to_string();
+    let prepared = transfers.join(format!(".prepared-{stage_id}"));
+    let mut hasher = Sha256::new();
+    let built = crate::sync::write_stream_atomic(&prepared, |file| {
+        let mut sink = DigestSink {
+            inner: file,
+            hasher: &mut hasher,
+            len: 0,
+        };
+        build(
+            &plan,
+            &home,
+            request.workspace.as_deref(),
+            Some(&target),
+            &mut sink,
+        )
+    });
+    let built = match built {
+        Ok(built) => built,
+        Err(error) => {
+            let _ = fs::remove_file(&prepared);
+            return Err(error);
+        }
+    };
     if request
         .fingerprint
         .as_ref()
-        .is_some_and(|hash| *hash != hex::encode(Sha256::digest(&bytes)))
+        .is_some_and(|hash| *hash != built.fingerprint)
     {
+        let _ = fs::remove_file(&prepared);
         return Err("预览后记录或附件已变化，请重新预览".into());
     }
     if !completed_only
         && revision(&fs::metadata(&path).map_err(|e| e.to_string())?) != item.revision
     {
+        let _ = fs::remove_file(&prepared);
         return Err("读取期间来源记录发生变化，请刷新后重试".into());
     }
-    validate_snapshot(&bytes, &home)?;
-    let key = transfer_key(&request, &hex::encode(Sha256::digest(&bytes)));
-    let transfers = target.join("transfers");
-    storage::private_dir(&transfers)?;
+    let key = transfer_key(&request, &built.fingerprint);
     let journal_path = transfers.join(format!("{key}.pending.json"));
-    if let Some(result) = existing_transfer(cli, &target, &key)? {
+    let duplicate = existing_transfer(cli, &target, &key).map_err(|error| {
+        let _ = fs::remove_file(&prepared);
+        error
+    })?;
+    if let Some(result) = duplicate {
+        let _ = fs::remove_file(&prepared);
         return Ok(result);
     }
-    persist_display_images(&assets)?;
+    if let Err(error) = persist_display_images(&built.assets) {
+        let _ = fs::remove_file(&prepared);
+        return Err(error);
+    }
     let stage = transfers.join(format!("{key}.jsonl"));
-    let stage_id = uuid::Uuid::new_v4().to_string();
-    let mut lines: Vec<Value> = std::str::from_utf8(&bytes)
-        .map_err(|_| "记录编码无效")?
-        .lines()
-        .map(serde_json::from_str)
-        .collect::<Result<_, _>>()
-        .map_err(|_| "记录内容无效")?;
-    let display_import = lines[0]["payload"]["history_mode"] == "paginated";
-    lines[0]["payload"]["id"] = json!(stage_id);
-    lines[0]["payload"]["session_id"] = json!(stage_id);
-    if display_import {
-        for line in lines.iter_mut().skip(1) {
-            if matches!(
-                line["type"].as_str(),
-                Some("event_msg" | "token_usage_record")
-            ) && line["payload"]["thread_id"].is_string()
-            {
-                line["payload"]["thread_id"] = json!(stage_id);
-            }
+    let content_hash = match rewrite_ids(&prepared, &stage, &stage_id, plan.paginated()) {
+        Ok(hash) => hash,
+        Err(error) => {
+            let _ = fs::remove_file(&prepared);
+            return Err(error);
         }
-    }
-    let mut staged = Vec::new();
-    for line in lines {
-        serde_json::to_writer(&mut staged, &line).map_err(|e| e.to_string())?;
-        staged.push(b'\n');
-    }
-    crate::sync::write_bytes_atomic(&stage, &staged).map_err(|e| e.to_string())?;
+    };
+    let _ = fs::remove_file(&prepared);
     let journal = TransferJournal {
         source_id: request.source_id,
         source_thread_id: item.thread_id,
@@ -622,11 +684,61 @@ pub fn transfer(
         state: "pending".into(),
         stage_id,
         title: item.title,
-        content_hash: hex::encode(Sha256::digest(&staged)),
-        display_import,
+        content_hash,
+        display_import: plan.paginated(),
     };
     storage::write_json(&journal_path, &journal)?;
     resume_transfer(cli, &target, &key, false)
+}
+
+fn rewrite_ids(
+    input: &Path,
+    stage: &Path,
+    stage_id: &str,
+    paginated: bool,
+) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    crate::sync::write_stream_atomic(stage, |file| {
+        let mut sink = DigestSink {
+            inner: file,
+            hasher: &mut hasher,
+            len: 0,
+        };
+        let mut reader = snapshot::open(input)?;
+        let mut line = Vec::new();
+        let mut first = true;
+        loop {
+            line.clear();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .map_err(|_| "记录读取失败")?;
+            if read == 0 {
+                break;
+            }
+            if line.last() != Some(&b'\n') {
+                return Err("记录内容无效".into());
+            }
+            let mut value: Value =
+                serde_json::from_slice(&line[..line.len() - 1]).map_err(|_| "记录内容无效")?;
+            if first {
+                value["payload"]["id"] = json!(stage_id);
+                value["payload"]["session_id"] = json!(stage_id);
+                first = false;
+            } else if paginated
+                && matches!(
+                    value["type"].as_str(),
+                    Some("event_msg" | "token_usage_record")
+                )
+                && value["payload"]["thread_id"].is_string()
+            {
+                value["payload"]["thread_id"] = json!(stage_id);
+            }
+            serde_json::to_writer(&mut sink, &value).map_err(|e| e.to_string())?;
+            sink.write_all(b"\n").map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[derive(Serialize)]
@@ -677,70 +789,179 @@ pub fn preview_many(
             if item.revision != request.revision && !completed_only {
                 return Err("记录已变化，请刷新".into());
             }
-            let (prepared, images, workspace) = prepare(
-                snapshot::materialize(path, &candidates, completed_only)?,
+            let plan = snapshot::plan(path, &candidates, completed_only)?;
+            let mut hasher = Sha256::new();
+            let mut sink = DigestSink {
+                inner: std::io::sink(),
+                hasher: &mut hasher,
+                len: 0,
+            };
+            let built = build(
+                &plan,
                 &home,
                 request.workspace.as_deref(),
+                Some(&target),
+                &mut sink,
             )?;
-            let (bytes, assets) = rewrite_display_images(&prepared, &target)?;
             Ok(Preview {
                 key: item.key,
                 title: item.title,
-                bytes: bytes.len(),
-                images: images.max(assets.len()),
-                workspace,
-                fingerprint: hex::encode(Sha256::digest(bytes)),
+                bytes: built.bytes as usize,
+                images: built.images.max(built.assets.len()),
+                workspace: built.workspace,
+                fingerprint: built.fingerprint,
             })
         })
         .collect()
 }
 
-fn prepare(
-    raw: Vec<u8>,
-    home: &Path,
-    workspace: Option<&str>,
-) -> Result<(Vec<u8>, usize, String), String> {
-    let mut records = std::str::from_utf8(&raw)
-        .map_err(|_| "历史编码无效")?
-        .lines()
-        .map(serde_json::from_str::<Value>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| "历史内容无效")?;
-    let original = records[0]["payload"]["cwd"]
-        .as_str()
-        .ok_or("记录没有项目目录")?;
-    let cwd = PathBuf::from(workspace.unwrap_or(original));
-    if !cwd.is_absolute() || !cwd.is_dir() {
-        return Err("原项目目录不存在，请先选择接续使用的项目目录".into());
+/// One-pass record transformation shared by preview, copy and the legacy
+/// `prepare` test helper. Keeps only the current record in memory.
+struct Builder<'a> {
+    home: &'a Path,
+    workspace: Option<&'a str>,
+    target: Option<&'a Path>,
+    images: usize,
+    assets: Vec<DisplayImageAsset>,
+    cwd: Option<String>,
+}
+
+impl<'a> Builder<'a> {
+    fn new(home: &'a Path, workspace: Option<&'a str>, target: Option<&'a Path>) -> Self {
+        Self {
+            home,
+            workspace,
+            target,
+            images: 0,
+            assets: Vec::new(),
+            cwd: None,
+        }
     }
-    let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
-    if cwd.starts_with(home.canonicalize().map_err(|e| e.to_string())?) {
-        return Err("项目位于来源实例内部，请选择独立项目目录".into());
-    }
-    let mut images = 0;
-    let mut output = vec![];
-    for record in &mut records {
+
+    fn apply(&mut self, record: &mut Value, is_header: bool) -> Result<(), String> {
+        if is_header {
+            let original = record["payload"]["cwd"]
+                .as_str()
+                .ok_or("记录没有项目目录")?;
+            let cwd = PathBuf::from(self.workspace.unwrap_or(original));
+            if !cwd.is_absolute() || !cwd.is_dir() {
+                return Err("原项目目录不存在，请先选择接续使用的项目目录".into());
+            }
+            let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
+            if cwd.starts_with(self.home.canonicalize().map_err(|e| e.to_string())?) {
+                return Err("项目位于来源实例内部，请选择独立项目目录".into());
+            }
+            self.cwd = Some(cwd.to_string_lossy().into_owned());
+        }
         if matches!(
             record["type"].as_str(),
             Some("session_meta" | "turn_context")
-        ) && workspace.is_some()
+        ) && self.workspace.is_some()
         {
+            let cwd = self.cwd.as_deref().ok_or("记录没有项目目录")?;
             record["payload"]["cwd"] = json!(cwd);
             if record["payload"].get("runtime_workspace_roots").is_some() {
                 record["payload"]["runtime_workspace_roots"] = json!([cwd]);
             }
         }
         if record["type"] != "event_msg" {
-            embed_images(record, &mut images)?;
+            embed_images(record, &mut self.images)?;
+        } else if let Some(target) = self.target {
+            remap_display_images(record, target, &mut self.assets)?;
         }
-        serde_json::to_writer(&mut output, record).map_err(|e| e.to_string())?;
+        if has_external_attachment(record) || has_source_attachment(record, self.home) {
+            return Err("记录包含外部附件或云端文件引用，当前不支持完整迁移".into());
+        }
+        Ok(())
+    }
+
+    fn workspace(&self) -> String {
+        self.cwd.clone().unwrap_or_default()
+    }
+}
+
+struct DigestSink<'a, W: Write> {
+    inner: W,
+    hasher: &'a mut Sha256,
+    len: u64,
+}
+
+impl<W: Write> Write for DigestSink<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.hasher.update(buf);
+        self.inner.write_all(buf)?;
+        self.len += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+struct Built {
+    bytes: u64,
+    images: usize,
+    workspace: String,
+    assets: Vec<DisplayImageAsset>,
+    fingerprint: String,
+}
+
+fn limit_message() -> String {
+    format!(
+        "历史和内嵌附件超过 {} MB 上限",
+        snapshot::LIMIT / (1024 * 1024)
+    )
+}
+
+fn build<W: Write>(
+    plan: &snapshot::Plan,
+    home: &Path,
+    workspace: Option<&str>,
+    target: Option<&Path>,
+    out: &mut DigestSink<'_, W>,
+) -> Result<Built, String> {
+    let mut builder = Builder::new(home, workspace, target);
+    snapshot::emit(plan, |record, is_header| {
+        builder.apply(record, is_header)?;
+        serde_json::to_writer(&mut *out, record).map_err(|e| e.to_string())?;
+        out.write_all(b"\n").map_err(|e| e.to_string())?;
+        if out.len > MAX_ROLLOUT {
+            return Err(limit_message());
+        }
+        Ok(())
+    })?;
+    Ok(Built {
+        bytes: out.len,
+        images: builder.images,
+        workspace: builder.workspace(),
+        assets: builder.assets,
+        fingerprint: hex::encode((*out.hasher).clone().finalize()),
+    })
+}
+
+#[allow(dead_code)] // byte-oriented oracle for the streaming pipeline tests
+fn prepare(
+    raw: Vec<u8>,
+    home: &Path,
+    workspace: Option<&str>,
+) -> Result<(Vec<u8>, usize, String), String> {
+    let text = std::str::from_utf8(&raw).map_err(|_| "历史编码无效")?;
+    if text.trim().is_empty() {
+        return Err("历史内容无效".into());
+    }
+    let mut builder = Builder::new(home, workspace, None);
+    let mut output = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let mut record: Value = serde_json::from_str(line).map_err(|_| "历史内容无效")?;
+        builder.apply(&mut record, index == 0)?;
+        serde_json::to_writer(&mut output, &record).map_err(|e| e.to_string())?;
         output.push(b'\n');
         if output.len() as u64 > MAX_ROLLOUT {
-            return Err("历史和内嵌附件超过 32 MB 上限".into());
+            return Err(limit_message());
         }
     }
-    validate_snapshot(&output, home)?;
-    Ok((output, images, cwd.to_string_lossy().into()))
+    Ok((output, builder.images, builder.workspace()))
 }
 
 fn read_local_image(path: &str) -> Result<(Vec<u8>, &'static str, &'static str), String> {
@@ -924,6 +1145,7 @@ fn remap_display_images(
     Ok(())
 }
 
+#[allow(dead_code)] // byte-oriented oracle for the streaming pipeline tests
 fn rewrite_display_images(
     bytes: &[u8],
     target: &Path,
@@ -941,7 +1163,7 @@ fn rewrite_display_images(
         serde_json::to_writer(&mut output, &record).map_err(|e| e.to_string())?;
         output.push(b'\n');
         if output.len() as u64 > MAX_ROLLOUT {
-            return Err("历史和内嵌附件超过 32 MB 上限".into());
+            return Err(limit_message());
         }
     }
     Ok((output, assets))
@@ -1038,9 +1260,8 @@ pub fn recover(
     )
 }
 
-fn direct_session_path(target: &Path, bytes: &[u8], id: &str) -> Result<PathBuf, String> {
+fn direct_session_path(target: &Path, header: &Value, id: &str) -> Result<PathBuf, String> {
     storage::validate_id(id)?;
-    let header = snapshot::header(bytes)?;
     let timestamp = header["payload"]["timestamp"]
         .as_str()
         .ok_or("新版会话缺少创建时间，无法安全导入")?;
@@ -1062,15 +1283,25 @@ fn direct_session_path(target: &Path, bytes: &[u8], id: &str) -> Result<PathBuf,
         .join(format!("rollout-{}-{id}.jsonl", stamp.replace(':', "-"))))
 }
 
-fn visible_message_counts(bytes: &[u8]) -> Result<(usize, usize), String> {
-    let paginated = snapshot::header(bytes)?["payload"]["history_mode"] == "paginated";
+fn visible_message_counts(path: &Path) -> Result<(usize, usize), String> {
+    let paginated = snapshot::header_file(path)?["payload"]["history_mode"] == "paginated";
+    let mut reader = snapshot::open(path)?;
     let mut user = 0;
     let mut agent = 0;
-    for line in bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let value: Value = serde_json::from_slice(line).map_err(|_| "会话展示记录损坏")?;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|_| "会话展示记录损坏")?;
+        if read == 0 {
+            break;
+        }
+        let body = line.strip_suffix(b"\n").unwrap_or(&line);
+        if body.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_slice(body).map_err(|_| "会话展示记录损坏")?;
         if value["type"] == "event_msg" {
             if paginated && value["payload"]["type"] == "item_completed" {
                 match value["payload"]["item"]["type"].as_str() {
@@ -1090,14 +1321,14 @@ fn visible_message_counts(bytes: &[u8]) -> Result<(usize, usize), String> {
     Ok((user, agent))
 }
 
-fn verify_visible_history(client: &mut rpc::Client, id: &str, bytes: &[u8]) -> Result<(), String> {
-    let (required_user, required_agent) = visible_message_counts(bytes)?;
+fn verify_visible_history(client: &mut rpc::Client, id: &str, path: &Path) -> Result<(), String> {
+    let (required_user, required_agent) = visible_message_counts(path)?;
     if required_user == 0 || required_agent == 0 {
         return Err("来源会话缺少可展示的完整问答记录，不能标记为可视接续".into());
     }
     let mut user = 0;
     let mut agent = 0;
-    if snapshot::header(bytes)?["payload"]["history_mode"] != "paginated" {
+    if snapshot::header_file(path)?["payload"]["history_mode"] != "paginated" {
         let read = client.call("thread/read", json!({"threadId":id,"includeTurns":true}))?;
         let turns = read["thread"]["turns"]
             .as_array()
@@ -1149,6 +1380,61 @@ fn verify_visible_history(client: &mut rpc::Client, id: &str, bytes: &[u8]) -> R
     ))
 }
 
+fn hash_file(path: &Path) -> Result<String, String> {
+    let mut reader = snapshot::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 128 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|_| "记录读取失败".to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn copy_atomic(from: &Path, to: &Path) -> Result<(), String> {
+    let mut reader = snapshot::open(from)?;
+    crate::sync::write_stream_atomic(to, |file| {
+        std::io::copy(&mut reader, file).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+fn read_block(reader: &mut dyn Read, buffer: &mut [u8]) -> Result<usize, String> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        let read = reader
+            .read(&mut buffer[filled..])
+            .map_err(|_| "记录读取失败".to_string())?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    Ok(filled)
+}
+
+fn same_bytes(a: &Path, b: &Path) -> Result<bool, String> {
+    let mut left = snapshot::open(a)?;
+    let mut right = snapshot::open(b)?;
+    let mut left_buf = vec![0u8; 64 * 1024];
+    let mut right_buf = vec![0u8; 64 * 1024];
+    loop {
+        let left_len = read_block(&mut *left, &mut left_buf)?;
+        let right_len = read_block(&mut *right, &mut right_buf)?;
+        if left_len != right_len || left_buf[..left_len] != right_buf[..right_len] {
+            return Ok(false);
+        }
+        if left_len == 0 {
+            return Ok(true);
+        }
+    }
+}
+
 fn resume_display_import(
     cli: &str,
     target: &Path,
@@ -1158,12 +1444,12 @@ fn resume_display_import(
     mut journal: TransferJournal,
     discard: bool,
 ) -> Result<TransferResult, String> {
-    let bytes = snapshot::read(stage)?;
-    if hex::encode(Sha256::digest(&bytes)) != journal.content_hash {
+    if hash_file(stage)? != journal.content_hash {
         return Err("恢复快照校验失败，请撤回后重新复制".into());
     }
+    let header = snapshot::header_file(stage)?;
     let id = journal.stage_id.clone();
-    let path = direct_session_path(target, &bytes, &id)?;
+    let path = direct_session_path(target, &header, &id)?;
     if discard {
         if path.exists() {
             let mut client = rpc::Client::start(cli, target)?;
@@ -1174,7 +1460,7 @@ fn resume_display_import(
                 client.call("thread/delete", json!({"threadId":id}))?;
             } else {
                 storage::plain(&path)?;
-                if snapshot::read(&path)? != bytes {
+                if !same_bytes(stage, &path)? {
                     return Err("目标副本已变化，无法自动撤回，请保留并检查该会话".into());
                 }
                 fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -1191,10 +1477,9 @@ fn resume_display_import(
     let result: Result<TransferResult, String> = (|| {
         storage::private_dir(path.parent().ok_or("目标会话目录无效")?)?;
         if path.exists() {
-            let existing = snapshot::read(&path)?;
-            verify_copied_context(&bytes, &existing)?;
+            verify_copied_context_files(stage, &path)?;
         } else {
-            crate::sync::write_bytes_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+            copy_atomic(stage, &path)?;
         }
         journal.target_thread_id = Some(id.clone());
         storage::write_json(journal_path, &journal)?;
@@ -1213,8 +1498,8 @@ fn resume_display_import(
         {
             return Err("官方客户端打开了其他会话文件，已停止迁移".into());
         }
-        verify_copied_context(&bytes, &snapshot::read(&path)?)?;
-        verify_visible_history(&mut client, &id, &bytes)?;
+        verify_copied_context_files(stage, &path)?;
+        verify_visible_history(&mut client, &id, stage)?;
         client.call(
             "thread/name/set",
             json!({"threadId":id,"name":format!("接续 · {}",journal.title)}),
@@ -1317,8 +1602,7 @@ fn resume_transfer(
             detail: "未完成副本已撤回，来源及其他会话保留。".into(),
         });
     }
-    let bytes = snapshot::read(&stage)?;
-    if hex::encode(Sha256::digest(&bytes)) != journal.content_hash {
+    if hash_file(&stage)? != journal.content_hash {
         return Err("恢复快照校验失败，请撤回后重新复制".into());
     }
     let id = match journal.target_thread_id.clone() {
@@ -1357,9 +1641,8 @@ fn resume_transfer(
         {
             return Err("目标路径超出实例目录".into());
         }
-        let copied = snapshot::read(Path::new(path))?;
-        verify_copied_context(&bytes, &copied)?;
-        verify_visible_history(&mut client, &id, &bytes)?;
+        verify_copied_context_files(&stage, Path::new(path))?;
+        verify_visible_history(&mut client, &id, &stage)?;
         client.call(
             "thread/name/set",
             json!({"threadId":id,"name":format!("接续 · {}", journal.title)}),
@@ -1547,7 +1830,66 @@ mod tests {
         file.set_len(snapshot::LIMIT + 1).unwrap();
         let item = inspect(&home, &path).unwrap();
         assert!(!item.transferable);
-        assert!(item.detail.contains("32 MB"));
+        assert!(item.detail.contains("512 MB"));
+    }
+
+    #[test]
+    fn histories_above_the_old_limit_are_still_offered() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().canonicalize().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = home.join(format!("rollout-{id}.jsonl"));
+        let mut file = fs::File::create(&path).unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"session_meta","payload":{"id":id,"history_mode":"paginated"}})
+        )
+        .unwrap();
+        file.set_len(33 * 1024 * 1024).unwrap();
+        drop(file);
+        let item = inspect(&home, &path).unwrap();
+        assert!(item.transferable, "{}", item.detail);
+    }
+
+    #[test]
+    fn subagent_threads_are_not_listed() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut registry = Registry::default();
+        let source = storage::create(&root, &mut registry, "source").unwrap();
+        let home = storage::profile_dir(&root, &source.id)
+            .unwrap()
+            .join("codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let parent = uuid::Uuid::new_v4().to_string();
+        let child = uuid::Uuid::new_v4().to_string();
+        for (id, payload) in [
+            (
+                parent.clone(),
+                json!({"id": parent, "history_mode": "legacy"}),
+            ),
+            (
+                child.clone(),
+                json!({"id": child, "history_mode": "legacy", "parent_thread_id": parent,
+                    "source": {"subagent": {"other": "guardian"}}}),
+            ),
+        ] {
+            fs::write(
+                home.join("sessions").join(format!("rollout-{id}.jsonl")),
+                format!(
+                    "{}\n{}\n{}\n",
+                    json!({"type":"session_meta","payload":payload}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"真实问题"}]}}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"回答"}]}})
+                ),
+            )
+            .unwrap();
+        }
+        let listed = list(&root, &registry, &source.id).unwrap();
+        assert_eq!(listed.items.len(), 1);
+        assert_eq!(listed.items[0].thread_id, parent);
     }
 
     #[test]
@@ -1556,6 +1898,57 @@ mod tests {
         assert!(verify_copied_context(a, a).is_ok());
         assert!(verify_copied_context(a, b"{\"type\":\"response_item\",\"payload\":1}\n").is_err());
         assert!(verify_copied_context(a, b"{\"type\":\"response_item\",\"payload\":2}\n{\"type\":\"response_item\",\"payload\":1}\n").is_err());
+        assert!(verify_copied_context(a, b"").is_err());
+        // Extra target context before or between source items is allowed: the
+        // official reader may keep newer turns in the same file.
+        assert!(verify_copied_context(
+            a,
+            b"{\"type\":\"response_item\",\"payload\":9}\n{\"type\":\"response_item\",\"payload\":1}\n{\"type\":\"response_item\",\"payload\":8}\n{\"type\":\"response_item\",\"payload\":2}\n"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn streaming_build_matches_the_legacy_prepare_and_rewrite_chain() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("codex");
+        storage::private_dir(&home).unwrap();
+        let target = root.join("target");
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = home.join(format!("rollout-{id}.jsonl"));
+        let raw = fixture(&id, &root, "paginated", "hello");
+        fs::write(&path, &raw).unwrap();
+
+        let (prepared, images, workspace) = prepare(
+            snapshot::materialize(&path, &[], false).unwrap(),
+            &home,
+            Some(root.to_str().unwrap()),
+        )
+        .unwrap();
+        let (rewritten, assets) = rewrite_display_images(&prepared, &target).unwrap();
+        let expected = hex::encode(Sha256::digest(&rewritten));
+
+        let plan = snapshot::plan(&path, &[], false).unwrap();
+        let mut hasher = Sha256::new();
+        let mut sink = DigestSink {
+            inner: std::io::sink(),
+            hasher: &mut hasher,
+            len: 0,
+        };
+        let built = build(
+            &plan,
+            &home,
+            Some(root.to_str().unwrap()),
+            Some(&target),
+            &mut sink,
+        )
+        .unwrap();
+        assert_eq!(built.fingerprint, expected);
+        assert_eq!(built.bytes, rewritten.len() as u64);
+        assert_eq!(built.workspace, workspace);
+        assert_eq!(built.images, images);
+        assert_eq!(built.assets.len(), assets.len());
     }
 
     #[test]

@@ -590,3 +590,45 @@ it("remembers the selected project for the same account pair", async () => {
   expect(select("复制范围").props.value).toBe("project");
   expect(select("选择项目").props.value).toBe("/project");
 });
+
+it("groups conversations by project with a per-project count", async () => {
+  vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items: [
+    { ...history.items[0], key: "a1", threadId: "a1", workspace: "/work/alpha", title: "Alpha one" },
+    { ...history.items[0], key: "a2", threadId: "a2", workspace: "/work/alpha", title: "Alpha two" },
+    { ...history.items[0], key: "b1", threadId: "b1", workspace: "/work/beta", title: "Beta one" },
+  ]});
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-record-group-name" }).map(node => node.props.children)).toEqual(["alpha", "beta"]);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-record-group-count" }).map(node => node.props.children)).toEqual([2, 1]);
+});
+
+it("keeps long project groups behind an expand control", async () => {
+  vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items: Array.from({ length: 7 }, (_, index) => ({
+    ...history.items[0], key: `record-${index}`, threadId: `thread-${index}`, title: `Record ${index}`,
+  })) });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-row" })).toHaveLength(5);
+  act(() => button("展开显示").props.onClick());
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-row" })).toHaveLength(7);
+});
+
+it("does not repeat the title as the summary and explains why copying is blocked", async () => {
+  vi.mocked(api.chatGptHistory).mockResolvedValue({ ...history, items: [{
+    ...history.items[0], title: "Same text", summary: "Same text", transferable: false,
+    detail: "记录超过 512 MB，当前版本无法完整复制",
+  }] });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-summary" })).toHaveLength(0);
+  expect(renderer.root.findAllByProps({ className: "chatgpt-copy-reason" }).map(node => node.props.children).join(" ")).toContain("先在左侧勾选");
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  expect(renderer.root.findAllByProps({ className: "chatgpt-copy-reason" }).map(node => node.props.children).join(" ")).toContain("512 MB");
+});
+
+it("explains that the conversation preview is read-only", async () => {
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-preview-hint" }).map(node => node.props.children).join(" ")).toContain("不会修改来源记录");
+});
