@@ -28,6 +28,7 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
   const [loadedPair, setLoadedPair] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [busy, setBusy] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [pendingActions, setPendingActions] = useState<string[]>([]);
   const pendingActionsRef = useRef(new Set<string>());
   const alive = useRef(true), historyGen = useRef(0), targetGen = useRef(0), stop = useRef(false), restoredPair = useRef(false);
@@ -40,14 +41,33 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
   const [confirmClosingTarget, setConfirmClosingTarget] = useState<string | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; historyGen.current++; targetGen.current++; stop.current = true; }; }, []);
 
-  async function load(sourceId: string | null) {
+  // `refresh` keeps the current list, preview, search, scroll and groups on
+  // screen: unmounting them made the page flash on every manual refresh.
+  async function load(sourceId: string | null, refresh = false) {
     const generation = ++historyGen.current;
-    setSource(sourceId); if (sourceId !== source) { setSelected([]); setProject(null); } setPreviews(null); setHistory(null); setFocusedKey(null); setConversation(null); setQuery(""); setVisibleLimit(50); setCollapsedGroups([]); setExpandedGroups([]); setError("");
-    if (!sourceId) return;
+    const keep = refresh && sourceId === source && history !== null;
+    setSource(sourceId);
+    if (!keep) {
+      if (sourceId !== source) { setSelected([]); setProject(null); }
+      setPreviews(null); setHistory(null); setFocusedKey(null); setConversation(null);
+      setQuery(""); setVisibleLimit(50); setCollapsedGroups([]); setExpandedGroups([]);
+    }
+    setError("");
+    if (!sourceId) { setHistoryLoading(false); return; }
+    setHistoryLoading(true);
     try {
       const value = await api.chatGptHistory(sourceId);
-      if (alive.current && generation === historyGen.current) setHistory(value);
-    } catch (e) { if (alive.current && generation === historyGen.current) setError(String(e)); }
+      if (alive.current && generation === historyGen.current) {
+        setHistory(value);
+        const keys = new Set(value.items.map(item => item.key));
+        setSelected(old => old.filter(key => keys.has(key)));
+        setFocusedKey(old => old && keys.has(old) ? old : null);
+      }
+    } catch (e) {
+      if (alive.current && generation === historyGen.current) setError(String(e));
+    } finally {
+      if (alive.current && generation === historyGen.current) setHistoryLoading(false);
+    }
   }
   async function loadTarget(targetId: string | null) {
     const generation = ++targetGen.current;
@@ -286,8 +306,8 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
       <div className="chatgpt-conversation-grid">
         <div className="chatgpt-records">
           <TextInput label="查找会话" placeholder="搜索标题、提问内容或项目" leftSection={<IconSearch size={17} />} value={query} onChange={e => { setQuery(e.currentTarget.value); setVisibleLimit(50); }} />
-          <Group justify="space-between" className="chatgpt-record-actions"><Text fw={600}>会话 · {visibleItems.length} 条</Text>
-            <Button size="xs" variant="subtle" leftSection={<IconRefresh size={15} />} disabled={!source || locked} onClick={() => void load(source)}>刷新记录</Button></Group>
+          <Group justify="space-between" className="chatgpt-record-actions" aria-busy={historyLoading}><Text fw={600}>会话 · {visibleItems.length} 条</Text>
+            <Button size="xs" variant="subtle" aria-busy={historyLoading} leftSection={historyLoading ? <IconLoader2 size={15} className="chatgpt-button-spinner" /> : <IconRefresh size={15} />} disabled={!source || locked || historyLoading} onClick={() => void load(source, true)}>{historyLoading ? "刷新中…" : "刷新记录"}</Button></Group>
           {history && !history.complete && <Text size="xs" c="orange">列表读取不完整，请在更多设置中查看原因；暂不能复制整个项目或全部会话。</Text>}
           {!source && <div className="chatgpt-records-placeholder"><IconHistory size={26} /><Text c="dimmed" size="sm">选择来源实例后，在这里查看会话。</Text></div>}
           {source && !history && !error && <Text role="status">正在读取会话…</Text>}

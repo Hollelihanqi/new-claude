@@ -627,6 +627,21 @@ it("does not repeat the title as the summary and explains why copying is blocked
   expect(renderer.root.findAllByProps({ className: "chatgpt-copy-reason" }).map(node => node.props.children).join(" ")).toContain("512 MB");
 });
 
+it("keeps the list on screen while refreshing and shows a loading button", async () => {
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-title" }).map(node => node.props.children)).toEqual(["Current record"]);
+  const pending = deferred<ChatGptHistory>();
+  vi.mocked(api.chatGptHistory).mockReturnValue(pending.promise);
+  await act(async () => { button("刷新记录").props.onClick(); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-title" }).map(node => node.props.children)).toEqual(["Current record"]);
+  expect(button("刷新中").props["aria-busy"]).toBe(true);
+  expect(button("刷新中").props.disabled).toBe(true);
+  await act(async () => { pending.resolve({ ...history, items: [{ ...history.items[0], title: "Updated" }] }); });
+  expect(renderer.root.findAllByProps({ className: "chatgpt-conversation-title" }).map(node => node.props.children)).toEqual(["Updated"]);
+  expect(button("刷新记录").props["aria-busy"]).toBe(false);
+});
+
 it("explains that the conversation preview is read-only", async () => {
   await act(async () => { renderer = create(<ChatGptPanel />); });
   await act(async () => { select("来源实例").props.onChange("a"); });
