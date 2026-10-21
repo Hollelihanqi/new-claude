@@ -22,7 +22,9 @@ from urllib.request import Request, urlopen
 PREFIX = "pathmux"
 NO_CACHE = "no-store, no-cache, must-revalidate, max-age=0"
 IMMUTABLE = "public, max-age=31536000, immutable"
-PART_SIZE = 512 * 1024
+# COS rejects any non-final part below 1 MiB (EntityTooSmall), so this is the
+# smallest safe part size; resilience comes from the longer socket timeout.
+PART_SIZE = 1024 * 1024
 PART_ATTEMPTS = 5
 TAG_PATTERN = re.compile(r"v(\d+)\.(\d+)\.(\d+)$")
 
