@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cos_mirror import CosStore, NO_CACHE, PREFIX, encode_json, promote, release_plan, sha256, stage
+from cos_mirror import CosStore, NO_CACHE, PART_ATTEMPTS, PREFIX, encode_json, promote, release_plan, sha256, stage
 
 
 BASE = "https://example-1250000000.cos.ap-guangzhou.myqcloud.com"
@@ -189,8 +189,8 @@ class MultipartTests(unittest.TestCase):
             def complete_multipart_upload(self, **kwargs):
                 self.completed = True
 
-        for failure, attempts in ((TimeoutError("write timeout"), 3),
-                                  (ServiceError(503), 3), (ServiceError(403), 1),
+        for failure, attempts in ((TimeoutError("write timeout"), PART_ATTEMPTS),
+                                  (ServiceError(503), PART_ATTEMPTS), (ServiceError(403), 1),
                                   (RuntimeError("invalid part"), 1)):
             with self.subTest(error=type(failure).__name__, attempts=attempts), \
                     tempfile.TemporaryDirectory() as temp, patch.dict(

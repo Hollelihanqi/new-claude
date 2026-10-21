@@ -22,8 +22,8 @@ from urllib.request import Request, urlopen
 PREFIX = "pathmux"
 NO_CACHE = "no-store, no-cache, must-revalidate, max-age=0"
 IMMUTABLE = "public, max-age=31536000, immutable"
-PART_SIZE = 1024 * 1024
-PART_ATTEMPTS = 3
+PART_SIZE = 512 * 1024
+PART_ATTEMPTS = 5
 TAG_PATTERN = re.compile(r"v(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -108,7 +108,7 @@ class CosStore:
         self.client = CosS3Client(CosConfig(
             Region=region, SecretId=os.environ["TENCENT_COS_SECRET_ID"],
             SecretKey=os.environ["TENCENT_COS_SECRET_KEY"], Scheme="https",
-            Timeout=45,
+            Timeout=180,
         ), retry=1)
 
     def read(self, key):
@@ -200,7 +200,7 @@ class CosStore:
 
     def upload_part_with_retry(self, **kwargs):
         from qcloud_cos import CosClientError, CosServiceError
-        # Serial 1 MiB requests reduce stalled writes on the cross-border route.
+        # Serial small requests reduce stalled writes on the cross-border route.
         # Retry the same immutable bytes and upload ID; never restart good parts.
         for attempt in range(PART_ATTEMPTS):
             try:
