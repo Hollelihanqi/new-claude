@@ -3273,6 +3273,43 @@ fn scan_usage_dir(
     }
 }
 
+// Claude Code 会把本地命令及其说明/输出也写成 user；仅角色不能证明是一次提问。
+// Windows/macOS 共用同一 JSONL 格式，按字段和内容块判断，避免误伤正文中的标记。
+fn is_usage_user_question(record: &serde_json::Value) -> bool {
+    if record.get("type").and_then(|v| v.as_str()) != Some("user")
+        || record.get("isMeta").and_then(|v| v.as_bool()) == Some(true)
+    {
+        return false;
+    }
+    let Some(content) = record.get("message").and_then(|m| m.get("content")) else {
+        return false;
+    };
+    let is_local_record = |text: &str| {
+        let text = text.trim_start();
+        [
+            "<command-name>",
+            "<local-command-caveat>",
+            "<local-command-stdout>",
+            "<local-command-stderr>",
+        ]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    };
+    if let Some(text) = content.as_str() {
+        return !is_local_record(text);
+    }
+    content.as_array().is_some_and(|parts| {
+        !parts.iter().any(|part| {
+            part.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                || (part.get("type").and_then(|v| v.as_str()) == Some("text")
+                    && part
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(is_local_record))
+        })
+    })
+}
+
 // 解析单个会话 jsonl，返回该文件内按 (datetime, model) 聚合的用量行和对话记录。
 //
 // 同一 message.id 会落多行：Claude Code 对多内容块消息（文本 + 多个工具调用）
@@ -3301,8 +3338,8 @@ fn parse_usage_file(profile: &str, f: &PathBuf) -> (Vec<UsageRow>, Vec<ConvRow>)
     };
     for line in content.lines() {
         let has_usage = line.contains("\"usage\"");
-        // 用户真实提问：type=user 且不是工具返回（tool_result）
-        let maybe_user = line.contains("\"user\"") && !line.contains("tool_result");
+        // 粗筛只用于减少 JSON 解析；提问/工具返回由解析后的结构判断。
+        let maybe_user = line.contains("\"user\"");
         if !has_usage && !maybe_user {
             continue;
         }
@@ -3314,12 +3351,7 @@ fn parse_usage_file(profile: &str, f: &PathBuf) -> (Vec<UsageRow>, Vec<ConvRow>)
 
         // —— 对话次数：统计用户真实提问 ——
         if typ == "user" {
-            let is_tool = v
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .map(|c| c.to_string().contains("tool_result"))
-                .unwrap_or(false);
-            if is_tool {
+            if !is_usage_user_question(&v) {
                 continue;
             }
             let ts = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
@@ -4580,6 +4612,123 @@ mod tests {
         assert_eq!(rows[0].input, 3);
         assert_eq!(rows[0].cache_read, 5000);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_usage_file_excludes_local_clear_records_from_questions() {
+        // 同一份会话：自动说明 + /clear + 一条真实提问，模型调用三次。
+        let dir = tempfile::tempdir().unwrap();
+        for project in ["E-------cods-app", "-Users-test-cods-app"] {
+            let project_dir = dir.path().join(project);
+            fs::create_dir_all(&project_dir).unwrap();
+            let file = project_dir.join("session.jsonl");
+            let mut lines = vec![
+                serde_json::json!({
+                    "type": "user", "isMeta": true,
+                    "timestamp": "2026-10-29T01:13:17.252Z",
+                    "message": { "content": "<local-command-caveat>Local command context</local-command-caveat>" }
+                }),
+                serde_json::json!({
+                    "type": "user", "timestamp": "2026-10-29T01:13:17.109Z",
+                    "message": { "content": "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>" }
+                }),
+                serde_json::json!({
+                    "type": "user", "timestamp": "2026-10-29T01:13:34.120Z",
+                    "message": { "content": "移除 E:\\代码中心\\tt-test 里面的所有代码" }
+                }),
+            ];
+            for (id, input, output, cache) in [
+                ("first", 52381, 384, 0),
+                ("second", 1334, 483, 52736),
+                ("third", 247, 387, 54400),
+            ] {
+                lines.push(assistant_line(
+                    id,
+                    "deepseek-v4-flash",
+                    Some("tool_use"),
+                    "2026-10-29T01:14:00Z",
+                    input,
+                    output,
+                    cache,
+                    0,
+                ));
+                lines.push(serde_json::json!({
+                    "type": "user", "timestamp": "2026-10-29T01:14:01Z",
+                    "message": { "content": [{ "type": "tool_result", "tool_use_id": id, "content": "done" }] }
+                }));
+            }
+            fs::write(
+                &file,
+                lines
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+            let (rows, convs) = parse_usage_file("ds", &file);
+            assert_eq!(convs.len(), 1, "{project}: /clear 和自动说明不算提问");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].requests, 3);
+            assert_eq!(rows[0].input, 53962);
+            assert_eq!(rows[0].output, 1254);
+            assert_eq!(rows[0].cache_read, 107136);
+        }
+    }
+
+    #[test]
+    fn parse_usage_file_filters_generated_user_content_in_both_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("session.jsonl");
+        let mut lines = Vec::new();
+        for text in [
+            "<command-name>/clear</command-name>",
+            "  <local-command-caveat>Local context</local-command-caveat>",
+            "<local-command-stdout>Cleared</local-command-stdout>",
+            "<local-command-stderr>Error</local-command-stderr>",
+        ] {
+            for content in [
+                serde_json::json!(text),
+                serde_json::json!([{ "type": "text", "text": text }]),
+            ] {
+                lines.push(serde_json::json!({
+                    "type": "user", "timestamp": "2026-10-29T01:13:00Z",
+                    "message": { "content": content }
+                }));
+            }
+        }
+        lines.push(serde_json::json!({
+            "type": "user", "isMeta": true, "timestamp": "2026-10-29T01:13:00Z",
+            "message": { "content": [{ "type": "text", "text": "Injected context" }] }
+        }));
+        fs::write(
+            &file,
+            lines
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let (_, convs) = parse_usage_file("ds", &file);
+        assert!(convs.is_empty(), "生成的说明、命令和输出均不算提问");
+    }
+
+    #[test]
+    fn parse_usage_file_keeps_questions_discussing_transcript_markers() {
+        let (file, dir) = write_usage_fixture(&[
+            serde_json::json!({
+                "type": "user", "timestamp": "2026-10-29T01:13:00Z",
+                "message": { "content": "为什么 tool_result 不算提问？" }
+            }),
+            serde_json::json!({
+                "type": "user", "timestamp": "2026-10-29T01:13:00Z",
+                "message": { "content": [{ "type": "text", "text": "解释 <command-name>/clear</command-name> 的作用" }] }
+            }),
+        ]);
+        let (_, convs) = parse_usage_file("ds", &file);
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(convs.len(), 2, "提问正文提及内部标记时仍须正常计数");
     }
 
     #[test]
