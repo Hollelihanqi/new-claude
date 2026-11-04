@@ -1,12 +1,16 @@
 use super::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 #[cfg(test)]
 use std::io::Cursor;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 const MAX_ROLLOUT: u64 = snapshot::LIMIT;
 const MAX_SCAN: usize = 10_000;
+/// Codex appends one line per generated thread name; 16 MiB is far beyond a
+/// decade of normal use, but bounds a damaged file.
+const MAX_SESSION_INDEX: u64 = 16 * 1024 * 1024;
 /// The first real question can sit behind injected instructions and tool output.
 /// Scan a bounded prefix, stopping as soon as a question is found.
 const TITLE_SCAN: usize = 8 * 1024 * 1024;
@@ -145,6 +149,48 @@ fn paths(home: &Path) -> Result<(Vec<PathBuf>, bool), String> {
     Ok((files, false))
 }
 
+/// Codex desktop keeps the generated thread name in `session_index.jsonl`
+/// instead of the rollout header, so the client sidebar shows names this list
+/// could not otherwise reproduce. Read it as a display-only alias keyed by
+/// thread id; the rollout remains the source of truth for preview and copy.
+/// A missing, unsafe, oversized or malformed index only disables the alias.
+fn session_titles(home: &Path) -> HashMap<String, String> {
+    let path = home.join("session_index.jsonl");
+    let Ok(meta) = fs::symlink_metadata(&path) else {
+        return HashMap::new();
+    };
+    if !meta.is_file() || storage::linked(&meta) || meta.len() > MAX_SESSION_INDEX {
+        return HashMap::new();
+    }
+    let Ok(file) = fs::File::open(&path) else {
+        return HashMap::new();
+    };
+    let mut titles = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let (Some(id), Some(name)) = (
+            value.get("id").and_then(Value::as_str),
+            value.get("thread_name").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        let Some(name) = conversation::title(name) else {
+            continue;
+        };
+        // The index is append-only: the last line for a thread wins.
+        titles.insert(id.to_ascii_lowercase(), name);
+    }
+    titles
+}
+
 fn revision(meta: &fs::Metadata) -> String {
     format!(
         "{}-{}",
@@ -166,7 +212,11 @@ fn path_key(home: &Path, path: &Path) -> Result<String, String> {
     )))
 }
 
-fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
+fn inspect(
+    home: &Path,
+    path: &Path,
+    titles: &HashMap<String, String>,
+) -> Result<HistoryItem, String> {
     storage::plain(path)?;
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
 
@@ -210,10 +260,15 @@ fn inspect(home: &Path, path: &Path) -> Result<HistoryItem, String> {
         item.detail = "会话标识无法识别".into();
         return Ok(item);
     }
-    item.title = payload
-        .get("title")
-        .and_then(Value::as_str)
-        .and_then(conversation::title)
+    item.title = titles
+        .get(&item.thread_id.to_ascii_lowercase())
+        .cloned()
+        .or_else(|| {
+            payload
+                .get("title")
+                .and_then(Value::as_str)
+                .and_then(conversation::title)
+        })
         .unwrap_or_else(|| "未命名会话".into());
     if payload
         .get("history_mode")
@@ -293,7 +348,7 @@ pub fn conversation(
         .iter()
         .find(|path| path_key(&home, path).ok().as_deref() == Some(key))
         .ok_or("会话已移动或不存在，请刷新列表")?;
-    let item = inspect(&home, path)?;
+    let item = inspect(&home, path, &session_titles(&home))?;
     if item.revision != expected_revision {
         return Err("会话已更新，请刷新列表后重新预览".into());
     }
@@ -315,6 +370,7 @@ pub fn conversation(
 
 pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, String> {
     let home = source_home(root, r, source_id)?;
+    let titles = session_titles(&home);
     let (mut paths, truncated) = paths(&home)?;
     paths.sort_by_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
     let mut warnings =
@@ -322,7 +378,7 @@ pub fn list(root: &Path, r: &Registry, source_id: &str) -> Result<HistoryList, S
     let mut items = Vec::new();
     let mut invalid = 0;
     for p in paths {
-        match inspect(&home, &p) {
+        match inspect(&home, &p, &titles) {
             Ok(item) if item.internal => {}
             Ok(item) => items.push(item),
             Err(_) => invalid += 1,
@@ -591,6 +647,7 @@ pub fn transfer(
         }
     }
     let home = source_home(root, r, &request.source_id)?;
+    let titles = session_titles(&home);
     let completed_only = source_running(root, r, &request.source_id)?;
     let mut source = None;
     let candidates = paths(&home)?.0;
@@ -598,7 +655,7 @@ pub fn transfer(
         if path_key(&home, &p)? != request.key {
             continue;
         }
-        if let Ok(item) = inspect(&home, &p) {
+        if let Ok(item) = inspect(&home, &p, &titles) {
             if item.key == request.key {
                 source = Some((p, item));
                 break;
@@ -772,6 +829,7 @@ pub fn preview_many(
     selected(r, &first.target_id)?;
     let target = storage::profile_dir(root, &first.target_id)?;
     let home = source_home(root, r, &first.source_id)?;
+    let titles = session_titles(&home);
     let completed_only = source_running(root, r, &first.source_id)?;
     let candidates = paths(&home)?.0;
     let index = candidates
@@ -782,7 +840,7 @@ pub fn preview_many(
         .iter()
         .map(|request| {
             let path = index.get(&request.key).ok_or("记录不存在，请刷新")?;
-            let item = inspect(&home, path)?;
+            let item = inspect(&home, path, &titles)?;
             if item.key != request.key {
                 return Err("记录不存在，请刷新".into());
             }
@@ -1675,6 +1733,11 @@ fn resume_transfer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inspect_here(home: &Path, path: &Path) -> HistoryItem {
+        inspect(home, path, &session_titles(home)).unwrap()
+    }
+
     #[test]
     fn rejects_incomplete_and_external_history() {
         let home = Path::new("/profiles/source/codex");
@@ -1712,10 +1775,10 @@ mod tests {
         let path = home.join("rollout-test.jsonl");
         for mode in ["unknown"] {
             fs::write(&path, format!("{}\n", json!({"type":"session_meta","payload":{"id":uuid::Uuid::new_v4(),"history_mode":mode}}))).unwrap();
-            assert!(!inspect(&home, &path).unwrap().transferable);
+            assert!(!inspect_here(&home, &path).transferable);
         }
         fs::write(&path, format!("{}\n", json!({"type":"session_meta","payload":{"id":uuid::Uuid::new_v4(),"history_mode":"legacy"}}))).unwrap();
-        assert!(inspect(&home, &path).unwrap().transferable);
+        assert!(inspect_here(&home, &path).transferable);
     }
 
     #[test]
@@ -1733,7 +1796,84 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(inspect(&home, &path).unwrap().title, "项目 A 的 登录问题");
+        assert_eq!(inspect_here(&home, &path).title, "项目 A 的 登录问题");
+    }
+
+    #[test]
+    fn session_index_supplies_the_desktop_thread_name_for_both_platform_layouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_root = temp.path().canonicalize().unwrap();
+        for layout in ["windows/PathMux/chatgpt", "macos/PathMux/chatgpt"] {
+            let home = temp_root.join(layout).join("codex");
+            fs::create_dir_all(home.join("sessions")).unwrap();
+            let id = uuid::Uuid::new_v4().to_string();
+            let path = home.join("sessions").join(format!("rollout-{id}.jsonl"));
+            fs::write(
+                &path,
+                format!(
+                    "{}\n{}\n",
+                    json!({"type":"session_meta","payload":{"id":id,"history_mode":"paginated"}}),
+                    json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"现在点击 输入框的时候 placeholder 又出现了 抖动现象"}]}}})
+                ),
+            )
+            .unwrap();
+            fs::write(
+                home.join("session_index.jsonl"),
+                format!(
+                    "{}\n{}\n",
+                    json!({"id":uuid::Uuid::new_v4(),"thread_name":"别的会话","updated_at":"2026-11-03T11:37:08Z"}),
+                    // The desktop stores lowercase ids; uppercase must still match.
+                    json!({"id":id.to_ascii_uppercase(),"thread_name":"排查输入框占位符抖动和延迟","updated_at":"2026-11-04T02:46:11Z"}),
+                ),
+            )
+            .unwrap();
+            let item = inspect_here(&home, &path);
+            assert_eq!(item.title, "排查输入框占位符抖动和延迟");
+            // The alias changes only the display name, never the question summary.
+            assert_eq!(
+                item.summary,
+                "现在点击 输入框的时候 placeholder 又出现了 抖动现象"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_damaged_session_index_falls_back_to_the_first_question() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().canonicalize().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = home.join(format!("rollout-{id}.jsonl"));
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":id,"history_mode":"paginated"}}),
+                json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"第一条真实提问"}]}}})
+            ),
+        )
+        .unwrap();
+        assert_eq!(inspect_here(&home, &path).title, "第一条真实提问");
+
+        let index = home.join("session_index.jsonl");
+        fs::write(
+            &index,
+            "not-json\n{\"id\":\"not-a-uuid\",\"thread_name\":\"坏记录\"}\n",
+        )
+        .unwrap();
+        assert_eq!(inspect_here(&home, &path).title, "第一条真实提问");
+
+        // The index is append-only: the last line for a thread wins, and a
+        // damaged neighbour does not discard the valid lines around it.
+        fs::write(
+            &index,
+            format!(
+                "{}\nbroken\n{}\n",
+                json!({"id":id,"thread_name":"旧名字"}),
+                json!({"id":id,"thread_name":"最终名字"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(inspect_here(&home, &path).title, "最终名字");
     }
 
     #[test]
@@ -1788,7 +1928,7 @@ mod tests {
                 };
                 fs::write(&path, &bytes).unwrap();
                 let before = fs::metadata(&path).unwrap().modified().unwrap();
-                let item = inspect(&profile_dir.join("codex"), &path).unwrap();
+                let item = inspect_here(&profile_dir.join("codex"), &path);
                 assert_eq!(item.title, "请核对凭证展示字段");
                 assert_eq!(item.summary, "请核对凭证展示字段");
                 let value = conversation(&root, &registry, &id, &item.key, &item.revision).unwrap();
@@ -1828,7 +1968,7 @@ mod tests {
         )
         .unwrap();
         file.set_len(snapshot::LIMIT + 1).unwrap();
-        let item = inspect(&home, &path).unwrap();
+        let item = inspect_here(&home, &path);
         assert!(!item.transferable);
         assert!(item.detail.contains("512 MB"));
     }
@@ -1849,7 +1989,7 @@ mod tests {
         .unwrap();
         file.set_len(33 * 1024 * 1024).unwrap();
         drop(file);
-        let item = inspect(&home, &path).unwrap();
+        let item = inspect_here(&home, &path);
         assert!(item.transferable, "{}", item.detail);
     }
 
@@ -1887,9 +2027,15 @@ mod tests {
             )
             .unwrap();
         }
+        fs::write(
+            home.join("session_index.jsonl"),
+            format!("{}\n", json!({"id":parent,"thread_name":"父会话生成名"})),
+        )
+        .unwrap();
         let listed = list(&root, &registry, &source.id).unwrap();
         assert_eq!(listed.items.len(), 1);
         assert_eq!(listed.items[0].thread_id, parent);
+        assert_eq!(listed.items[0].title, "父会话生成名");
     }
 
     #[test]
@@ -2030,7 +2176,7 @@ mod tests {
         let mut registry = Registry::default();
         registry.installation = std::env::var("PATHMUX_TEST_CHATGPT_APP").ok();
         let target = storage::create(&root, &mut registry, "Temporary target").unwrap();
-        let item = inspect(&home, &source).unwrap();
+        let item = inspect_here(&home, &source);
         let request = TransferRequest {
             source_id: "default".into(),
             target_id: target.id.clone(),
@@ -2253,7 +2399,7 @@ mod tests {
                     fixture(&id, &project, "legacy", &format!("message {index}")),
                 )
                 .unwrap();
-                let item = inspect(&home, &path).unwrap();
+                let item = inspect_here(&home, &path);
                 requests.push(TransferRequest {
                     source_id: source.id.clone(),
                     target_id: target.id.clone(),
@@ -2337,7 +2483,7 @@ mod tests {
             .map(|v| format!("{v}\n"))
             .collect::<String>();
         fs::write(&child, &child_text).unwrap();
-        let item = inspect(&adir.join("codex"), &child).unwrap();
+        let item = inspect_here(&adir.join("codex"), &child);
         let mut request = TransferRequest {
             source_id: a.id.clone(),
             target_id: b.id.clone(),
