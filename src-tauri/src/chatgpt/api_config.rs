@@ -84,6 +84,47 @@ fn provider(doc: &DocumentMut) -> Option<&Item> {
     doc.get("model_providers")?.get(PROVIDER)
 }
 
+/// The provider and default model a copied thread must declare to be resumable
+/// in this instance. Codex treats an absent `model_provider` as its built-in
+/// `openai` route; an absent `model` leaves the source model untouched.
+pub(super) fn current_route(dir: &Path) -> Result<(String, Option<String>), String> {
+    let path = config_path(dir);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(("openai".into(), None))
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let doc = text
+        .parse::<DocumentMut>()
+        .map_err(|_| "实例配置无法解析".to_string())?;
+    let provider = doc
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .unwrap_or("openai")
+        .to_string();
+    let model = doc.get("model").and_then(Item::as_str).map(str::to_string);
+    Ok((provider, model))
+}
+
+/// Older builds generated a catalog with only `none/high`. Rebuild it from its
+/// own model list when the schema changes, so updating PathMux is enough —
+/// users do not have to open and re-save the API configuration.
+fn refresh_catalog(dir: &Path, models: &[Model]) {
+    if models.is_empty() {
+        return;
+    }
+    let Ok(next) = serde_json::to_vec_pretty(&catalog(models)) else {
+        return;
+    };
+    let path = catalog_path(dir);
+    if fs::read(&path).ok().as_deref() == Some(next.as_slice()) {
+        return;
+    }
+    let _ = crate::sync::write_bytes_atomic(&path, &next);
+}
+
 pub fn summary(dir: &Path) -> Result<Option<Summary>, String> {
     let doc = document(dir)?;
     let Some(route) = provider(&doc) else {
@@ -92,6 +133,8 @@ pub fn summary(dir: &Path) -> Result<Option<Summary>, String> {
     let active = doc.get("model_provider").and_then(Item::as_str) == Some(PROVIDER);
     let previous = storage::read_json::<Previous>(&snapshot_path(dir)).ok();
     let stored_model = previous.as_ref().and_then(|p| p.api_model.clone());
+    let models = read_catalog(&catalog_path(dir)).unwrap_or_default();
+    refresh_catalog(dir, &models);
     Ok(Some(Summary {
         base_url: previous
             .as_ref()
@@ -111,7 +154,7 @@ pub fn summary(dir: &Path) -> Result<Option<Summary>, String> {
         } else {
             stored_model.unwrap_or_default()
         },
-        models: read_catalog(&catalog_path(dir)).unwrap_or_default(),
+        models,
         has_key: route
             .get("experimental_bearer_token")
             .and_then(Item::as_str)
@@ -335,9 +378,16 @@ fn catalog(models: &[Model]) -> serde_json::Value {
         "description": model.name,
         "base_instructions": "You are a coding assistant. Help the user work in their local workspace.",
         "default_reasoning_level": "high",
+        // Mirror the official model catalog so the picker looks and behaves
+        // like account mode. DeepSeek accepts all of these values; its
+        // documented mapping collapses medium/xhigh to high and ultra to max.
         "supported_reasoning_levels": [
-            {"effort": "none", "description": "No reasoning"},
-            {"effort": "high", "description": "High reasoning"}
+            {"effort": "low", "description": "Fast responses with lighter reasoning"},
+            {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+            {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+            {"effort": "xhigh", "description": "Extra high reasoning depth for complex problems"},
+            {"effort": "max", "description": "Maximum reasoning depth for the hardest problems"},
+            {"effort": "ultra", "description": "Maximum reasoning with automatic task delegation"}
         ],
         "shell_type": "shell_command",
         "visibility": "list",
@@ -543,6 +593,49 @@ pub fn use_account(dir: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn gateway_catalog_exposes_the_official_reasoning_levels() {
+        let value = catalog(&[Model {
+            id: "deepseek-v4-flash".into(),
+            name: "deepseek-v4-flash".into(),
+        }]);
+        let model = &value["models"][0];
+        assert_eq!(model["default_reasoning_level"], "high");
+        let levels = model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(levels, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+    }
+
+    #[test]
+    fn older_catalogs_are_upgraded_from_their_model_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut registry = Registry::default();
+        let profile = storage::create(&root, &mut registry, "A").unwrap();
+        let dir = storage::profile_dir(&root, &profile.id).unwrap();
+        let old = serde_json::json!({"models":[{
+            "slug":"deepseek-v4-flash",
+            "display_name":"deepseek-v4-flash",
+            "supported_reasoning_levels":[{"effort":"none"},{"effort":"high"}]
+        }]});
+        fs::write(catalog_path(&dir), serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+        let models = read_catalog(&catalog_path(&dir)).unwrap();
+        refresh_catalog(&dir, &models);
+        let updated: serde_json::Value =
+            serde_json::from_slice(&fs::read(catalog_path(&dir)).unwrap()).unwrap();
+        let levels = updated["models"][0]["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(levels, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+    }
 
     #[test]
     fn api_urls_accept_ipv6_loopback_but_reject_remote_http() {

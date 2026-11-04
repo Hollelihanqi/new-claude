@@ -74,6 +74,20 @@ it("copies without opening the target by default and preserves duplicate-click p
   expect(api.chatGptProfileAction).not.toHaveBeenCalled();
 });
 
+it("shows the real copy interruption instead of a generic pause message", async () => {
+  const job: ChatGptJob = { id: "failed", targetId: "b", requests: [{ sourceId: "a", targetId: "b", key: "record", revision: "v1", fingerprint: "hash" }], outcomes: [], cancelled: false };
+  vi.mocked(api.chatGptBatchCreate).mockResolvedValue(job);
+  vi.mocked(api.chatGptBatchStep).mockResolvedValue({ ...job, lastError: "复制未完成：客户端拒绝了该会话。快照已保留，请从恢复列表继续或撤回。" });
+  await act(async () => { renderer = create(<ChatGptPanel />); });
+  await act(async () => { select("来源实例").props.onChange("a"); select("目标实例").props.onChange("b"); });
+  act(() => renderer.root.findAllByType(Checkbox).find(node => node.props["aria-label"]?.startsWith("选择会话："))!.props.onChange({ currentTarget: { checked: true } }));
+  await act(async () => { button("复制所选会话").props.onClick(); });
+  await act(async () => { button("确认复制").props.onClick(); });
+  const alerts = renderer.root.findAll(node => node.props.role === "alert").map(node => String(node.props.children)).join(" ");
+  expect(alerts).toContain("客户端拒绝了该会话");
+  expect(alerts).not.toContain("目标实例尚未打开");
+});
+
 it("allows retrying failed read-only previews without changing copy selections", async () => {
   vi.mocked(api.chatGptConversation).mockRejectedValueOnce(new Error("会话已更新"))
     .mockResolvedValue({ key: "record", title: "Current record", workspace: "/project", threadId: "thread", modifiedAt: 1, messages: [], truncated: false });

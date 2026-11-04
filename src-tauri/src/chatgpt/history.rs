@@ -879,17 +879,31 @@ struct Builder<'a> {
     home: &'a Path,
     workspace: Option<&'a str>,
     target: Option<&'a Path>,
+    provider: Option<String>,
+    model: Option<String>,
+    /// True when the source thread uses a different provider than the target.
+    /// Account-to-account copies keep their original model and settings.
+    reroute: bool,
     images: usize,
     assets: Vec<DisplayImageAsset>,
     cwd: Option<String>,
 }
 
 impl<'a> Builder<'a> {
-    fn new(home: &'a Path, workspace: Option<&'a str>, target: Option<&'a Path>) -> Self {
+    fn new(
+        home: &'a Path,
+        workspace: Option<&'a str>,
+        target: Option<&'a Path>,
+        provider: Option<String>,
+        model: Option<String>,
+    ) -> Self {
         Self {
             home,
             workspace,
             target,
+            provider,
+            model,
+            reroute: false,
             images: 0,
             assets: Vec::new(),
             cwd: None,
@@ -910,6 +924,50 @@ impl<'a> Builder<'a> {
                 return Err("项目位于来源实例内部，请选择独立项目目录".into());
             }
             self.cwd = Some(cwd.to_string_lossy().into_owned());
+            // The desktop refuses to resume a thread whose recorded provider
+            // differs from the instance's current provider. The target decides
+            // which route continues the copy, so adopt its provider.
+            if let Some(provider) = &self.provider {
+                if record["payload"]["model_provider"].as_str() != Some(provider.as_str()) {
+                    record["payload"]["model_provider"] = json!(provider);
+                    self.reroute = true;
+                }
+            }
+        }
+        // The desktop takes the thread's provider from its settings events,
+        // not from the session header. Rewrite them so the copy can resume
+        // under the target instance's provider route. Only cross-provider
+        // copies are touched; account-to-account keeps its source model.
+        if self.reroute {
+            if let Some(provider) = &self.provider {
+                if record["type"] == "event_msg"
+                    && record["payload"]["type"] == "thread_settings_applied"
+                {
+                    let settings = &mut record["payload"]["thread_settings"];
+                    if settings.is_object() {
+                        if settings["model_provider_id"].as_str() != Some(provider.as_str()) {
+                            settings["model_provider_id"] = json!(provider);
+                        }
+                        if let Some(model) = &self.model {
+                            if settings["model"].as_str() != Some(model.as_str()) {
+                                settings["model"] = json!(model);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The thread keeps the source model in every turn context; the target
+        // gateway may not serve it, so route the copy through the target's
+        // configured model instead.
+        if self.reroute {
+            if let Some(model) = &self.model {
+                if record["type"] == "turn_context"
+                    && record["payload"]["model"].as_str() != Some(model.as_str())
+                {
+                    record["payload"]["model"] = json!(model);
+                }
+            }
         }
         if matches!(
             record["type"].as_str(),
@@ -979,7 +1037,12 @@ fn build<W: Write>(
     target: Option<&Path>,
     out: &mut DigestSink<'_, W>,
 ) -> Result<Built, String> {
-    let mut builder = Builder::new(home, workspace, target);
+    let route = target.map(api_config::current_route).transpose()?;
+    let (provider, model) = match route {
+        Some((provider, model)) => (Some(provider), model),
+        None => (None, None),
+    };
+    let mut builder = Builder::new(home, workspace, target, provider, model);
     snapshot::emit(plan, |record, is_header| {
         builder.apply(record, is_header)?;
         serde_json::to_writer(&mut *out, record).map_err(|e| e.to_string())?;
@@ -1008,7 +1071,7 @@ fn prepare(
     if text.trim().is_empty() {
         return Err("历史内容无效".into());
     }
-    let mut builder = Builder::new(home, workspace, None);
+    let mut builder = Builder::new(home, workspace, None, None, None);
     let mut output = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let mut record: Value = serde_json::from_str(line).map_err(|_| "历史内容无效")?;
@@ -1874,6 +1937,82 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inspect_here(&home, &path).title, "最终名字");
+    }
+
+    #[test]
+    fn copied_sessions_adopt_the_target_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_root = temp.path().canonicalize().unwrap();
+        for layout in ["windows/PathMux/chatgpt", "macos/PathMux/chatgpt"] {
+            let root = temp_root.join(layout);
+            let home = root.join("source/codex");
+            fs::create_dir_all(&home).unwrap();
+            let target = root.join("profiles").join(uuid::Uuid::new_v4().to_string());
+            fs::create_dir_all(target.join("codex")).unwrap();
+            let id = uuid::Uuid::new_v4().to_string();
+            let path = home.join(format!("rollout-{id}.jsonl"));
+            let mut content = fixture(&id, &root, "paginated", "继续这条会话");
+            content.push_str(&format!(
+                "{}\n{}\n",
+                json!({"type":"turn_context","payload":{"model":"gpt-6-astra","cwd":root}}),
+                json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":id,
+                    "thread_settings":{"model":"gpt-6-astra","model_provider_id":"openai"}}})
+            ));
+            fs::write(&path, content).unwrap();
+            let plan = snapshot::plan(&path, &[], false).unwrap();
+            for (config, expected_provider, expected_model) in [
+                ("unrelated = true\n", "openai", "gpt-6-astra"),
+                ("model_provider = \"openai\"\n", "openai", "gpt-6-astra"),
+                (
+                    "model_provider = \"openai\"\nmodel = \"gpt-6.1-sol\"\n",
+                    "openai",
+                    "gpt-6-astra",
+                ),
+                (
+                    "model_provider = \"pathmux_managed_api\"\nmodel = \"deepseek-v4-flash\"\n",
+                    "pathmux_managed_api",
+                    "deepseek-v4-flash",
+                ),
+            ] {
+                fs::write(target.join("codex/config.toml"), config).unwrap();
+                let mut hasher = Sha256::new();
+                let mut output = Vec::new();
+                build(
+                    &plan,
+                    &home,
+                    None,
+                    Some(&target),
+                    &mut DigestSink {
+                        inner: &mut output,
+                        hasher: &mut hasher,
+                        len: 0,
+                    },
+                )
+                .unwrap();
+                let text = String::from_utf8(output).unwrap();
+                let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+                assert_eq!(header["payload"]["model_provider"], expected_provider);
+                let settings = text
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .find(|record| record["payload"]["type"] == "thread_settings_applied")
+                    .unwrap();
+                assert_eq!(
+                    settings["payload"]["thread_settings"]["model_provider_id"],
+                    expected_provider
+                );
+                assert_eq!(
+                    settings["payload"]["thread_settings"]["model"],
+                    expected_model
+                );
+                let context = text
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .find(|record| record["type"] == "turn_context")
+                    .unwrap();
+                assert_eq!(context["payload"]["model"], expected_model);
+            }
+        }
     }
 
     #[test]

@@ -255,11 +255,12 @@ export default function ChatGptPanelHistory({ state, active, initialCopy, coordi
       for (let offset = 0; offset < plans.length; offset += 100) {
         const job = await api.chatGptBatchCreate(plans.slice(offset, offset + 100));
         const completed = await drive(job);
-        if (completed.lastError || stop.current || completed.outcomes.length < completed.requests.length) {
-          throw new Error("复制已暂停。复制队列已保存，可从下方继续；目标实例尚未打开。");
+        if (completed.lastError) throw new Error(`复制中断：${completed.lastError}`);
+        if (stop.current || completed.outcomes.length < completed.requests.length) {
+          throw new Error("复制已暂停。复制队列已保存，可从下方继续。");
         }
         const failed = completed.outcomes.filter(o => o.error);
-        if (failed.length) throw new Error(`${failed.length} 条会话复制失败。请查看复制队列；目标实例尚未打开。`);
+        if (failed.length) throw new Error(`${failed.length} 条会话复制失败：${failed[0].error ?? "请查看复制队列"}。`);
         copied += completed.outcomes.length;
         openId ??= completed.outcomes.find(o => o.result)?.result?.targetThreadId ?? null;
       }
