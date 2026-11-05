@@ -318,13 +318,28 @@ jobs:
         run: pip install -r scripts/cos-requirements.txt
       - name: 同步并校验国内候选镜像
         if: needs.channel.outputs.name == 'stable'
+        timeout-minutes: 70
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          set -euo pipefail
-          gh release download "$MIRROR_TAG" --dir "$RUNNER_TEMP/cos-assets"
-          python scripts/cos_mirror.py stage --tag "$MIRROR_TAG" --repo "$GH_REPO" --assets "$RUNNER_TEMP/cos-assets"
+          # 跨境上传偶发挂死。每次重试都重新下载，已成功上传的对象会按摘要复用，
+          # 因此重试只会补传缺失的包，不会重复上传已完成的部分。
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            echo "::notice::COS 同步第 $attempt 次尝试"
+            rm -rf "$RUNNER_TEMP/cos-assets"
+            if ! timeout 10m gh release download "$MIRROR_TAG" --dir "$RUNNER_TEMP/cos-assets" --clobber; then
+              echo "::warning::第 $attempt 次下载超时或失败"
+              continue
+            fi
+            if timeout 10m python scripts/cos_mirror.py stage --tag "$MIRROR_TAG" --repo "$GH_REPO" --assets "$RUNNER_TEMP/cos-assets"; then
+              exit 0
+            fi
+            echo "::warning::第 $attempt 次上传超时或失败，准备重试"
+          done
+          echo "::error::COS 同步连续 3 次失败"
+          exit 1
       - name: 按通道决定是否晋级
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
