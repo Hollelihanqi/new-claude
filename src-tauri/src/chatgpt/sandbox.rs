@@ -121,7 +121,8 @@ fn reconcile(homes: &[PathBuf], valid: impl Fn(&Path) -> bool) -> Result<(), Str
 }
 
 /// 新 home 继承机器现有的 marker，客户端就不会重新 setup 改密。
-#[cfg(windows)]
+/// 纯文件逻辑，保持双平台可编译，单元测试在两个平台都能覆盖。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn seed_markers(homes: &[PathBuf]) -> Result<(), String> {
     let template = homes
         .iter()
