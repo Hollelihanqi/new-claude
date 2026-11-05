@@ -109,13 +109,19 @@ export default function ConfigPanel({
   const [sel, setSel] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(empty);
   const [token, setToken] = useState("");
-  const [status, setStatus] = useState<{ type: StatusType; msg: string }>({
+  const [status, setStatus] = useState<{ type: StatusType; msg: string; for?: string }>({
     type: "info",
     msg: "",
   });
   const [busyAction, setBusyAction] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [runtime, setRuntime] = useState<ProfileRuntimeInfo[]>([]);
+  // 当前选中的环境；异步探测返回后据此判断结果是否仍属于当前面板。
+  const selRef = useRef<string | null>(null);
+  const selectProfile = (name: string | null) => {
+    selRef.current = name;
+    setSel(name);
+  };
   // 最近一次完整诊断的结论（含网关失败名单）：列表页不做实时探测，
   // 只消费这里的结论；单环境复测通过后本地立即摘除标记。
   const [verification, setVerification] = useState<{ at: number; problems: number; gatewayFails?: string[] } | null>(null);
@@ -174,7 +180,7 @@ export default function ConfigPanel({
   };
 
   const pickProfile = (p: Profile) => {
-    setSel(p.name);
+    selectProfile(p.name);
     setForm({
       name: p.name,
       type: p.type,
@@ -190,7 +196,7 @@ export default function ConfigPanel({
   };
 
   const onNew = () => {
-    setSel(null);
+    selectProfile(null);
     setForm(empty);
     setToken("");
     setDetected([]);
@@ -283,7 +289,7 @@ export default function ConfigPanel({
       setToken("");
       load();
       onChanged && onChanged();
-      setSel(profile.name);
+      selectProfile(profile.name);
       setStatus({
         type: "success",
         msg: `已保存「${profile.name}」。${msg} 之后在新终端里运行：claude ${profile.name}`,
@@ -368,14 +374,19 @@ export default function ConfigPanel({
     setProbeBusy(name);
     try {
       const msg = await api.probeGateway(name);
-      setStatus({ type: "success", msg: `环境 ${name}：${msg}` });
+      // 结果属于发起检测的环境；用户已切换时不能显示到当前面板。
+      if (selRef.current === name) {
+        setStatus({ type: "success", msg: `环境 ${name}：${msg}`, for: name });
+      }
       setVerification((previous) => ({
         at: Math.floor(Date.now() / 1000),
         problems: Math.max(0, (previous?.problems ?? 0) - (previous?.gatewayFails?.includes(name) ? 1 : 0)),
         gatewayFails: (previous?.gatewayFails ?? []).filter((item) => item !== name),
       }));
     } catch (e) {
-      setStatus({ type: "error", msg: `环境 ${name}：${String(e)}` });
+      if (selRef.current === name) {
+        setStatus({ type: "error", msg: `环境 ${name}：${String(e)}`, for: name });
+      }
       setVerification((previous) => {
         const failures = previous?.gatewayFails ?? [];
         const alreadyFailed = failures.includes(name);
@@ -386,7 +397,8 @@ export default function ConfigPanel({
         };
       });
     } finally {
-      setProbeBusy("");
+      // 只清自己那次探测的忙碌状态，避免旧环境的结果把新环境的 loading 清掉。
+      setProbeBusy((current) => (current === name ? "" : current));
     }
   };
 
@@ -576,7 +588,7 @@ export default function ConfigPanel({
 
             <div className="environment-editor-content">
 
-            {status.msg && (
+            {status.msg && (!status.for || status.for === sel) && (
               <Alert
                 variant="light"
                 color={status.type === "error" ? "red" : status.type === "success" ? "teal" : "blue"}

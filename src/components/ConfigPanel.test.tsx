@@ -101,6 +101,24 @@ describe("环境模型检测", () => {
     expect(detect().props.busy).toBe(false);
   });
 
+  it.each(["resolve", "reject"] as const)("切换环境后忽略旧网关检测的 %s，不画到当前面板", async (outcome) => {
+    let settle!: (value: string | Error) => void;
+    const pending = new Promise<string>((resolve, reject) => {
+      settle = (value) => value instanceof Error ? reject(value) : resolve(value);
+    });
+    vi.mocked(api.probeGateway).mockReturnValueOnce(pending);
+    const probe = () => renderer.root.findAllByType(ActionIcon)
+      .find((button) => button.props["aria-label"] === "检测当前环境")!;
+    act(() => { probe().props.onClick(); });
+    act(() => renderer.root.findAllByType(NavLink)[1].props.onClick());
+    await act(async () => {
+      settle(outcome === "resolve" ? "ok" : new Error("stale-gateway"));
+      await Promise.resolve();
+    });
+    expect(messages()).not.toContain("环境 a");
+    expect(messages()).not.toContain("stale-gateway");
+  });
+
   it("已有环境填写新 Key 后检测表单中的连接", async () => {
     act(() => renderer.root.findByType(PasswordInput).props.onChange({ currentTarget: { value: "new-key" } }));
     vi.mocked(api.detectModels).mockResolvedValue(["new-model"]);
