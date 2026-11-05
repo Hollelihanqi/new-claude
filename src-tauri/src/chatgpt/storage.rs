@@ -161,7 +161,13 @@ pub fn profile_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
 
 pub fn config_text(dir: &Path) -> String {
     let db = dir.join("codex/db");
-    format!("# Managed by PathMux: credentials and state stay in this profile.\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\"\nsqlite_home = {}\n", serde_json::to_string(&db.to_string_lossy()).unwrap())
+    #[allow(unused_mut)]
+    let mut text = format!("# Managed by PathMux: credentials and state stay in this profile.\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\"\nsqlite_home = {}\n", serde_json::to_string(&db.to_string_lossy()).unwrap());
+    // 客户端只有在 [windows] sandbox 存在时才认为沙箱已配置；缺少该键会触发
+    // 重新 setup，把全机共享账号的密码改掉。
+    #[cfg(windows)]
+    text.push_str("\n[windows]\nsandbox = \"elevated\"\n");
+    text
 }
 
 fn verified_config(dir: &Path) -> Result<toml_edit::DocumentMut, String> {
@@ -235,6 +241,8 @@ pub fn create(root: &Path, r: &mut Registry, display_name: &str) -> Result<Profi
             config_text(&dir).as_bytes(),
         )
         .map_err(|e| e.to_string())?;
+        // 实例创建时就接入共享凭证，首次启动不会重建账号、不会改全局密码。
+        super::sandbox::prepare_profile(&dir)?;
         r.profiles.push(profile.clone());
         if let Err(e) = save(root, r) {
             r.profiles.pop();

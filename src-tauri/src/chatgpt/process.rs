@@ -705,6 +705,8 @@ fn launch_at(
         return reopen(live, dir, thread_id);
     }
     require_stopped(&all, dir)?;
+    // 启动前确保实例已接入全机唯一的沙箱凭证；只做幂等检查，不做同步修复。
+    super::sandbox::prepare_profile(dir)?;
     launcher::prepare_runtime(Path::new(&app.executable), dir)?;
     if super::api_config::compatibility(dir)?.is_some_and(|(_, _, enabled)| enabled) {
         let port = super::bridge::start(dir, Path::new(&app.executable))?;

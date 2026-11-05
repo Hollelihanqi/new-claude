@@ -20,6 +20,7 @@ pub use launcher::run_package_worker;
 mod macos_windows;
 mod process;
 mod rpc;
+mod sandbox;
 mod snapshot;
 mod storage;
 
@@ -30,6 +31,14 @@ pub fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// 所有托管实例和默认 home 都接入共享沙箱凭证，避免直接启动时再次改掉全局密码。
+#[cfg(windows)]
+pub fn prepare_default_sandbox() {
+    if let Err(error) = sandbox::prepare_machine() {
+        crate::sync::log_line(&format!("准备共享沙箱凭证失败：{error}"));
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

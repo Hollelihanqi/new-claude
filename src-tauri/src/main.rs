@@ -3567,6 +3567,8 @@ fn main() {
         if let Some(msg) = reconcile_shared_ca() {
             sync::log_line(&msg);
         }
+        #[cfg(windows)]
+        chatgpt::prepare_default_sandbox();
         // Skills / Agents 由 extensions 逐项接管。不能再运行旧的整目录迁移，
         // 否则会重新把 Plugins 与已退役的 Commands 链接到共享目录。
         // 升级后第一次跑到这里就把过期脚本换掉，不必等用户打开 GUI
@@ -3621,6 +3623,9 @@ fn main() {
             if let Some(msg) = reconcile_shared_ca() {
                 sync::log_line(&msg);
             }
+            // Windows 沙箱账号是全机共享的，默认 home 也必须接入同一份凭证。
+            #[cfg(windows)]
+            chatgpt::prepare_default_sandbox();
             // 首屏完成后，前端只调用一次异步 sync_all；所有文件扫描和旧插件迁移
             // 都在它的 blocking worker 中串行执行。setup 不再启动第二个争锁任务。
             // 同上：GUI 启动也做一次脚本自愈，两条路径谁先发生都能修好
