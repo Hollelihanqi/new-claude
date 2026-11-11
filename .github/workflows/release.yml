@@ -318,13 +318,16 @@ jobs:
         run: pip install -r scripts/cos-requirements.txt
       - name: 同步并校验国内候选镜像
         if: needs.channel.outputs.name == 'stable'
-        timeout-minutes: 70
+        timeout-minutes: 110
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          # 跨境上传偶发挂死。每次重试都重新下载，已成功上传的对象会按摘要复用，
+          # 跨境上传偶发挂死。每次重试都重新下载，已完整上传的对象会按摘要复用，
           # 因此重试只会补传缺失的包，不会重复上传已完成的部分。
+          # 大安装包走分片上传，超时后会从第 1 片重来：单次预算必须覆盖最大包体
+          # 端到端传完。实测 18 MB / 18 片约 40–45 秒一片，约需 12–14 分钟，
+          # 原先 10 分钟上限会让每次尝试都在第 12–15 片被截断。
           set -uo pipefail
           for attempt in 1 2 3; do
             echo "::notice::COS 同步第 $attempt 次尝试"
@@ -333,7 +336,7 @@ jobs:
               echo "::warning::第 $attempt 次下载超时或失败"
               continue
             fi
-            if timeout 10m python scripts/cos_mirror.py stage --tag "$MIRROR_TAG" --repo "$GH_REPO" --assets "$RUNNER_TEMP/cos-assets"; then
+            if timeout 25m python scripts/cos_mirror.py stage --tag "$MIRROR_TAG" --repo "$GH_REPO" --assets "$RUNNER_TEMP/cos-assets"; then
               exit 0
             fi
             echo "::warning::第 $attempt 次上传超时或失败，准备重试"
