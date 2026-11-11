@@ -34,9 +34,6 @@ pub fn prepare_runtime(exe: &Path, dir: &Path) -> Result<(), String> {
 
 #[cfg(any(windows, test))]
 fn sync_runtime_preferences(profile: &Path, primary: &Path) -> Result<(), String> {
-    if !primary.exists() {
-        return Ok(());
-    }
     let read_state = |path: &Path| -> Result<serde_json::Value, String> {
         if fs::metadata(path).map_err(|e| e.to_string())?.len() > 8 * 1024 * 1024 {
             return Err("客户端状态文件过大，无法安全同步运行框架设置".into());
@@ -44,21 +41,18 @@ fn sync_runtime_preferences(profile: &Path, primary: &Path) -> Result<(), String
         storage::read_json(path)
             .map_err(|_| "客户端状态文件无法解析，请在官方客户端中检查设置后重试".into())
     };
-    let source = read_state(primary)?;
-    let flags: Vec<_> = [
-        "electron-windows-core-runtime-frameworks-enabled",
-        "electron-windows-primary-runtime-frameworks-enabled",
-    ]
-    .into_iter()
-    .filter_map(|key| {
-        source
-            .get(key)
-            .and_then(|value| value.as_bool())
-            .map(|value| (key, value))
-    })
-    .collect();
-    if flags.is_empty() {
-        return Ok(());
+    // Registered Core's machine-wide receipt belongs to exactly one CODEX_HOME.
+    // Copying the primary app's Core gate makes an isolated home permanently
+    // updateRequired, even when its sandbox credentials and marker are valid.
+    // Select the client's bundled Core for managed profiles; elevated sandboxing,
+    // package identity, and the separate Primary (tools) runtime are preserved.
+    let mut flags = vec![("electron-windows-core-runtime-frameworks-enabled", false)];
+    if primary.exists() {
+        let source = read_state(primary)?;
+        let key = "electron-windows-primary-runtime-frameworks-enabled";
+        if let Some(value) = source.get(key).and_then(|value| value.as_bool()) {
+            flags.push((key, value));
+        }
     }
     storage::plain(profile)?;
     let mut target = if profile.exists() {
@@ -439,6 +433,54 @@ mod tests {
         assert_eq!(
             storage::read_json::<serde_json::Value>(&profile).unwrap(),
             state
+        );
+    }
+    #[test]
+    fn independent_profiles_do_not_inherit_registered_core_from_primary() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let primary = root.join("primary.json");
+        let profile = root.join("profile.json");
+        let primary_state = serde_json::json!({
+            "electron-windows-core-runtime-frameworks-enabled": true,
+            "electron-windows-primary-runtime-frameworks-enabled": true
+        });
+        storage::write_json(&primary, &primary_state).unwrap();
+        let mut expected = serde_json::json!({
+            "electron-windows-core-runtime-frameworks-enabled": true,
+            "electron-windows-primary-runtime-frameworks-enabled": false,
+            "account": "profile-account",
+            "sandbox_mode": "workspace-write"
+        });
+        storage::write_json(&profile, &expected).unwrap();
+
+        sync_runtime_preferences(&profile, &primary).unwrap();
+        expected["electron-windows-core-runtime-frameworks-enabled"] = false.into();
+        expected["electron-windows-primary-runtime-frameworks-enabled"] = true.into();
+        assert_eq!(
+            storage::read_json::<serde_json::Value>(&profile).unwrap(),
+            expected
+        );
+        assert_eq!(
+            storage::read_json::<serde_json::Value>(&primary).unwrap(),
+            primary_state
+        );
+        sync_runtime_preferences(&profile, &primary).unwrap();
+        assert_eq!(
+            storage::read_json::<serde_json::Value>(&profile).unwrap(),
+            expected
+        );
+    }
+    #[test]
+    fn isolated_core_is_selected_without_primary_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let primary = root.join("missing.json");
+        let profile = root.join("profile.json");
+        sync_runtime_preferences(&profile, &primary).unwrap();
+        assert_eq!(
+            storage::read_json::<serde_json::Value>(&profile).unwrap(),
+            serde_json::json!({"electron-windows-core-runtime-frameworks-enabled": false})
         );
     }
     #[cfg(windows)]

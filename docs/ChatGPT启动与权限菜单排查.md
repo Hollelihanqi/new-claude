@@ -6,6 +6,8 @@
 
 最新状态（2026-10-10）：用户反馈「帮我批准」似乎已恢复；本机兼容处理后，主程序与独立实例的 Windows 初始化检查均返回 `ready`，用户已确认重启实例后「Windows 设置未完成」提示消失。以下早期结论按排查顺序保留，最终验证和启动耗时见文末。
 
+2026-11-11 更新后的复发是另一项已定位的兼容问题：新版 Registered Core 的机器注册记录绑定默认 `CODEX_HOME`，独立实例不能继承主程序的 Core 运行开关。原因、修复和真实实例验证见文末对应章节。
+
 ## 结论与边界
 
 **已确认 PathMux 的 Windows 启动方式丢失微软商店应用的包身份。** 这是一个实际兼容性缺陷。它是主程序经 PathMux 启动后出现异常的重要嫌疑，但尚未完成改变启动方式后的权限菜单对照验证，不能声称已经证明它是菜单消失的唯一原因。
@@ -122,3 +124,40 @@ v3.2.4 将外层命令统一设为 `CREATE_NO_WINDOW`。包激活先启动 PathM
 v3.2.4 双平台测试与安装包构建全部通过，但发布运行 38023066266 在上传 Windows EXE 的 5MiB 分片时写入超时，版本保持草稿，未公开。按发布门禁使用新的 v3.2.5，不替换既有 Tag。镜像改为串行 1MiB 分片，SDK 单次超时 45 秒、内部重试一次，单分片最多调用三次并退避。客户端错误和 429/500/502/503/504 可重试；权限等永久错误立即停止并撤销未完成上传。测试验证短暂超时恢复时字节与分片号不变、持续失败有限重试、权限错误不重试、失败不合并也不上传后续分片。
 
 SDK 行为依据：[腾讯云错误处理说明](https://www.tencentcloud.com/ind/document/product/436/31549)、[腾讯云 Python SDK 源码](https://github.com/tencentyun/cos-python-sdk-v5/blob/master/qcloud_cos/cos_client.py)。原有签名和公开下载 SHA-256 核验保留，不通过则不切换正式更新清单。
+
+## 2026-11-11 客户端更新后独立实例再次出现 Windows 设置未完成
+
+### 本次证据与根因
+
+- 实际商店包 `OpenAI.Codex_26.1103.7773.0_x64__2p2nqsd0c76g0`，内置客户端 `26.1103.60933`，CLI `0.167.0-alpha.3.2`。直接检查用户现有「小黄」实例，页面复现「Windows 设置未完成 / 设置已停止」，没有创建空白账号或测试实例。
+- 默认 home 和四个现有实例的沙箱凭证文件摘要一致，均有版本 5 的 setup marker。此次不是 11 月 5 日处理的多 home 沙箱账号密码不一致。
+- 普通 CLI 检查返回 `ready`；在真实 MSIX 包上下文中，按桌面实际选择设置 `CODEX_WINDOWS_REGISTERED_CORE=1` 后，同一实例返回 `updateRequired`。`windowsSandbox/setupStart` 的完成通知为 `success: false`，错误为 `app runtime provisioning service is unavailable; refusing helper fallback`。只测普通 CLI 会漏掉这个问题。
+- 本机 `HKLM\SOFTWARE\OpenAI\Codex\WindowsSandboxService\RegisteredCore` 的受保护注册记录归属 `C:\Users\hq\.codex`。对应版本的[官方注册检查](https://github.com/openai/codex/blob/rust-v0.167.0-alpha.3.2/codex-rs/windows-sandbox-rs/src/app_package.rs)要求注册记录中的 `codex_home` 与当前 home 一致，同时要求当前包的运行注册有效；[初始化就绪判断](https://github.com/openai/codex/blob/rust-v0.167.0-alpha.3.2/codex-rs/windows-sandbox-rs/src/identity.rs)在 Registered Core 模式下额外执行此检查。复制凭证和 marker 无法满足不同 home 的注册条件。
+- PathMux 原 `launcher::sync_runtime_preferences` 把主程序的 `electron-windows-core-runtime-frameworks-enabled=true` 复制给每个独立实例，触发了不适用于独立 home 的 Registered Core 流程。客户端实际启动代码会根据这个开关设置上述环境变量；原 `process::configure` 清理父进程环境，不能阻止客户端自己重新选择 Registered Core。
+
+### 修复范围与生命周期
+
+- `launcher::prepare_runtime` 仍只在商店版独立实例完全停止后执行。独立实例明确选择官方自带 Core，保存 `electron-windows-core-runtime-frameworks-enabled=false`；不再从主程序同步此值。主程序的 Core 开关和机器注册记录保持原样。
+- 工具使用的独立 Primary runtime 开关仍按原逻辑同步。没有把 Core 与工具运行环境一起关闭，没有修改 `windows.sandbox=elevated`、批准策略、账号、项目权限或客户端安装资源。
+- 即使主程序状态文件不存在，也为新实例写入正确的 Core 选择；旧实例遗留的 `true` 在下次完全停止后的启动前迁移。现有运行中实例的「打开窗口」不热改状态文件，需要关闭再启动一次。
+- 所有实际启动调用方经过 `process::launch_at`：普通启动及打开目标会话都应用上述处理。运行中的恢复、停止、失败返回、实例凭证隔离和 macOS/非商店分支保留既有行为。准备失败时不启动，重试仍走相同的幂等准备流程。
+- 真实启动还暴露原 20 秒确认额度被包激活助手和客户端窗口启动共同消耗的问题：客户端最终正常出现，但启动接口先返回未确认。商店版改为先在 20 秒内等待进程，确认其目录和包身份后，再给予最多 20 秒等待可见窗口；阶段额度只启动一次，不在每次轮询时续期，不重复拉起进程。直接启动仍使用原 8 秒额度。两次旧额度的失败均保留在验证过程记录中，修正后同一真实实例的完整启动测试通过。
+- 新增业务回归覆盖主程序 Core 为 `true` 时的隔离选择、主程序文件不被修改、其他状态保留、重复执行，以及主程序状态缺失的首次启动。新增显式忽略的真实实例验收入口 `existing_windows_profile_launches_with_elevated_sandbox`，必须指定已登记的现有实例 ID，拒绝运行中实例；测试结束保留真实窗口供页面验收，不创建模拟实例、不请求模型回复。
+
+### 验证记录
+
+本机原状态和真实数据摘要保存在 `%LOCALAPPDATA%\PathMux\maintenance\2026-11-11-core-runtime`，用于核对和撤回，不进入仓库。
+
+已完成：
+
+1. 启动相关业务回归 21 项通过（launcher 8 项、process 13 项）；显式指定真实实例的验收测试 1 项通过，包含真实包身份、可见窗口、原账号、`ready` 和只读沙箱命令，未创建新账号、会话或模型请求。前端类型检查和生产构建通过。
+2. 「小黄」原账号、项目和会话正常加载，「Windows 设置未完成」提示消失。官方日志明确记录 `coreGateEnabledAtStartup=false selectedRuntimeSource=bundled`。客户端随后可能把在线 Core gate 再次写为 `true`，因此每次停止后的启动都需要执行兼容选择，不能只改一次本机配置。
+3. 在真实包上下文、同一个 `CODEX_HOME` 和客户端实际复制的 Core 上执行 `command/exec`，请求 `sandboxPolicy={type:readOnly,networkAccess:false}`。`whoami.exe` 返回 `CodexSandboxOffline`，退出码 0。完整真实启动验收测试也独立执行同样的沙箱断言并通过，不以 `ready` 单独代表执行能力。
+4. 原账号文件和沙箱凭证文件的 SHA-256 摘要与修复前一致。页面恢复后显示「完全访问」来自修复前就已保存的 `permission-selection-by-host-id:local={agentMode:full-access,kind:agent-mode}`；此项修复前后相同，未通过修改权限选项消除提示。
+5. 单独的首次手工命令探针曾因 20 秒诊断等待上限超时；给予初始化足够时间后，在同一真实环境下取得了完整成功响应。没有把超时、首次窗口延迟或后端检查通过代替界面验收。
+
+6. Windows 发布构建和本地 NSIS 安装包生成成功。退出系统安装的旧版后，直接运行本次构建的 `src-tauri/target/release/pathmux.exe`，再通过实际界面按钮关闭、启动「小黄」，确认原项目、输入区正常，错误横幅消失；主 ChatGPT 保持运行。主程序和四个实例的账号、沙箱凭证摘要核对均未变化。
+
+发布前状态：使用本地编译的修复版完成验收，系统 `C:\Program Files\PathMux` 下的旧 MSI 安装没有替换。替换系统安装需要 Windows 管理员权限；本地 `PathMux_3.3.14_x64-setup.exe` 仅为验收修复包，不能视作线上正式版。正式发布版本为 v3.3.15，发布门禁和范围见 `docs/releases/v3.3.15.md`。macOS 真机及系统安装替换不在本次验收结论中。
+
+临时诊断脚本和 Temp 输出已清理；原状态、摘要与诊断结果在验收期间保留于上述 maintenance 目录。用户随后明确要求正式发版后清理测试进程、测试数据及本地修复包，因此本轮 maintenance 目录、验收进程和临时构建产物需一并清理。真实账号、实例配置与会话不属于测试数据，不删除。

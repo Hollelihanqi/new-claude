@@ -705,7 +705,7 @@ fn launch_at(
         return reopen(live, dir, thread_id);
     }
     require_stopped(&all, dir)?;
-    // 启动前确保实例已接入全机唯一的沙箱凭证；只做幂等检查，不做同步修复。
+    // 在实例停止时收敛共享沙箱凭证，再选择适合独立目录的官方运行环境。
     super::sandbox::prepare_profile(dir)?;
     launcher::prepare_runtime(Path::new(&app.executable), dir)?;
     if super::api_config::compatibility(dir)?.is_some_and(|(_, _, enabled)| enabled) {
@@ -728,13 +728,22 @@ fn launch_at(
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    let deadline = Instant::now() + Duration::from_secs(if direct { 8 } else { 20 });
+    let activation_deadline = Instant::now() + Duration::from_secs(if direct { 8 } else { 20 });
+    // Store activation includes the package worker before ChatGPT even starts.
+    // Give a verified main process its own bounded window-startup phase instead
+    // of spending that phase's budget on package activation (observed >20s total).
+    let mut window_deadline = None;
+    let mut deadline = activation_deadline;
     while Instant::now() < deadline {
         let all = snapshot()?;
         if let Some(live) = main_process(&all, dir, Path::new(&app.executable)) {
             launcher::verify_identity(live)?;
             if visible_window_pids()?.contains(&live.pid) {
                 return Ok(());
+            }
+            if !direct {
+                deadline = *window_deadline
+                    .get_or_insert_with(|| Instant::now() + Duration::from_secs(20));
             }
         }
         if direct && !all.iter().any(|p| p.pid == pid) {
@@ -1236,6 +1245,60 @@ mod tests {
         assert!(contaminated("CODEX_APP_SERVER_URL"));
         assert!(!contaminated("HOME"));
         assert!(!contaminated("SYSTEMROOT"));
+    }
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens an existing registered profile and leaves its real window open; set PATHMUX_TEST_EXISTING_PROFILE_ID and PATHMUX_PACKAGE_TEST_LAUNCHER"]
+    fn existing_windows_profile_launches_with_elevated_sandbox() {
+        let id = std::env::var("PATHMUX_TEST_EXISTING_PROFILE_ID")
+            .expect("explicitly select an existing real profile");
+        let root = storage::root().unwrap();
+        let registry = storage::registry(&root).unwrap();
+        assert!(registry.profiles.iter().any(|profile| profile.id == id));
+        let dir = storage::profile_dir(&root, &id).unwrap();
+        require_stopped(&snapshot().unwrap(), &dir).unwrap();
+        let config = fs::read_to_string(dir.join("codex/config.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(config["windows"]["sandbox"].as_str(), Some("elevated"));
+        let app = discovery::discover(registry.installation.as_deref()).unwrap();
+        assert!(launcher::package_root(Path::new(&app.executable)).is_some());
+        launch(&app, &dir).unwrap();
+        let all = snapshot().unwrap();
+        let live = main_process(&all, &dir, Path::new(&app.executable)).unwrap();
+        launcher::verify_identity(live).unwrap();
+        assert!(visible_window_pids().unwrap().contains(&live.pid));
+        let mut client =
+            super::super::rpc::Client::start(app.cli.as_deref().unwrap(), &dir).unwrap();
+        let account = client
+            .call("account/read", serde_json::json!({"refreshToken":false}))
+            .unwrap();
+        assert!(super::super::account_diagnostic(&account).1);
+        assert_eq!(
+            client
+                .call("windowsSandbox/readiness", serde_json::json!({}))
+                .unwrap()["status"],
+            "ready"
+        );
+        let result = client
+            .call(
+                "command/exec",
+                serde_json::json!({
+                    "command": ["C:\\Windows\\System32\\whoami.exe"],
+                    "cwd": crate::home(),
+                    "sandboxPolicy": {"type": "readOnly", "networkAccess": false},
+                    "timeoutMs": 20000
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["exitCode"], 0, "sandbox command failed: {result}");
+        assert!(result["stdout"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("codexsandboxoffline"));
+        println!("Existing profile {id}: package identity, account, readiness, and elevated offline command passed (pid {})", live.pid);
     }
     #[test]
     #[cfg(target_os = "macos")]
