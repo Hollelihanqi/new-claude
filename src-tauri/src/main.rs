@@ -3273,11 +3273,12 @@ fn scan_usage_dir(
     }
 }
 
-// Claude Code 会把本地命令及其说明/输出也写成 user；仅角色不能证明是一次提问。
+// Claude Code 会把子代理任务、本地命令及其说明/输出也写成 user；仅角色不能证明是一次提问。
 // Windows/macOS 共用同一 JSONL 格式，按字段和内容块判断，避免误伤正文中的标记。
 fn is_usage_user_question(record: &serde_json::Value) -> bool {
     if record.get("type").and_then(|v| v.as_str()) != Some("user")
         || record.get("isMeta").and_then(|v| v.as_bool()) == Some(true)
+        || record.get("isSidechain").and_then(|v| v.as_bool()) == Some(true)
     {
         return false;
     }
@@ -4617,6 +4618,85 @@ mod tests {
         assert_eq!(rows[0].input, 3);
         assert_eq!(rows[0].cache_read, 5000);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn usage_scan_excludes_subagent_questions_but_keeps_their_usage() {
+        // Windows/macOS 项目目录共用 JSONL 格式：两次真实提问派出七个子代理。
+        // 首次扫描和命中缓存时都应只计两次提问，同时保留全部九次 API 用量。
+        let temp = tempfile::tempdir().unwrap();
+        for project in ["E-------cods-app", "-Users-test-cods-app"] {
+            let root = temp.path().join(project);
+            let agents = root.join("session").join("subagents");
+            fs::create_dir_all(&agents).unwrap();
+            let ts = "2026-11-16T06:27:33.250Z";
+            let write_records = |file: PathBuf, records: Vec<serde_json::Value>| {
+                fs::write(
+                    file,
+                    records
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+                .unwrap();
+            };
+            let response = |id: &str, sidechain: bool| {
+                let mut record = assistant_line(id, "model", Some("end_turn"), ts, 10, 5, 100, 20);
+                record["isSidechain"] = serde_json::json!(sidechain);
+                record
+            };
+            write_records(
+                root.join("session.jsonl"),
+                vec![
+                    serde_json::json!({
+                        "type": "user", "timestamp": ts,
+                        "message": { "content": "第一次提问（旧日志无 isSidechain）" }
+                    }),
+                    response("main-1", false),
+                    serde_json::json!({
+                        "type": "user", "timestamp": ts, "isSidechain": false,
+                        "message": { "content": [{ "type": "text", "text": "第二次提问" }] }
+                    }),
+                    response("main-2", false),
+                ],
+            );
+            for i in 0..7 {
+                let id = format!("agent-{i}");
+                let text = format!("子代理任务 {i}");
+                let content = if i % 2 == 0 {
+                    serde_json::json!(text)
+                } else {
+                    serde_json::json!([{ "type": "text", "text": text }])
+                };
+                write_records(
+                    agents.join(format!("{id}.jsonl")),
+                    vec![
+                        serde_json::json!({
+                            "type": "user", "timestamp": ts, "isSidechain": true,
+                            "agentId": id, "message": { "content": content }
+                        }),
+                        response(&id, true),
+                    ],
+                );
+            }
+            for _ in 0..2 {
+                let mut rows = std::collections::HashMap::new();
+                let mut convs = Vec::new();
+                let mut retained = std::collections::HashSet::new();
+                scan_usage_dir("ds", &root, &mut rows, &mut convs, &mut retained);
+                assert_eq!(convs.len(), 2, "{project}: 子代理任务不算用户提问");
+                assert_eq!(rows.values().map(|r| r.requests).sum::<u64>(), 9);
+                assert_eq!(rows.values().map(|r| r.input).sum::<u64>(), 90);
+                assert_eq!(rows.values().map(|r| r.output).sum::<u64>(), 45);
+                assert_eq!(rows.values().map(|r| r.cache_read).sum::<u64>(), 900);
+                assert_eq!(rows.values().map(|r| r.cache_create).sum::<u64>(), 180);
+            }
+        }
+        usage_cache()
+            .lock()
+            .unwrap()
+            .retain(|path, _| !path.starts_with(temp.path()));
     }
 
     #[test]
